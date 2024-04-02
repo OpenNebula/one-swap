@@ -1,0 +1,365 @@
+#!/usr/bin/env ruby
+
+# -------------------------------------------------------------------------- #
+# Copyright 2002-2024, OpenNebula Project, OpenNebula Systems                #
+#                                                                            #
+# Licensed under the Apache License, Version 2.0 (the "License"); you may    #
+# not use this file except in compliance with the License. You may obtain    #
+# a copy of the License at                                                   #
+#                                                                            #
+# http://www.apache.org/licenses/LICENSE-2.0                                 #
+#                                                                            #
+# Unless required by applicable law or agreed to in writing, software        #
+# distributed under the License is distributed on an "AS IS" BASIS,          #
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.   #
+# See the License for the specific language governing permissions and        #
+# limitations under the License.                                             #
+#--------------------------------------------------------------------------- #
+
+ONE_LOCATION = ENV['ONE_LOCATION']
+
+if !ONE_LOCATION
+    RUBY_LIB_LOCATION = '/usr/lib/one/ruby'
+    GEMS_LOCATION     = '/usr/share/one/gems'
+else
+    RUBY_LIB_LOCATION = ONE_LOCATION + '/lib/ruby'
+    GEMS_LOCATION     = ONE_LOCATION + '/share/gems'
+end
+
+# %%RUBYGEMS_SETUP_BEGIN%%
+if File.directory?(GEMS_LOCATION)
+    real_gems_path = File.realpath(GEMS_LOCATION)
+    if !defined?(Gem) || Gem.path != [real_gems_path]
+        $LOAD_PATH.reject! {|l| l =~ /vendor_ruby/ }
+
+        # Suppress warnings from Rubygems
+        # https://github.com/OpenNebula/one/issues/5379
+        begin
+            verb = $VERBOSE
+            $VERBOSE = nil
+            require 'rubygems'
+            Gem.use_paths(real_gems_path)
+        ensure
+            $VERBOSE = verb
+        end
+    end
+end
+# %%RUBYGEMS_SETUP_END%%
+
+$LOAD_PATH << RUBY_LIB_LOCATION
+$LOAD_PATH << RUBY_LIB_LOCATION + '/cli'
+
+require 'command_parser'
+require 'rbvmomi'
+require 'one_helper/oneswap_helper'
+require 'vcenter_driver'
+require 'fileutils'
+require 'openssl'
+require 'socket'
+require 'ipaddr'
+require 'open3'
+require 'rexml'
+
+require 'byebug'
+require 'pry-byebug'
+
+CommandParser::CmdParser.new(ARGV) do
+    usage '`oneswap` <command> [<args>] [<options>]'
+    version OpenNebulaHelper::ONE_VERSION
+
+    helper = OneSwapHelper.new
+
+    before_proc do
+        helper.set_client(options)
+    end
+
+    ####################
+    # Global Arguments #
+    ####################
+
+    VCENTER_ID = {
+        :name => 'host',
+        :large => '--vcenter_host host_id',
+        :description => 'ID of the host in OpenNebula of a connected vCenter Cluster. '\
+                        'Required to use this or to provide Hostname, User, and Password'
+    }
+
+    VCENTER = {
+        :name  => 'vcenter',
+        :large => '--vcenter vCenter',
+        :description => 'The vCenter hostname',
+        :format => String
+    }
+
+    USER = {
+        :name  => 'vuser',
+        :large => '--vuser username',
+        :description => 'The username to interact with vCenter',
+        :format => String
+    }
+
+    PASS = {
+        :name  => 'vpass',
+        :large => '--vpass password',
+        :description => 'The password for the user',
+        :format => String
+    }
+
+    PORT = {
+        :name  => 'port',
+        :short => '-p port',
+        :large => '--port port',
+        :format => String,
+        :description => 'vCenter API port, defaults to 443 (SSL) or 80'
+    }
+
+    AUTH_OPTS = [VCENTER_ID, VCENTER, USER, PASS, PORT]
+
+    #####################
+    # Command Arguments #
+    #####################
+
+    NAME = {
+        :name => 'name',
+        :short => '-n text',
+        :large => '--name text',
+        :description => 'Filter by name containing text',
+        :format => String
+    }
+
+    DATACENTER = {
+        :name => 'datacenter',
+        :short => '-d text',
+        :large => '--datacenter text',
+        :description => 'Filter by Datacenter name containing text',
+        :format => String
+    }
+
+    CLUSTER = {
+        :name => 'cluster',
+        :short => '-c text',
+        :large => '--cluster text',
+        :description => 'Filter by Cluster name containing text',
+        :format => String
+    }
+
+    STATE = {
+        :name => 'state',
+        :short => '-s vm_state',
+        :large => '--state vm_state',
+        :description => 'Filter VMs by their power state: [poweroff, running, suspended]',
+        :format => String
+    }
+
+    NETWORK = {
+        :name => 'network',
+        :large => '--network id',
+        :description => 'If a VCENTER_NETWORK_MATCH attribute in an OpenNebula does not match the name of a vCenter network, assign to this OpenNebula Network ID instead.',
+        :format => Integer
+    }
+
+    NO_IP = {
+        :name => 'skip_ip',
+        :large => '--skip-ip',
+        :description => 'Do not pull IP from vCenter to be created in OpenNebula'
+    }
+
+    NO_MAC = {
+        :name => 'skip_mac',
+        :large => '--skip-mac',
+        :description => 'Do not pull MAC from vCenter to be created in OpenNebula'
+    }
+
+    DATASTORE = {
+        :name => 'datastore',
+        :large => '--datastore id',
+        :description => 'Create images in the Image Datastore with this ID, Default: 1',
+        :format => Integer
+    }
+
+    WORK_DIR = {
+        :name => 'work_dir',
+        :short => '-w directory',
+        :large => '--work-dir directory',
+        :description => 'Directory where disk conversion takes place, Default: /tmp',
+        :format => String
+    }
+
+    FORMAT = {
+        :name => 'format',
+        :short => '-f type',
+        :large => '--format type',
+        :description => 'Disk format [ qcow2 | raw ], Default: qcow2',
+        :format => String
+    }
+
+    DELETE = {
+        :name => 'delete',
+        :large => '--delete-after',
+        :description => 'Removes the leftover conversion directory in the working directory which contains the converted VM disk'\
+                        's and descriptor files'
+    }
+
+    CONTEXT = {
+        :name => 'context',
+        :large => '--context-package path',
+        :description => 'Location of the context package for guest OS injection, will search by default in /var/lib/one/context/',
+        :format => String
+    }
+
+    RETRY = {
+        :name => 'max_retries',
+        :large => '--retries n',
+        :description => "Number of retries for virt-v2v if a recoverable error happens. Default: 0",
+        :format => Integer
+    }
+
+    ESXI = {
+        :name => 'esxi_ip',
+        :large => '--esxi ip',
+        :description => "Transfer directly from ESXi host instead using provided IP, may be useful if vCenter download is slow. "\
+                        "Requires SSH access to ESXi host. The vCenter credentials are required to gather other information abou"\
+                        "t the virtual machine.",
+        :format => String
+    }
+
+    ESXI_USER = {
+        :name => 'esxi_user',
+        :large => '--esxi-user username',
+        :description => "ESXi username for SSH login, default: root",
+        :format => String
+    }
+
+    ESXI_PASS = {
+        :name => 'esxi_pass',
+        :large => '--esxi-pass password',
+        :description => "ESXi password for SSH login. Required for direct ESXi transfer.",
+        :format => String
+    }
+
+    VDDK = {
+        :name => 'vddk_path',
+        :large => '--vddk /path/to/vddk/',
+        :description => 'Full path to the VDDK library, required for VDDK based transfer',
+        :format => String
+    }
+
+    CUSTOM = { # not sure what to call this actually
+        :name => 'custom_convert',
+        :large => '--custom',
+        :description => 'Use OpenNebula\'s custom conversion process. Useful when virt-v2v cannot convert properly.'
+    }
+
+    WIN_GA = {
+        :name => 'qemu_ga_win',
+        :large => '--win-qemu-ga /path/to/iso',
+        :description => 'Install QEMU Guest Agent to a Windows guest',
+        :format => String
+    }
+
+    LNX_GA = {
+        :name => 'qemu_ga_linux',
+        :large => '--qemu-ga',
+        :description => 'Install qemu-guest-agent package to a Linux guest'
+    }
+
+    VIRTIO = {
+        :name => 'virtio_path',
+        :large => '--virtio /path/to/iso',
+        :description => 'Full path of the win-virtio ISO file. Required to inject virtio drivers to Windows Guests',
+        :format => String
+    }
+
+    ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
+
+    LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA,
+                    DELETE, CONTEXT, RETRY, VDDK, CUSTOM] + AUTH_OPTS + ESXI_OPTS
+
+    set :option, CommandParser::OPTIONS + OpenNebulaHelper::CLIENT_OPTIONS
+
+    ############################################################################
+    # list resources
+    ############################################################################
+    list_desc = <<-EOT.unindent
+        Show a list with vCenter objects, default to VM
+
+        Examples:
+           - listing all VMs:
+
+             oneswap list vms
+
+           - listing available Clusters:
+
+             oneswap list -o clusters
+
+           - listing available vms in a Datacenter and Cluster:
+
+             oneswap list -o vms --datacenter DCName --cluster Cluster2
+
+    EOT
+
+    command :list, list_desc, :object, :options => LIST_OPTS do
+        begin
+            options[:object] = args[0]
+            args = helper.parse_opts(options)
+            helper.list(options)
+        rescue StandardError => e
+            STDERR.puts e.message
+            exit 1
+        end
+
+        0
+    end
+
+    conv_desc = <<-EOT.unindent
+        Convert a vCenter Virtual Machine
+
+        Examples:
+            VOPTS='--vcenter 12.34.56.78 --vuser Administrator@vsphere.local --vpass changeme123'
+            - Convert a virtual machine:
+
+            oneswap convert vm-1234 $VOPTS
+
+            - Convert a virtual machine from ESXi directly:
+
+            oneswap convert vm-1234 $VOPTS --esxi 12.34.56.79 --esxi_pass changeme123 [--esxi_user root]
+
+    EOT
+
+    command :convert, conv_desc, :name, :options => CONVERT_OPTS do
+        begin
+            raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
+            raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk]
+            if options[:virtio_path] && !File.exist?(options[:virtio_path])
+                raise "Windows VirtIO ISO cannot be found at #{options[:virtio_path]}"
+            end
+            if options[:qemu_ga_win] && !File.exist?(options[:qemu_ga_win])
+                raise "Windows QEMU Guest Agent ISO cannot be found at #{options[:qemu_ga_win]}"
+            end
+            if (options[:virtio_path] || options[:qemu_ga_win]) && options[:custom_convert]
+                vcv = `virt-customize --version`.split(' ')[1]
+                puts vcv
+                if Gem::Version.new(vcv) <= Gem::Version.new('1.49.9')
+                    puts 'Windows VirtIO and QEMU Guest Agent require virt-customize >= 1.49.9.'
+                    exit 1
+                    # can let this continue as well
+                    # options[:virtio_path] = options[:qemu_ga_win] = false
+                end
+            end
+            options[:work_dir]     ||= '/tmp'
+            options[:format]       ||= 'qcow2'
+            options[:max_retries]  ||= 0
+            options[:context_path] ||= '/var/lib/one/context/'
+            options[:esxi_user]    ||= 'root'
+            options[:datastore]    ||= 1
+
+            helper.convert(args[0], options)
+        rescue StandardError => e
+            STDERR.puts e.message
+            exit 1
+        end
+
+        0
+    end
+end
