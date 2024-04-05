@@ -13,9 +13,11 @@ Prerequisites:
 - libguestfs-xfs ( for XFS guests )
 - libguestfs-zfs ( for ZFS guests )
 
-Optional libraries:
+Optional requirements:
 - vddk library
   * VDDK library is not freely distributable and you can download it from VMWare's Developers Portal
+- RHSrvAny.exe - for Windows Context Injection
+  * https://github.com/rwmjones/rhsrvany 
 
 OneSwap Installation
 - Execute `install.sh` in your OpenNebula Front-End to install oneswap and helper library
@@ -92,7 +94,7 @@ Depending on GRUB2 boot up complexity and configuration, boot process would requ
 
 	`--vddk [path to vddk lib]`
 
-	For faster conversion speeds, you can use VDDK VMware library by using `--vddk` option. You can use either the ESXi options `EOPTS` or the VDDK option, but not both. 
+	For faster conversion speeds, you can use VDDK VMware library by using `--vddk` option. You can use either the ESXi options `EOPTS` or the VDDK option, but not both. This also does not work with the custom conversion method.
 
 	***Converting Network Interfaces***
 

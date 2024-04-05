@@ -336,6 +336,20 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             default(*config.keys)
         end
     end
+    
+    def cleanup_directories(passwords=false, disks=false)
+        if passwords
+            puts "Deleting password files."
+            File.delete("#{@options[:work_dir]}/vpassfile")
+            File.delete("#{@options[:work_dir]}/esxpassfile")
+        end
+        if @options[:delete] && disks
+            puts "Deleting vdisks in #{"#{@options[:work_dir]}/conversions/"}"
+            # FileUtils.rm_rf("#{@options[:work_dir]}/conversions/")
+        else
+            puts "NOT deleting vdisks in #{"#{@options[:work_dir]}/conversions/"}"
+        end
+    end
 
     # Translate vCenter Definition to OpenNebula Template
     def translate_template(disks)
@@ -351,10 +365,6 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 "SSH_PUBLIC_KEY" => "$USER[SSH_PUBLIC_KEY]"
             }
         })
-#bootOptions: VirtualMachineBootOptions( bootDelay: 0, bootOrder: [], bootRetryDelay: 10000, bootRetryEnabled: false, 
-#             efiSecureBootEnabled: false, enterBIOSSetup: false, networkBootProtocol: "ipv4" ),
-#bootOptions: VirtualMachineBootOptions( bootDelay: 0, bootOrder: [], bootRetryDelay: 10000, bootRetryEnabled: false, 
-#             efiSecureBootEnabled: true, enterBIOSSetup: false, networkBootProtocol: "ipv4" ),
 
         # Default to BIOS if UEFI is not defined.
         fw = { "OS" => { "FIRMWARE" => "BIOS" }}
@@ -431,56 +441,22 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         }                   # Use the block's return value as the method's
     end
 
-    def run_cmd_report(cmd)
+    def run_cmd_report(cmd, out=false)
         t0 = Time.now
-        _stdout, _stderr, status = Open3.capture3(cmd)
+        stdout, _stderr, status = nil
+        show_wait_spinner {
+            stdout, _stderr, status = Open3.capture3(cmd)
+        }
         t1 = (Time.now - t0).round(2)
         puts !status.success? ? "Failed (#{t1}s)".red : "Success (#{t1}s)".green
         if !status.success?
-            puts "STDOUT:"
-            puts _stdout
-            puts
-            puts "STDERR:"
+            puts "STDERR:".red
             puts _stderr
-            puts
+            puts "-------".red
         end
+        return stdout if out
     end
 
-    # <?xml version="1.0"?>
-    # <operatingsystems>
-    #     <operatingsystem>
-    #         <root>/dev/ubuntu-vg/ubuntu-lv</root>
-    #         <name>linux</name>
-    #         <arch>x86_64</arch>
-    #         <distro>ubuntu</distro>
-    #         <product_name>Ubuntu 22.04.4 LTS</product_name>
-    #         <major_version>22</major_version>
-    #         <minor_version>4</minor_version>
-    #         <package_format>deb</package_format>
-    #         <package_management>apt</package_management>
-    #         <hostname>ubuntuvm</hostname>
-    #         <osinfo>ubuntu22.04</osinfo>
-    #         <mountpoints>
-        #         <mountpoint dev="/dev/disk/by-id/dm-uuid-LVM-zeqnL8uHKtl4mGq2Zynk3jbjHCx54NbraVH0hd02OFLMzkZQeLjYnY0B5Aqtfgt1">/</mountpoint>
-        #         <mountpoint dev="/dev/disk/by-uuid/15df2e8b-7e71-4b8b-8a0b-770e0fb3ba66">/boot</mountpoint>
-        #         <mountpoint dev="/dev/disk/by-uuid/1921-15F2">/boot/efi</mountpoint>
-    #         </mountpoints>
-    #         <filesystems>
-        #         <filesystem dev="/dev/disk/by-id/dm-uuid-LVM-zeqnL8uHKtl4mGq2Zynk3jbjHCx54NbraVH0hd02OFLMzkZQeLjYnY0B5Aqtfgt1">
-        #             <type>ext4</type>
-        #             <uuid>7e5bfdd4-cc55-45e5-bb4d-be6ff63b5ccc</uuid>
-        #         </filesystem>
-        #         <filesystem dev="/dev/disk/by-uuid/15df2e8b-7e71-4b8b-8a0b-770e0fb3ba66">
-        #             <type>ext4</type>
-        #             <uuid>15df2e8b-7e71-4b8b-8a0b-770e0fb3ba66</uuid>
-        #         </filesystem>
-    #         <filesystem dev="/dev/disk/by-uuid/1921-15F2">
-    #             <type>vfat</type>
-    #             <uuid>1921-15F2</uuid>
-    #         </filesystem>
-    #         </filesystems>
-    #     </operatingsystem>
-    # </operatingsystems>
     def detect_distro(disk)
         print 'Inspecting disk...'
         t0 = Time.now
@@ -513,11 +489,32 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         distro_info
     end
 
+    def detect_context_package(distro)
+        case distro
+        when 'rhel8'
+            c_files = Dir.glob("#{@options[:context_path]}/one-context*el8*rpm")
+        when 'rhel9'
+            c_files = Dir.glob("#{@options[:context_path]}/one-context*el9*rpm")
+        when 'debian'
+            c_files = Dir.glob("#{@options[:context_path]}/one-context*deb")
+        when 'alpine'
+            c_files = Dir.glob("#{@options[:context_path]}/one-context*apk")
+        when 'windows'
+            c_files = Dir.glob("#{@options[:context_path]}/one-context*msi")
+        end
+
+        if c_files.length == 1
+            c_files[0]
+        else
+            latest = c_files.max_by { |f| Gem::Version.new(f.match(/(\d+\.\d+\.\d+)\.msi$/)[1])}
+            latest
+        end
+    end
+
     def context_command(disk, osinfo)
         cmd = nil
         if osinfo['name'] == 'windows'
-            # Do something here for windows
-            puts "Windows context auto-install is not supported yet".brown
+            return false
         else
             # os gives versions, so check that instead of distro
             if osinfo['os'].start_with?('redhat-based8')
@@ -526,7 +523,7 @@ add #{disk}
 run
 mount #{osinfo['mounts']['/']} /
 ! dnf install -qy epel-release
-! dnf install -qy #{@options[:context_path]}/one-context-[0-9]*el8*rpm
+! dnf install -qy #{detect_context_package('rhel8')}
 ! systemctl enable network.service
 _EOF_"
             end
@@ -536,7 +533,7 @@ add #{disk}
 run
 mount #{osinfo['mounts']['/']} /
 ! dnf install -qy epel-release
-! dnf install -qy #{@options[:context_path]}/one-context-[0-9]*el9*rpm
+! dnf install -qy #{detect_context_package('rhel9')}
 ! systemctl enable network.service
 _EOF_"
             end
@@ -546,7 +543,7 @@ add #{disk}
 run
 mount #{osinfo['mounts']['/']} /
 ! apt-get purge -y cloud-init
-! dpkg -i #{@options[:context_path]}/one-context_*deb || apt-get install -fy
+! dpkg -i #{detect_context_package('debian')} || apt-get install -fy
 _EOF_"
             end
             if osinfo['os'].start_with?('alpine')
@@ -554,14 +551,61 @@ _EOF_"
 add #{disk}
 run
 mount #{osinfo['mounts']['/']} /
-! apk add --allow-untrusted #{@options[:context_path]}/one-context-[0-9]*apk
+! apk add --allow-untrusted #{detect_context_package('alpine')}
 _EOF_"
             end
         end
         cmd
     end
 
+    def get_win_controlset(disk)
+        cmd = 'virt-win-reg'\
+              " #{disk}"\
+              " 'HKLM\\SYSTEM\\Select'"
+        print 'Checking Windows ControlSet...'
+        stdout = run_cmd_report(cmd, out=true)
+        ccs = stdout.split("\n").find { |s| s.start_with?('"Current"') }.split(':')[1].to_i
+        ccs
+    end
+
+    def win_context_inject(disk, osinfo)
+        cmd = "guestfish <<_EOF_
+add #{disk}
+run
+mount #{osinfo['mounts']['/']} /
+upload #{@options[:virt_tools]}/rhsrvany.exe /rhsrvany.exe
+upload #{detect_context_package('windows')} /one-context.msi
+_EOF_"
+        print "Uploading context files to Windows disk..."
+        run_cmd_report(cmd)
+
+        ccs = get_win_controlset(disk)
+        regfile = File.open("#{@options[:work_dir]}/service.reg", 'w')
+        regfile.puts("[HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet#{"%03d" % ccs}\\services\\RHSrvAny]")
+        regfile.puts('"Type"=dword:00000010')
+        regfile.puts('"Start"=dword:00000002')
+        regfile.puts('"ErrorControl"=dword:00000001')
+        regfile.puts('"ImagePath"="c:\\rhsrvany.exe"')
+        regfile.puts('"DisplayName"="RHSrvAny"')
+        regfile.puts('"ObjectName"="LocalSystem"')
+        regfile.puts
+        regfile.puts("[HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet#{"%03d" % ccs}\\services\\RHSrvAny\\Parameters]")
+        regfile.puts('"CommandLine"="msiexec -i c:\\one-context.msi"')
+        regfile.puts('"PWD"="c:\\Temp"')
+        regfile.flush
+        regfile.close
+
+        cmd = 'virt-win-reg'\
+              ' --merge'\
+              " #{disk}"\
+              " #{@options[:work_dir]}/service.reg"
+
+        print "Merging service registry entry to install on boot..."
+        run_cmd_report(cmd)
+    end
+
     def win_virtio_command(disk)
+        # requires newer version of virt-customize actually
         cmd = 'virt-customize'\
               " -a #{disk}"\
               " --inject-virtio-win #{@options[:virtio_path]}"
@@ -600,9 +644,13 @@ _EOF_"
 
         injector_cmd = context_command(disk, osinfo)
         if !injector_cmd
-            puts 'Unsupported guest for automatic one-context injection'.brown
+            if osinfo['name'] == 'windows'
+                win_context_inject(disk, osinfo)
+            else
+                puts 'Unsupported guest OS for context injection.'
+            end
         else
-            print "Injecting one-context..."
+            print 'Injecting one-context...'
             run_cmd_report(injector_cmd)
         end
 
@@ -814,7 +862,6 @@ _EOF_"
         puts "Running: #{command}"
 
         begin
-            retry_count = 0
             error_check = nil
             _stdin, stdout, stderr, wait_thr = Open3.popen3(command)
 
@@ -843,30 +890,25 @@ _EOF_"
                 raise "virt-v2v exited in error code #{exit_status} but did not provide an error"
             end
 
+            disks_on_file = Dir.glob("#{@options[:work_dir]}/conversions/#{@options[:name]}*").sort
+            puts "#{disks_on_file.length} disks on the local disk for this VM: #{disks_on_file.to_s}"
+            if disks_on_file.length == 0
+                raise "There are no disks on the local filesystem due to previous failures."
+            end
+    
+            img_ids = create_one_images(disks_on_file)
+            img_ids
         rescue StandardError => e
             # puts "Error raised: #{e.message}"
-            retry_count += 1
-            if @options[:max_retries] == 0
-                puts "Error encountered, retries disabled. Raising error."
-                raise e
-            elsif retry_count > @options[:max_retries]
-                puts "Maximum retry count exceeded"
-                raise e
+            if @options[:fallback]
+                puts "Error encountered, fallback enabled. Attempting Custom Conversion now."
+                cleanup_directories(passwords=false, disks=true)
+                run_custom_conversion
             else
-                puts "Retrying operation"
-                retry
+                puts "Failed. Fallback is not enabled. Raising error."
+                raise e
             end
         end
-
-        # vc_disks = @props['config.hardware.device'].grep(RbVmomi::VIM::VirtualDisk).sort_by(&:key)
-        # puts "#{vc_disks.length} disks in vCenter for this VM"
-
-        # Sort local disks alphabetically (sda, sdb, ...) so they should match
-        disks_on_file = Dir.glob("#{@options[:work_dir]}/conversions/#{@options[:name]}*sd*").sort
-        puts "#{disks_on_file.length} disks on the local disk for this VM: #{disks_on_file.to_s}"
-
-        img_ids = create_one_images(disks)
-        img_ids
     end
 
     def handle_v2v_error(line)
@@ -934,6 +976,7 @@ _EOF_"
                 print line
                 return
             end
+            return
         end
         print "\n"
         case line['type']
@@ -1028,8 +1071,7 @@ _EOF_"
             # download each disk to the work dir
             remote_file = d[:backing][:fileName].split(' ')[1].gsub(/\.vmdk$/, '-flat.vmdk')
             local_file = @options[:work_dir] + '/conversions/' + @props['name'] + "-disk#{disk_n}"
-            # d[:backing][:datastore].download(remote_file, local_file + '.vmdk')
-            puts "skipping download".bg_blue
+            d[:backing][:datastore].download(remote_file, local_file + '.vmdk')
 
             puts "Downloaded disk ##{i}. Converting. This may take a long time for larger disks."
             # -p to show Progress, -S 4k to set Sparse Cluster Size to 4kb, -W for out of order writes
@@ -1038,8 +1080,7 @@ _EOF_"
                       " -O #{@options[:format]}"\
                       ' -p -S 4k -W'\
                       " #{local_file}.vmdk #{local_file}.#{@options[:format]}"
-            #system(command) # don't need to interact or anything, just display the output straight.
-            puts "conversion skipped".bg_blue
+            system(command) # don't need to interact or anything, just display the output straight.
             puts "Disk #{i} converted in #{(Time.now - t0).round(2)} seconds. Deleting vmdk file".green
             puts "that's a lie, not deleting the vmdk".bg_blue
             # command = "rm -f #{local_file}.vmdk"
@@ -1072,7 +1113,7 @@ _EOF_"
 
         if @options[:network] && vc_nets.length > 0
             # Change this to check existing ONE vnets for VCENTER_NETWORK_MATCH attribute instead, per network.
-            puts "\nAdding #{vc_nets.length} NICs, defaulting to Network ID #{@options[:network]} if there is no match"
+            puts "Adding #{vc_nets.length} NICs, defaulting to Network ID #{@options[:network]} if there is no match"
             nic_number=0
             vc_nets.each do |n|
                 # find nic with same device key
@@ -1172,33 +1213,24 @@ _EOF_"
         end
         options[:name] = name
         @options = options
-        conv_path   = "#{options[:work_dir]}/conversions/"
-        vc_pw_path  = "#{options[:work_dir]}/vpassfile"
-        esx_pw_path = "#{options[:work_dir]}/esxpassfile"
+        conv_path = "#{@options[:work_dir]}/conversions/"
         begin
             Dir.mkdir(conv_path) if !Dir.exist?(conv_path)
 
-            password_file = File.open(vc_pw_path, 'w')
-            password_file.print options[:vpass]
+            password_file = File.open("#{@options[:work_dir]}/vpassfile", 'w')
+            password_file.print @options[:vpass]
             password_file.chmod(0600)
             password_file.close
 
-            password_file = File.open(esx_pw_path, 'w')
-            password_file.print options[:esxi_pass]
+            password_file = File.open("#{@options[:work_dir]}/esxpassfile", 'w')
+            password_file.print @options[:esxi_pass]
             password_file.chmod(0600)
             password_file.close
 
             convert_vm
         ensure
             password_file.close unless password_file.nil? or password_file.closed?
-            File.delete(vc_pw_path)
-            File.delete(esx_pw_path)
-            if options[:delete]
-                puts "Deleting files in #{conv_path}"
-                FileUtils.rm_rf(conv_path)
-            else
-                puts "Not deleting files in #{conv_path}"
-            end
+            cleanup_directories(passwords=true, disks=true)
         end
     end
 
@@ -1363,19 +1395,16 @@ _EOF_"
         vm_template = translate_template(img_ids)
         vm_template = add_one_nics(vm_template)
 
-        print "\nAllocating the VM template..."
+        print "Allocating the VM template..."
 
         rc = vm_template.allocate(vm_template.to_xml)
 
         if rc.nil?
             puts 'Success'.green
-            puts "\nVM Template ID: #{vm_template.id}\n"
+            puts "VM Template ID: #{vm_template.id}\n"
         else
             puts 'Failed'.red
-            puts "\nVM Template:\n#{vm_template.to_xml}"
+            puts "\nVM Template:\n#{vm_template.to_xml}\n"
         end
-
-        # Add converted images to the datastore
-        # Convert VMWare definition to OpenNebula Template
     end
 end

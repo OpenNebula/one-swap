@@ -60,9 +60,6 @@ require 'ipaddr'
 require 'open3'
 require 'rexml'
 
-require 'byebug'
-require 'pry-byebug'
-
 CommandParser::CmdParser.new(ARGV) do
     usage '`oneswap` <command> [<args>] [<options>]'
     version OpenNebulaHelper::ONE_VERSION
@@ -202,16 +199,9 @@ CommandParser::CmdParser.new(ARGV) do
 
     CONTEXT = {
         :name => 'context',
-        :large => '--context-package path',
-        :description => 'Location of the context package for guest OS injection, will search by default in /var/lib/one/context/',
+        :large => '--context-package /path/to/context/',
+        :description => 'Directory with the context packages for guest OS injection, will search by default in /var/lib/one/context/',
         :format => String
-    }
-
-    RETRY = {
-        :name => 'max_retries',
-        :large => '--retries n',
-        :description => "Number of retries for virt-v2v if a recoverable error happens. Default: 0",
-        :format => Integer
     }
 
     ESXI = {
@@ -247,7 +237,13 @@ CommandParser::CmdParser.new(ARGV) do
     CUSTOM = { # not sure what to call this actually
         :name => 'custom_convert',
         :large => '--custom',
-        :description => 'Use OpenNebula\'s custom conversion process. Useful when virt-v2v cannot convert properly.'
+        :description => 'Forces the use of OpenNebula\'s custom conversion process. This will skip virt-v2v conversion attempts.'
+    }
+
+    FALLBACK = {
+        :name => 'fallback',
+        :large => '--fallback',
+        :description => 'If the virt-v2v conversion fails, attempt the OpenNebula Custom Conversion process.'
     }
 
     WIN_GA = {
@@ -270,11 +266,18 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
+    RHSRVANY = {
+        :name => 'virt_tools',
+        :large => '--virt-tools /path/to/virt-tools',
+        :description => 'Path to the directory containing rhsrvany.exe, defaults to /usr/share/virt-tools. See https://github.com/rwmjones/rhsrvany.',
+        :format => String
+    }
+
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA,
-                    DELETE, CONTEXT, RETRY, VDDK, CUSTOM] + AUTH_OPTS + ESXI_OPTS
+                    DELETE, CONTEXT, FALLBACK, VDDK, CUSTOM, RHSRVANY] + AUTH_OPTS + ESXI_OPTS
 
     set :option, CommandParser::OPTIONS + OpenNebulaHelper::CLIENT_OPTIONS
 
@@ -339,12 +342,10 @@ CommandParser::CmdParser.new(ARGV) do
             end
             if (options[:virtio_path] || options[:qemu_ga_win]) && options[:custom_convert]
                 vcv = `virt-customize --version`.split(' ')[1]
-                puts vcv
                 if Gem::Version.new(vcv) <= Gem::Version.new('1.49.9')
                     puts 'Windows VirtIO and QEMU Guest Agent require virt-customize >= 1.49.9.'
-                    exit 1
-                    # can let this continue as well
-                    # options[:virtio_path] = options[:qemu_ga_win] = false
+                    # exit 1 # otherwise, do:
+                    options[:virtio_path] = options[:qemu_ga_win] = false
                 end
             end
             options[:work_dir]     ||= '/tmp'
@@ -353,6 +354,7 @@ CommandParser::CmdParser.new(ARGV) do
             options[:context_path] ||= '/var/lib/one/context/'
             options[:esxi_user]    ||= 'root'
             options[:datastore]    ||= 1
+            options[:virt_tools]   ||= '/usr/share/virt-tools'
 
             helper.convert(args[0], options)
         rescue StandardError => e
