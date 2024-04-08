@@ -72,6 +72,10 @@ virt-v2v tool does not support Grub2 update. The following message will be shown
 
 Depending on GRUB2 boot up complexity and configuration, boot process would require to be fixed by OS recovery tools (SystemRescueCD or Ubuntu Live Recovery)
 
+- Windows
+
+Windows is only compatible with virt-v2v style conversion, will refuse to use `--custom` or `--fallback`.
+
 # Usage
 
 * Define your vCenter Options:
