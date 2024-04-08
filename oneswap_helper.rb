@@ -42,6 +42,19 @@ class String
     def reverse_color;  "\e[7m#{self}\e[27m" end
 end
 
+# Ruby 3.x+ deprecated URI.escape, however rbvmomi still relies on it
+
+if RUBY_VERSION.split('.')[0].to_i >= 3
+    # Monkey patch the escape functionality
+    module URI
+
+        def self.escape(url)
+            URI::Parser.new.escape url
+        end
+
+    end
+end
+
 ##############################################################################
 # Module OneVcenterHelper
 ##############################################################################
