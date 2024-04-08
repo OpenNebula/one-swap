@@ -499,6 +499,12 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             c_files = Dir.glob("#{@options[:context_path]}/one-context*deb")
         when 'alpine'
             c_files = Dir.glob("#{@options[:context_path]}/one-context*apk")
+        when 'alt'
+            c_files = Dir.glob("#{@options[:context_path]}/one-context*alt*rpm")
+        when 'opensuse'
+            c_files = Dir.glob("#{@options[:context_path]}/one-context*suse*rpm")
+        when 'freebsd'
+            c_files = Dir.glob("#{@options[:context_path]}/one-context*txz")
         when 'windows'
             c_files = Dir.glob("#{@options[:context_path]}/one-context*msi")
         end
@@ -517,42 +523,63 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             return false
         else
             # os gives versions, so check that instead of distro
-            if osinfo['os'].start_with?('redhat-based8')
-                cmd = "guestfish <<_EOF_
-add #{disk} 
-run
-mount #{osinfo['mounts']['/']} /
-! dnf install -qy epel-release
-! dnf install -qy #{detect_context_package('rhel8')}
-! systemctl enable network.service
-_EOF_"
-            end
-            if osinfo['os'].start_with?('redhat-based9')
-                cmd = "guestfish <<_EOF_
-add #{disk}
-run
-mount #{osinfo['mounts']['/']} /
-! dnf install -qy epel-release
-! dnf install -qy #{detect_context_package('rhel9')}
-! systemctl enable network.service
-_EOF_"
+            if osinfo['os'].start_with?('redhat-based')
+                if osinfo['os'].start_with?('redhat-based8')
+                    context_fullpath = detect_context_package('rhel8')
+                elsif osinfo['os'].start_with?('redhat-based9')
+                    context_fullpath = detect_context_package('rhel9')
+                end
+                context_basename = File.basename(context_fullpath)
+                cmd = 'virt-customize -q'\
+                      " -a #{disk}"\
+                      ' --install epel-release'\
+                      " --copy-in #{context_fullpath}:/tmp"\
+                      " --install /tmp/#{context_basename}"\
+                      " --delete /tmp/#{context_basename}"\
+                      " --run-command 'systemctl enable network.service'"
             end
             if osinfo['os'].start_with?('ubuntu') || osinfo['os'].start_with?('debian')
-                cmd = "guestfish <<_EOF_
-add #{disk}
-run
-mount #{osinfo['mounts']['/']} /
-! apt-get purge -y cloud-init
-! dpkg -i #{detect_context_package('debian')} || apt-get install -fy
-_EOF_"
+                context_fullpath = detect_context_package('debian')
+                context_basename = File.basename(context_fullpath)
+                cmd = 'virt-customize -q'\
+                      " -a #{disk}"\
+                      ' --uninstall cloud-init'\
+                      " --copy-in #{context_fullpath}:/tmp"\
+                      " --install /tmp/#{context_basename}"\
+                      " --delete /tmp/#{context_basename}"\
+                      " --run-command 'systemctl enable network.service'"
+            end
+            if osinfo['os'].start_with?('alt')
+                context_fullpath = detect_context_package('alt')
+                context_basename = File.basename(context_fullpath)
+                cmd = 'virt-customize -q'\
+                      " -a #{disk}"\
+                      " --copy-in #{context_fullpath}:/tmp"\
+                      " --install /tmp/#{context_basename}"\
+                      " --delete /tmp/#{context_basename}"
+            end
+            if osinfo['os'].start_with?('opensuse')
+                context_fullpath = detect_context_package('freebsd')
+                context_basename = File.basename(context_fullpath)
+                cmd = 'virt-customize -q'\
+                      " -a #{disk}"\
+                      " --copy-in #{context_fullpath}:/tmp"\
+                      " --install /tmp/#{context_basename}"\
+                      " --delete /tmp/#{context_basename}"
+            end
+            if osinfo['os'].start_with?('freebsd')
+                # may not mount properly sometimes due to internal fs
+                context_fullpath = detect_context_package('freebsd')
+                context_basename = File.basename(context_fullpath)
+                cmd = 'virt-customize -q'\
+                      " -a #{disk}"\
+                      ' --install curl,bash,sudo,base64,ruby,open-vm-tools-nox11'\
+                      " --copy-in #{context_fullpath}:/tmp"\
+                      " --install /tmp/#{context_basename}"\
+                      " --delete /tmp/#{context_basename}"
             end
             if osinfo['os'].start_with?('alpine')
-                cmd = "guestfish <<_EOF_
-add #{disk}
-run
-mount #{osinfo['mounts']['/']} /
-! apk add --allow-untrusted #{detect_context_package('alpine')}
-_EOF_"
+                puts 'Alpine is not compatible with offline install, please install context manually.'.brown
             end
         end
         cmd
@@ -581,15 +608,15 @@ _EOF_"
 
         ccs = get_win_controlset(disk)
         regfile = File.open("#{@options[:work_dir]}/service.reg", 'w')
-        regfile.puts("[HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet#{"%03d" % ccs}\\services\\RHSrvAny]")
+        regfile.puts("[HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet#{"%03d" % ccs}\\services\\RHSrvAnyContext]")
         regfile.puts('"Type"=dword:00000010')
         regfile.puts('"Start"=dword:00000002')
         regfile.puts('"ErrorControl"=dword:00000001')
         regfile.puts('"ImagePath"="c:\\rhsrvany.exe"')
-        regfile.puts('"DisplayName"="RHSrvAny"')
+        regfile.puts('"DisplayName"="RHSrvAnyContext"')
         regfile.puts('"ObjectName"="LocalSystem"')
         regfile.puts
-        regfile.puts("[HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet#{"%03d" % ccs}\\services\\RHSrvAny\\Parameters]")
+        regfile.puts("[HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet#{"%03d" % ccs}\\services\\RHSrvAnyContext\\Parameters]")
         regfile.puts('"CommandLine"="msiexec -i c:\\one-context.msi"')
         regfile.puts('"PWD"="c:\\Temp"')
         regfile.flush
@@ -900,19 +927,23 @@ _EOF_"
             img_ids
         rescue StandardError => e
             # puts "Error raised: #{e.message}"
-            if @options[:fallback]
+            if @options[:fallback] && !@props['config'][:guestFullName].include?('Windows')
                 puts "Error encountered, fallback enabled. Attempting Custom Conversion now."
                 cleanup_directories(passwords=false, disks=true)
                 run_custom_conversion
             else
-                puts "Failed. Fallback is not enabled. Raising error."
+                if @props['config'][:guestFullName].include?('Windows')
+                    puts 'Windows not supported for fallback conversion.'.brown
+                else
+                    puts "Failed. Fallback is not enabled. Raising error.".red
+                end
                 raise e
             end
         end
     end
 
     def handle_v2v_error(line)
-        LOGGER[:stderr].write(line)
+        LOGGER[:stderr].puts(line)
         pass_list  = [
             'unable to rebuild initrd',
             'unable to find any valid modprobe configuration file',
@@ -1351,15 +1382,6 @@ _EOF_"
         con_ops = connection_options('vm', @options)
         vi_client = VCenterDriver::VIClient.new(con_ops)
         properties = [
-            # 'config.annotation',
-            # 'config.datastoreUrl',
-            # 'config.files.vmPathName',
-            # 'config.firmware',
-            # 'config.hardware.numCPU',
-            # 'config.hardware.memoryMB',
-            # 'config.hardware.device',
-            # 'config.template',
-            # 'config.uuid',
             'config',
             'datastore',
             'guest.net',
@@ -1379,13 +1401,17 @@ _EOF_"
         end
 
         @props = vm.to_hash
-        
+
         if @props['summary.runtime.powerState'] != 'poweredOff'
-            raise "Virtual Machine #{@options[:name]} is not Powered Off."
+            raise "Virtual Machine #{@options[:name]} is not Powered Off.".red
         end
 
         if !@props['snapshot'].nil?
-            raise "Virtual Machine #{@options[:name]} cannot have existing snapshots."
+            raise "Virtual Machine #{@options[:name]} cannot have existing snapshots.".red
+        end
+
+        if @props['config'][:guestFullName].include?('Windows') && @options[:custom_convert]
+            raise "Windows is not supported in OpenNebula's Custom Conversion process".red
         end
 
         img_ids = @options[:custom_convert] ? run_custom_conversion : run_v2v_conversion
