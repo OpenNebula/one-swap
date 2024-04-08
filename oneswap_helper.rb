@@ -54,14 +54,9 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     # vCenter importer will divide rvmomi resources
     # in this group, makes parsing easier.
     module VOBJECT
-        DATASTORE  = 1
-        TEMPLATE   = 2
-        NETWORK    = 3
-        IMAGE      = 4
-        HOST       = 5
-        VM         = 6
-        DATACENTER = 7
-        CLUSTER    = 8
+        VM         = 1
+        DATACENTER = 2
+        CLUSTER    = 3
     end
 
     #
@@ -87,42 +82,6 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     #                            * template_dialogue
     #
     TABLE = {
-        VOBJECT::DATASTORE => {
-            :struct  => ['DATASTORE_LIST', 'DATASTORE'],
-            :columns =>
-                { :IMID => 5, :REF => 15, :NAME => 50, :CLUSTERS => 10 },
-            :cli     => [:host],
-            :dialogue => ->(arg) {}
-        },
-        VOBJECT::TEMPLATE => {
-            :struct  => ['TEMPLATE_LIST', 'TEMPLATE'],
-            :columns => { :IMID => 5, :REF => 10, :NAME => 50 },
-            :cli     => [:host],
-            :dialogue => ->(arg) { OneVcenterHelper.template_dialogue(arg) }
-        },
-        VOBJECT::NETWORK => {
-            :struct  => ['NETWORK_LIST', 'NETWORK'],
-            :columns => {
-                :IMID => 5,
-                :REF => 15,
-                :NAME => 30,
-                :CLUSTERS => 20
-            },
-            :cli     => [:host],
-            :dialogue => ->(arg) { OneVcenterHelper.network_dialogue(arg) }
-        },
-        VOBJECT::IMAGE => {
-            :struct  => ['IMAGE_LIST', 'IMAGE'],
-            :columns => { :IMID => 5, :REF => 35, :PATH => 60 },
-            :cli     => [:host, :datastore],
-            :dialogue => ->(arg) {}
-        },
-        VOBJECT::HOST => {
-            :struct  => ['HOST_LIST', 'HOST'],
-            :columns => { :NAME => 30, :DATACENTER => 15, :CLUSTERS => 15, :REF => 35 },
-            :cli     => [],
-            :dialogue => ->(arg) {}
-        },
         VOBJECT::VM => {
             :struct  => ['VM_LIST', 'VM'],
             :columns => { :IMID => 8, :NAME => 20, :STATE => 10, :HOST => 10, :CPU => 3, :MEM => 7, :REF => 35 },
@@ -211,7 +170,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             :user     => options[:vuser],
             :password => password,
             :host     => options[:vcenter],
-            :port     => options[:port]
+            :port     => options[:port],
+            :insecure => true
         }
     end
 
@@ -700,7 +660,7 @@ _EOF_"
 
     # Get objects 
     def get_objects(vi_client, type, properties, folder = nil)
-        vim = vi_client.vim
+        vim = vi_client
         pc = vim.serviceInstance.content.propertyCollector
         viewmgr = vim.serviceInstance.content.viewManager
         # determine if we need to look in specific folders
@@ -1228,8 +1188,10 @@ _EOF_"
             list_datacenters(options)
         when 'clusters'
             list_clusters(options)
-        else
+        when 'vms'
             list_vms(options)
+        else
+            raise 'Invalid object type for listing'.brown
         end
     end
 
@@ -1270,7 +1232,7 @@ _EOF_"
     # @param options [Hash] User CLI options
     def list_vms(options)
         con_ops   = connection_options('vms', options)
-        vi_client = VCenterDriver::VIClient.new(con_ops)
+        vi_client = RbVmomi::VIM.connect(con_ops)
         properties = [
             'name',
             'config.template',
@@ -1330,7 +1292,7 @@ _EOF_"
     # @param options [Hash] User CLI options
     def list_datacenters(options)
         con_ops = connection_options('datacenters', options)
-        vi_client = VCenterDriver::VIClient.new(con_ops)
+        vi_client = RbVmomi::VIM.connect(con_ops)
 
         list  = []
         dcs = get_objects(vi_client, 'Datacenter', ['name'])
@@ -1349,7 +1311,7 @@ _EOF_"
     # @param options [Hash] User CLI options
     def list_clusters(options)
         con_ops = connection_options('clusters', options)
-        vi_client = VCenterDriver::VIClient.new(con_ops)
+        vi_client = RbVmomi::VIM.connect(con_ops)
 
         list  = []
         properties = [
@@ -1380,7 +1342,7 @@ _EOF_"
     # @param options [Hash] User CLI Options
     def convert_vm
         con_ops = connection_options('vm', @options)
-        vi_client = VCenterDriver::VIClient.new(con_ops)
+        vi_client = RbVmomi::VIM.connect(con_ops)
         properties = [
             'config',
             'datastore',
