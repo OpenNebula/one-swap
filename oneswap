@@ -58,6 +58,7 @@ require 'socket'
 require 'ipaddr'
 require 'open3'
 require 'rexml'
+require 'cgi'
 
 CommandParser::CmdParser.new(ARGV) do
     usage '`oneswap` <command> [<args>] [<options>]'
@@ -293,11 +294,11 @@ CommandParser::CmdParser.new(ARGV) do
 
            - listing available Clusters:
 
-             oneswap list -o clusters
+             oneswap list clusters
 
            - listing available vms in a Datacenter and Cluster:
 
-             oneswap list -o vms --datacenter DCName --cluster Cluster2
+             oneswap list vms --datacenter DCName --cluster Cluster2
 
     EOT
 
@@ -319,13 +320,23 @@ CommandParser::CmdParser.new(ARGV) do
 
         Examples:
             VOPTS='--vcenter 12.34.56.78 --vuser Administrator@vsphere.local --vpass changeme123'
+            
             - Convert a virtual machine:
 
-            oneswap convert vm-1234 $VOPTS
+            oneswap convert vm-1234 $VOPTS [--fallback|--custom] [--network ID] [--datacenter ID]
 
             - Convert a virtual machine from ESXi directly:
 
             oneswap convert vm-1234 $VOPTS --esxi 12.34.56.79 --esxi_pass changeme123 [--esxi_user root]
+
+            - Convert a vCenter virtual machine utilizing the proprietary VDDK library(faster transfer usually):
+
+            oneswap convert vm-1234 $VOPTS --vddk /path/to/vddk-lib
+
+            - Convert using OpenNebula Custom Conversion (useful for distributions which are not supported or fail to convert)
+            You can also define --fallback instead of --custom, which will first attempt virt-v2v style, then fallback to custom.
+
+            oneswap convert vm-1234 $VOPTS --custom
 
     EOT
 
@@ -346,6 +357,9 @@ CommandParser::CmdParser.new(ARGV) do
                     # exit 1 # otherwise, do:
                     options[:virtio_path] = options[:qemu_ga_win] = false
                 end
+            end
+            if options[:fallback] && options[:custom_convert]
+                raise "Cannot define both --fallback and --custom."
             end
             options[:work_dir]     ||= '/tmp'
             options[:format]       ||= 'qcow2'
