@@ -74,13 +74,6 @@ CommandParser::CmdParser.new(ARGV) do
     # Global Arguments #
     ####################
 
-    VCENTER_ID = {
-        :name => 'host',
-        :large => '--vcenter_host host_id',
-        :description => 'ID of the host in OpenNebula of a connected vCenter Cluster. '\
-                        'Required to use this or to provide Hostname, User, and Password'
-    }
-
     VCENTER = {
         :name  => 'vcenter',
         :large => '--vcenter vCenter',
@@ -110,7 +103,7 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'vCenter API port, defaults to 443 (SSL) or 80'
     }
 
-    AUTH_OPTS = [VCENTER_ID, VCENTER, USER, PASS, PORT]
+    AUTH_OPTS = [VCENTER, USER, PASS, PORT]
 
     #####################
     # Command Arguments #

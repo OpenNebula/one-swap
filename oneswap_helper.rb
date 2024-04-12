@@ -61,6 +61,7 @@ end
 class OneSwapHelper < OpenNebulaHelper::OneHelper
 
     @props, @options = []
+    @dotskip = false # temporarily skip dots, for progress bar mainly.
     # true to log to /var/log/one/oneswap.*
     DEBUG = false
 
@@ -348,6 +349,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             else
                 fw['OS']['FIRMWARE'] = '/usr/share/OVMF/OVMF_CODE.fd'
             end
+            fw['OS']['MACHINE'] = 'q35'
         end
 
         vmt.add_element('//VMTEMPLATE', fw)
@@ -416,18 +418,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
     def run_cmd_report(cmd, out=false)
         t0 = Time.now
-        stdout, _stderr, status = nil
+        stdout, stderr, status = nil
         show_wait_spinner {
-            stdout, _stderr, status = Open3.capture3(cmd)
+            stdout, stderr, status = Open3.capture3(cmd)
         }
         t1 = (Time.now - t0).round(2)
         puts !status.success? ? "Failed (#{t1}s)".red : "Success (#{t1}s)".green
-        if !status.success?
-            puts "STDERR:".red
-            puts _stderr
-            puts "-------".red
+        if !status.success? and DEBUG
+            LOGGER[:stderr].puts("     STDERR:")
+            LOGGER[:stderr].puts(stderr)
+            LOGGER[:stderr].puts("------------")
         end
-        return stdout if out
+        return stdout, status if out
     end
 
     def detect_distro(disk)
@@ -484,9 +486,12 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
         if c_files.length == 1
             c_files[0]
-        else
+        elsif c_files.length > 1
             latest = c_files.max_by { |f| Gem::Version.new(f.match(/(\d+\.\d+\.\d+)\.msi$/)[1])}
             latest
+        else
+            # download the correct one
+            return false
         end
     end
 
@@ -505,11 +510,11 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 context_basename = File.basename(context_fullpath)
                 cmd = 'virt-customize -q'\
                       " -a #{disk}"\
-                      ' --install epel-release'\
+                      ' --run-command epel-release'\
                       " --copy-in #{context_fullpath}:/tmp"\
                       " --install /tmp/#{context_basename}"\
                       " --delete /tmp/#{context_basename}"\
-                      " --run-command 'systemctl enable network.service'"
+                      " --run-command 'systemctl enable network.service || exit 0'"
             end
             if osinfo['os'].start_with?('ubuntu') || osinfo['os'].start_with?('debian')
                 context_fullpath = detect_context_package('debian')
@@ -520,7 +525,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                       " --copy-in #{context_fullpath}:/tmp"\
                       " --install /tmp/#{context_basename}"\
                       " --delete /tmp/#{context_basename}"\
-                      " --run-command 'systemctl enable network.service'"
+                      " --run-command 'systemctl enable network.service || exit 0'"
             end
             if osinfo['os'].start_with?('alt')
                 context_fullpath = detect_context_package('alt')
@@ -554,6 +559,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             if osinfo['os'].start_with?('alpine')
                 puts 'Alpine is not compatible with offline install, please install context manually.'.brown
             end
+            return false if not context_fullpath
         end
         cmd
     end
@@ -563,7 +569,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
               " #{disk}"\
               " 'HKLM\\SYSTEM\\Select'"
         print 'Checking Windows ControlSet...'
-        stdout = run_cmd_report(cmd, out=true)
+        stdout, status = run_cmd_report(cmd, out=true)
         ccs = stdout.split("\n").find { |s| s.start_with?('"Current"') }.split(':')[1].to_i
         ccs
     end
@@ -647,11 +653,15 @@ _EOF_"
             if osinfo['name'] == 'windows'
                 win_context_inject(disk, osinfo)
             else
-                puts 'Unsupported guest OS for context injection.'
+                puts 'Unsupported guest OS or couldn\'t find context file for context injection. Please instasll manually.'.brown
             end
         else
+            # Perhaps have a separet function that does a bit more....stuff...
             print 'Injecting one-context...'
-            run_cmd_report(injector_cmd)
+            stdout, status = run_cmd_report(injector_cmd, out=true)
+            if !status.success?
+                puts 'Context injection command appears to have failed.'
+            end
         end
 
         if osinfo['name'] == 'windows' && @options[:virtio_path]
@@ -916,7 +926,7 @@ _EOF_"
     end
 
     def handle_v2v_error(line)
-        LOGGER[:stderr].puts(line)
+        LOGGER[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
         pass_list  = [
             'unable to rebuild initrd',
             'unable to find any valid modprobe configuration file',
@@ -972,7 +982,7 @@ _EOF_"
     end
 
     def handle_stdout(line)
-        LOGGER[:stdout].puts(line) if DEBUG
+        LOGGER[:stdout].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
         begin
             line = JSON.parse(line)
         rescue JSON::ParserError
@@ -995,6 +1005,8 @@ _EOF_"
                 print ", this may take a long time".green
             elsif line['message'].start_with?('Copying disk')
                 print ", this may take a long time".green
+                print "\n"
+                @dotskip = true
             end
         when 'info'
             print line['message']
@@ -1018,7 +1030,7 @@ _EOF_"
         when prefixes[0]
             print "\n"
             STDOUT.flush
-            print "Inspecting filesystems".green
+            print "Inspecting filesystems...this can take several minutes".green
         when prefixes[1]
             print "\n"
             STDOUT.flush
@@ -1026,14 +1038,14 @@ _EOF_"
         when prefixes[2]
             print "\n"
             STDOUT.flush
-            print "Gathering mountpoint stats".green
+            print "Gathering mountpoint stats and converting guest".green
         when prefixes[3]
             print "\n"
             STDOUT.flush
             print "Generating initramfs, this can take several minutes(20+) on many systems. Please be patient and do not interrupt the process.".brown
         else
-            print '.'
-            LOGGER[:stderr].puts(line) if DEBUG
+            print '.' if not @dotskip
+            LOGGER[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
         end
     end
 
@@ -1086,9 +1098,9 @@ _EOF_"
                       " #{local_file}.vmdk #{local_file}.#{@options[:format]}"
             system(command) # don't need to interact or anything, just display the output straight.
             puts "Disk #{i} converted in #{(Time.now - t0).round(2)} seconds. Deleting vmdk file".green
-            puts "that's a lie, not deleting the vmdk".bg_blue
-            # command = "rm -f #{local_file}.vmdk"
-            # system(command)
+            # puts "that's a lie, not deleting the vmdk".bg_blue
+            command = "rm -f #{local_file}.vmdk"
+            system(command)
             local_disks.append("#{local_file}.#{@options[:format]}")
         end
 
