@@ -59,13 +59,13 @@ end
 # Module OneVcenterHelper
 ##############################################################################
 class OneSwapHelper < OpenNebulaHelper::OneHelper
-
-    @props, @options = []
-    @dotskip = false # temporarily skip dots, for progress bar mainly.
     # true to log to /var/log/one/oneswap.*
     DEBUG = false
 
-    # vCenter importer will divide rvmomi resources
+    @props, @options = []
+    @dotskip = false # temporarily skip dots, for progress dots.
+
+    # vCenter importer will divide rbvmomi resources
     # in this group, makes parsing easier.
     module VOBJECT
         VM         = 1
@@ -1399,8 +1399,6 @@ _EOF_"
         
         vm_template = create_vm_template
 
-        puts 'did it'
-        exit 0
         img_ids = @options[:custom_convert] ? run_custom_conversion : run_v2v_conversion
 
         puts img_ids.nil? ? "No Images ID's reported being created".red : "Created images: #{img_ids}".green
