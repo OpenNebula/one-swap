@@ -1404,7 +1404,7 @@ _EOF_"
         puts img_ids.nil? ? "No Images ID's reported being created".red : "Created images: #{img_ids}".green
 
         img_ids.each do |i|
-            vmt.add_element('//VMTEMPLATE', {"DISK" => { "IMAGE_ID" => "#{i}" }})
+            vm_template.add_element('//VMTEMPLATE', {"DISK" => { "IMAGE_ID" => "#{i}" }})
         end
 
         # Add the NIC's now, after any conversion stuff has happened since it creates OpenNebula objects
