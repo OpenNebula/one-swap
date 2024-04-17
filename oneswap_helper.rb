@@ -310,19 +310,39 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             default(*config.keys)
         end
     end
-    
-    def cleanup_directories(passwords=false, disks=false)
-        if passwords
-            puts "Deleting password files."
-            File.delete("#{@options[:work_dir]}/vpassfile")
-            File.delete("#{@options[:work_dir]}/esxpassfile")
-        end
-        if @options[:delete] && disks
-            puts "Deleting vdisks in #{"#{@options[:work_dir]}/conversions/"}"
-            FileUtils.rm_rf("#{@options[:work_dir]}/conversions/")
+
+    def cleanup_passwords
+        puts "Deleting password files."
+        File.delete("#{@options[:work_dir]}/vpassfile")
+        File.delete("#{@options[:work_dir]}/esxpassfile")
+    end
+
+    def cleanup_disks
+        if @options[:delete]
+            puts "Deleting vdisks in #{"#{@options[:work_dir]}/conversions"}"
+            FileUtils.rm_rf("#{@options[:work_dir]}/conversions")
+            if Dir.exist?("#{@options[:work_dir]}/transfers")
+                FileUtils.rm_rf("#{@options[:work_dir]}/transfers")
+            end
         else
-            puts "NOT deleting vdisks in #{"#{@options[:work_dir]}/conversions/"}"
+            puts "Delete not enabled, leaving disks in #{"#{@options[:work_dir]}/conversions"}"
         end
+    end
+
+    def cleanup_dirs
+        if @options[:delete]
+            puts "Deleting everything in and including #{"#{@options[:work_dir]}"}"
+            FileUtils.rm_rf("#{@options[:work_dir]}")
+        else
+            puts "Delete not enabled, leaving #{@options[:work_dir]} alone."
+        end
+    end
+
+    def cleanup_all
+        cleanup_passwords
+        cleanup_disks
+        cleanup_dirs
+
     end
 
     def create_base_template
@@ -357,6 +377,40 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         fw
     end
 
+    #SCHED_DS_REQUIREMENTS = "ID=\"110\""
+    #SCHED_REQUIREMENTS = "ID=\"0\" | CLUSTER_ID=\"0\""
+    def template_scheduling(vmt)
+        sched = {}
+        if @options[:one_cluster] or @options[:one_host]
+            sched['SCHED_REQUIREMENTS'] = ''
+            if @options[:one_host]
+                sched['SCHED_REQUIREMENTS'] << "ID=\"#{@options[:one_host]}\""
+            end
+            if @options[:one_host] and @options[:one_cluster]
+                sched['SCHED_REQUIREMENTS'] << ' | '
+            end
+            if @options[:one_cluster]
+                sched['SCHED_REQUIREMENTS'] << "CLUSTER_ID=\"#{@options[:one_cluster]}\""
+            end
+            vmt.add_element('//VMTEMPLATE', sched)
+            sched = {}
+        end
+        if @options[:one_datastore] or @options[:one_datastore_cluster]
+            sched['SCHED_DS_REQUIREMENTS'] = ''
+            if @options[:one_datastore]
+                sched['SCHED_DS_REQUIREMENTS'] << "ID=\"#{@options[:one_datastore]}\""
+            end
+            if @options[:one_datastore] and @options[:one_datastore_cluster]
+                sched['SCHED_DS_REQUIREMENTS'] << ' | '
+            end
+            if @options[:one_datastore_cluster]
+                sched['SCHED_DS_REQUIREMENTS'] << "CLUSTER_ID=\"#{@options[:one_datastore_cluster]}\""
+            end
+            vmt.add_element('//VMTEMPLATE', sched)
+        end
+        vmt
+    end
+
     # Translate vCenter Definition to OpenNebula Template
     def create_vm_template
         vmt = create_base_template
@@ -370,6 +424,9 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             vmt.add_element('//VMTEMPLATE', { "DESCRIPTION" => "#{notes}" })
         end
 
+        vmt = template_scheduling(vmt)
+
+        # detect icon
         logo = nil
         case @props['guest.guestFullName']
         when /CentOS/i;     logo = 'images/logos/centos.png'
@@ -563,7 +620,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
               " #{disk}"\
               " 'HKLM\\SYSTEM\\Select'"
         print 'Checking Windows ControlSet...'
-        stdout, status = run_cmd_report(cmd, out=true)
+        stdout, _status = run_cmd_report(cmd, true)
         ccs = stdout.split("\n").find { |s| s.start_with?('"Current"') }.split(':')[1].to_i
         ccs
     end
@@ -636,7 +693,7 @@ _EOF_"
               " -a #{disk}"\
               ' -i'\
               " #{cmd}"
-        _stdout, _stderr, status = Open3.capture3(cmd)
+        _stdout, _stderr, _status = Open3.capture3(cmd)
     end
 
     def package_injection(disk, osinfo)
@@ -647,12 +704,12 @@ _EOF_"
             if osinfo['name'] == 'windows'
                 win_context_inject(disk, osinfo)
             else
-                puts 'Unsupported guest OS or couldn\'t find context file for context injection. Please instasll manually.'.brown
+                puts 'Unsupported guest OS or couldn\'t find context file for context injection. Please install manually.'.brown
             end
         else
             # Perhaps have a separet function that does a bit more....stuff...
             print 'Injecting one-context...'
-            stdout, status = run_cmd_report(injector_cmd, out=true)
+            _stdout, status = run_cmd_report(injector_cmd, true)
             if !status.success?
                 puts 'Context injection command appears to have failed.'
             end
@@ -672,7 +729,7 @@ _EOF_"
 
         if @options[:qemu_ga_linux] && osinfo['name'] != 'windows'
             install_pkg(disk, 'qemu-guest-agent')
-        end        
+        end
     end
 
     def get_objects(vim, type, properties, folder = nil)
@@ -725,6 +782,22 @@ _EOF_"
         pc.RetrieveProperties(:specSet => [filterSpec])
     end
 
+    def build_v2v_hybrid_cmd(disk)
+        # virt-v2v
+        #   -i disk
+        #   '/path/to/local/disk'
+        #   -o local
+        #   -os /path/to/working/folder
+        #   -of [qcow2|raw]
+        command = "#{@options[:v2v_path]} -v --machine-readable"\
+                  ' -i disk'\
+                  " #{disk}"\
+                  ' -o local'\
+                  " -os #{@options[:work_dir]}/conversions/"\
+                  " -of #{@options[:format]}"
+        command
+    end
+
     def build_v2v_vc_cmd
         # virt-v2v 
         #   -ic 'vpx://UserName@vCenter.Host.FQDN
@@ -746,10 +819,9 @@ _EOF_"
             end
         end
 
-        v2v_path = 'virt-v2v' # gather this information eventually
         url = "vpx://#{CGI::escape(@options[:vuser])}@#{@options[:vcenter]}"\
               "/#{dc[:name]}/#{cluster[:name]}/#{host[:name]}?no_verify=1"
-        command = "#{v2v_path} -v --machine-readable"\
+        command = "#{@options[:v2v_path]} -v --machine-readable"\
                   " -ic #{url}"\
                   " -ip #{@options[:work_dir]}/vpassfile"\
                   ' -o local'\
@@ -776,10 +848,9 @@ _EOF_"
         ds_path = @props['config'][:datastoreUrl].find { |ds| ds[:name] == ds_name }
         vmx_fullpath = "#{ds_path[:url]}/#{vmx_relpath}"
 
-        v2v_path = 'virt-v2v'
         url = "ssh://#{CGI::escape(@options[:esxi_user])}@#{@options[:esxi_ip]}"\
               "/#{vmx_fullpath}"
-        command = "#{v2v_path} -v --machine-readable"\
+        command = "#{@options[:v2v_path]} -v --machine-readable"\
                   ' -i vmx'\
                   ' -it ssh'\
                   " #{url}"\
@@ -805,7 +876,7 @@ _EOF_"
         #   -os /path/to/working/folder 
         #   -of [qcow2|raw]
         dc,cluster,host = nil
-        pobj = props['runtime.host']
+        pobj = @props['runtime.host']
         while dc.nil? || cluster.nil? || host.nil?
             host    = pobj if pobj.class == RbVmomi::VIM::HostSystem
             cluster = pobj if pobj.class == RbVmomi::VIM::ClusterComputeResource
@@ -822,7 +893,7 @@ _EOF_"
         ssl_client.connect
         
         ssl_client.puts("GET / HTTP/1.0\r\n\r\n")
-        response = ssl_client.read
+        ssl_client.read
         
         ssl_client.sysclose
         tcp_client.close
@@ -832,10 +903,9 @@ _EOF_"
         
         puts "Certificate thumbprint: #{@options[:vddk_thumb]}"
 
-        v2v_path = 'virt-v2v' # gather this information eventually
         url = "vpx://#{CGI::escape(@options[:vuser])}@#{@options[:vcenter]}"\
               "/#{dc[:name]}/#{cluster[:name]}/#{host[:name]}?no_verify=1"
-        command = "#{v2v_path} -v --machine-readable"\
+        command = "#{@options[:v2v_path]} -v --machine-readable"\
                   " -ic #{url}"\
                   " -ip #{@options[:work_dir]}/vpassfile"\
                   ' -it vddk'\
@@ -853,7 +923,14 @@ _EOF_"
     #   and convert it before using qemu-img convert over nbdkit connection.  Outputs a
     #   converted qcow2/raw image and libvirt compatible xml definition.
     def run_v2v_conversion
-        if @options[:esxi_ip]
+        if @options[:hybrid]
+            vc_disks = @props['config'][:hardware][:device].grep(RbVmomi::VIM::VirtualDisk).sort_by(&:key)
+            if vc_disks.size > 1
+                raise "Hybrid function currently only works with single disk VM's."
+            end
+            local_disk = hybrid_downloader(vc_disks)[0]
+            command = build_v2v_hybrid_cmd(local_disk)
+        elsif @options[:esxi_ip]
             command = build_v2v_esx_cmd
         elsif @options[:vddk_path]
             command = build_v2v_vddk_cmd
@@ -893,7 +970,7 @@ _EOF_"
             end
 
             disks_on_file = Dir.glob("#{@options[:work_dir]}/conversions/#{@options[:name]}*").reject {|f| f.end_with?('.xml')}.sort
-            puts "#{disks_on_file.length} disks on the local disk for this VM: #{disks_on_file.to_s}"
+            puts "#{disks_on_file.length} disks on the local disk for this VM: #{disks_on_file}"
             if disks_on_file.length == 0
                 raise "There are no disks on the local filesystem due to previous failures."
             end
@@ -902,16 +979,19 @@ _EOF_"
             img_ids
         rescue StandardError => e
             # puts "Error raised: #{e.message}"
-            if @options[:fallback] && !@props['config'][:guestFullName].include?('Windows')
+            if @props['config'][:guestFullName].include?('Windows')
+                puts 'Windows not supported for fallback conversion.'.brown
+                raise e
+            end
+            if @options[:fallback]
                 puts "Error encountered, fallback enabled. Attempting Custom Conversion now."
-                cleanup_directories(passwords=false, disks=true)
+                cleanup_disks
+                run_custom_conversion
+            elsif @options[:hybrid]
+                puts "Hybrid conversion failed, attempting manual conversion."
                 run_custom_conversion
             else
-                if @props['config'][:guestFullName].include?('Windows')
-                    puts 'Windows not supported for fallback conversion.'.brown
-                else
-                    puts "Failed. Fallback is not enabled. Raising error.".red
-                end
+                puts "Failed. Fallback is not enabled. Raising error.".red
                 raise e
             end
         end
@@ -985,6 +1065,7 @@ _EOF_"
             return
         end
         print "\n"
+        STDOUT.flush
         case line['type']
         when 'error'
             print "DEBUG INFO: #{line['message']}".bg_red
@@ -1007,6 +1088,7 @@ _EOF_"
         else
             print "#{line}".bg_cyan
         end
+        STDOUT.flush
     end
 
     def handle_stderr(line)
@@ -1056,35 +1138,52 @@ _EOF_"
         img_ids
     end
 
-    def run_custom_conversion
-        # Things that need to happen in this function:
-        # Copy the disk(s) over here from the properties data, keep them in order
-        # Convert the disk(s) to QCOW2 or RAW format (in options)
-        # Install virtio drivers and one context, anything else required
-        #   using guestfish
-        vc_disks = @props['config'][:hardware][:device].grep(RbVmomi::VIM::VirtualDisk).sort_by(&:key)
-        disk_n = 0
+    def hybrid_downloader(vc_disks)
         local_disks = []
         puts 'Downloading disks from vCenter storage to local disk'
         vc_disks.each_with_index do |d, i|
             # download each disk to the work dir
             remote_file = d[:backing][:fileName].split(' ')[1].gsub(/\.vmdk$/, '-flat.vmdk')
-            local_file = @options[:work_dir] + '/conversions/' + @props['name'] + "-disk#{disk_n}"
-            d[:backing][:datastore].download(remote_file, local_file + '.vmdk')
+            local_file = @options[:work_dir] + '/transfers/' + @props['name'] + "-disk#{i}.vmdk"
+            d[:backing][:datastore].download(remote_file, local_file)
+            local_disks.append(local_file)
+        end
 
-            puts "Downloaded disk ##{i}. Converting. This may take a long time for larger disks."
+        local_disks
+    end
+
+    def run_custom_conversion
+        if !@options[:hybrid]
+            vmdks = []
+            vc_disks = @props['config'][:hardware][:device].grep(RbVmomi::VIM::VirtualDisk).sort_by(&:key)
+            puts 'Downloading disks from vCenter storage to local disk'
+            vc_disks.each_with_index do |d, i|
+                # download each disk to the work dir
+                remote_file = d[:backing][:fileName].split(' ')[1].gsub(/\.vmdk$/, '-flat.vmdk')
+                local_file = @options[:work_dir] + '/conversions/' + @props['name'] + "-disk#{i}"
+                d[:backing][:datastore].download(remote_file, local_file + '.vmdk')
+                vmdks.append(local_file)
+                puts "Downloaded disk ##{i}."
+            end
+        else
+            vmdks = Dir.glob("#{@options[:work_dir]}/transfers/*.vmdk").map { |f| f.chomp('.vmdk') }
+        end
+
+        puts 'Converting disks locally'
+        local_disks = []
+        vmdks.each_with_index do |d, i|
             # -p to show Progress, -S 4k to set Sparse Cluster Size to 4kb, -W for out of order writes
             t0 = Time.now
             command = 'qemu-img convert'\
                       " -O #{@options[:format]}"\
                       ' -p -S 4k -W'\
-                      " #{local_file}.vmdk #{local_file}.#{@options[:format]}"
+                      " #{d}.vmdk #{d}.#{@options[:format]}"
             system(command) # don't need to interact or anything, just display the output straight.
             puts "Disk #{i} converted in #{(Time.now - t0).round(2)} seconds. Deleting vmdk file".green
             #puts "that's a lie, not deleting the vmdk".bg_blue
-            command = "rm -f #{local_file}.vmdk"
+            command = "rm -f #{d}.vmdk"
             system(command)
-            local_disks.append("#{local_file}.#{@options[:format]}")
+            local_disks.append("#{d}.#{@options[:format]}")
         end
 
         create_one_images(local_disks)
@@ -1137,7 +1236,7 @@ _EOF_"
 
                 if !guest_network
                     # no guest network information, but still have networks...
-                    puts "Found network '#{n[:backing][:network][:name]}' but no guest network information. Adding blank NIC."
+                    puts "Found network '#{vc_nic_backing[n[:key]]}' but no guest network information. Adding blank NIC."
                     vm_template.add_element('//VMTEMPLATE', net_templ)
                     next
                 end
@@ -1222,9 +1321,11 @@ _EOF_"
         options[:work_dir] << "/#{name}"
         @options = options
         conv_path = "#{@options[:work_dir]}/conversions/"
+        tran_path = "#{@options[:work_dir]}/transfers/"
         begin
             Dir.mkdir(@options[:work_dir]) if !Dir.exist?(@options[:work_dir])
             Dir.mkdir(conv_path) if !Dir.exist?(conv_path)
+            Dir.mkdir(tran_path) if !Dir.exist?(tran_path)
 
             password_file = File.open("#{@options[:work_dir]}/vpassfile", 'w')
             password_file.print @options[:vpass]
@@ -1239,7 +1340,7 @@ _EOF_"
             convert_vm
         ensure
             password_file.close unless password_file.nil? or password_file.closed?
-            cleanup_directories(passwords=true, disks=true)
+            cleanup_all
         end
     end
 
@@ -1276,7 +1377,7 @@ _EOF_"
         available_filters = [:name, :state]
         filters = nil
         if (available_filters & options.keys).any?
-            filters = options.select { |key,value| available_filters.include?(key) }
+            filters = options.select { |key,_| available_filters.include?(key) }
         end
         vms.each do |vm|
             props = vm.to_hash

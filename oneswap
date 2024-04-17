@@ -239,6 +239,11 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'If the virt-v2v conversion fails, attempt the OpenNebula Custom Conversion process.'
     }
 
+    HYBRID = {
+        :name => 'hybrid',
+        :large => '--hybrid',
+    }
+
     WIN_GA = {
         :name => 'qemu_ga_win',
         :large => '--win-qemu-ga /path/to/iso',
@@ -249,7 +254,7 @@ CommandParser::CmdParser.new(ARGV) do
     LNX_GA = {
         :name => 'qemu_ga_linux',
         :large => '--qemu-ga',
-        :description => 'Install qemu-guest-agent package to a Linux guest'
+        :description => 'Install qemu-guest-agent package to a Linux guest, useful with --custom or --fallback'
     }
 
     VIRTIO = {
@@ -280,12 +285,33 @@ CommandParser::CmdParser.new(ARGV) do
         :format => Integer
     }
 
+    ONE_DS = {
+        :name => 'one_datastore',
+        :large => '--one-sys-ds id',
+        :description => 'ID of the System Datastore in OpenNebula the VM should be scheduled to',
+        :format => Integer
+    }
+
+    ONE_DS_CLUSTER = {
+        :name => 'one_datastore_cluster',
+        :large => '--one-ds-cluster id',
+        :description => 'ID of the Cluster in OpenNebula the System Datastore should be scheduled to',
+        :format => Integer
+    }
+
+    V2V_PATH = {
+        :name => 'v2v_path',
+        :large => '--v2v-path /path/to/custom/v2v',
+        :description => 'Path to custom virt-v2v executable if necessary',
+        :format => String
+    }
+
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
     V2V_OPTS = [WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
-    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM,
-                   ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH,
+                   ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS
 
     set :option, CommandParser::OPTIONS + OpenNebulaHelper::CLIENT_OPTIONS
 
@@ -352,6 +378,9 @@ CommandParser::CmdParser.new(ARGV) do
         begin
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
             raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk]
+            if options[:hybrid] && ( options[:custom] || options[:esxi_ip] || options[:vddk] )
+                raise 'Cannot use Hybrid option with Custom, ESXi, or VDDK options.'
+            end
             if options[:virtio_path] && !File.exist?(options[:virtio_path])
                 raise "Windows VirtIO ISO cannot be found at #{options[:virtio_path]}"
             end
@@ -375,6 +404,7 @@ CommandParser::CmdParser.new(ARGV) do
             options[:esxi_user]    ||= 'root'
             options[:datastore]    ||= 1
             options[:virt_tools]   ||= '/usr/share/virt-tools'
+            options[:v2v_path]     ||= 'virt-v2v'
 
             helper.convert(args[0], options)
         rescue StandardError => e
