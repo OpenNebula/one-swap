@@ -319,14 +319,13 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         end
         if @options[:delete] && disks
             puts "Deleting vdisks in #{"#{@options[:work_dir]}/conversions/"}"
-            # FileUtils.rm_rf("#{@options[:work_dir]}/conversions/")
+            FileUtils.rm_rf("#{@options[:work_dir]}/conversions/")
         else
             puts "NOT deleting vdisks in #{"#{@options[:work_dir]}/conversions/"}"
         end
     end
 
-    # Translate vCenter Definition to OpenNebula Template
-    def translate_template(disks)
+    def create_base_template
         vmt = OpenNebula::Template.new(OpenNebula::Template.build_xml, @client)
         vmt.add_element('//VMTEMPLATE', {
             "NAME" => "#{@props['name']}",
@@ -340,7 +339,10 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             }
         })
 
-        # Default to BIOS if UEFI is not defined.
+        vmt
+    end
+
+    def template_firmware
         fw = { "OS" => { "FIRMWARE" => "BIOS" }}
         if @props['config'][:firmware] == 'efi'
             if @props['config'][:bootOptions][:efiSecureBootEnabled]
@@ -352,8 +354,15 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             fw['OS']['MACHINE'] = 'q35'
         end
 
-        vmt.add_element('//VMTEMPLATE', fw)
+        fw
+    end
 
+    # Translate vCenter Definition to OpenNebula Template
+    def create_vm_template
+        vmt = create_base_template
+        vmt.add_element('//VMTEMPLATE', template_firmware)
+
+        # add any notes as the description
         if @props['config'][:annotation] && !@props['config'][:annotation].empty?
             notes = @props['config'][:annotation]
                     .gsub('\\', '\\\\')
@@ -361,27 +370,15 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             vmt.add_element('//VMTEMPLATE', { "DESCRIPTION" => "#{notes}" })
         end
 
-        # Add disks here
-        disks.each do |d|
-            vmt.add_element('//VMTEMPLATE', {"DISK" => { "IMAGE_ID" => "#{d}" }})
-        end
-
         logo = nil
         case @props['guest.guestFullName']
-        when /CentOS/i
-            logo = 'images/logos/centos.png'
-        when /Debian/i
-            logo = 'images/logos/debian.png'
-        when /Red Hat/i
-            logo = 'images/logos/redhat.png'
-        when /Ubuntu/i
-            logo = 'images/logos/ubuntu.png'
-        when /Windows XP/i
-            logo = 'images/logos/windowsxp.png'
-        when /Windows/i
-            logo = 'images/logos/windows8.png'
-        when /Linux/i
-            logo = 'images/logos/linux.png'
+        when /CentOS/i;     logo = 'images/logos/centos.png'
+        when /Debian/i;     logo = 'images/logos/debian.png'
+        when /Red Hat/i;    logo = 'images/logos/redhat.png'
+        when /Ubuntu/i;     logo = 'images/logos/ubuntu.png'
+        when /Windows XP/i; logo = 'images/logos/windowsxp.png'
+        when /Windows/i;    logo = 'images/logos/windows8.png'
+        when /Linux/i;      logo = 'images/logos/linux.png'
         end
         vmt.add_element('//VMTEMPLATE', {'LOGO' => logo}) if logo
 
@@ -390,12 +387,9 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
     def ip_version(ip_address)
         ip = IPAddr.new(ip_address) rescue nil
-        if ip
-            return 'IP4' if ip.ipv4?
-            return 'IP6' if ip.ipv6?
-        else
-            return nil
-        end
+        return nil if !ip
+        return 'IP4' if ip.ipv4?
+        return 'IP6' if ip.ipv6?
     end
 
     # Yoinked from StackOverflow question 10262235
@@ -510,7 +504,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 context_basename = File.basename(context_fullpath)
                 cmd = 'virt-customize -q'\
                       " -a #{disk}"\
-                      ' --run-command epel-release'\
+                      ' --install epel-release'\
                       " --copy-in #{context_fullpath}:/tmp"\
                       " --install /tmp/#{context_basename}"\
                       " --delete /tmp/#{context_basename}"\
@@ -681,9 +675,7 @@ _EOF_"
         end        
     end
 
-    # Get objects 
-    def get_objects(vi_client, type, properties, folder = nil)
-        vim = vi_client
+    def get_objects(vim, type, properties, folder = nil)
         pc = vim.serviceInstance.content.propertyCollector
         viewmgr = vim.serviceInstance.content.viewManager
         # determine if we need to look in specific folders
@@ -900,7 +892,7 @@ _EOF_"
                 raise "virt-v2v exited in error code #{exit_status} but did not provide an error"
             end
 
-            disks_on_file = Dir.glob("#{@options[:work_dir]}/conversions/#{@options[:name]}*").sort
+            disks_on_file = Dir.glob("#{@options[:work_dir]}/conversions/#{@options[:name]}*").reject {|f| f.end_with?('.xml')}.sort
             puts "#{disks_on_file.length} disks on the local disk for this VM: #{disks_on_file.to_s}"
             if disks_on_file.length == 0
                 raise "There are no disks on the local filesystem due to previous failures."
@@ -1019,34 +1011,25 @@ _EOF_"
 
     def handle_stderr(line)
         return if line.start_with?('nbdkit: debug:')
-        prefixes = [
-            'guestfsd: <= list_filesystems',
-            'guestfsd: <= inspect_os',
-            'mpstats:',
-            'commandrvg: /usr/sbin/update-initramfs'
-        ]
-
-        case prefixes.detect { |e| line.start_with?(e) }
-        when prefixes[0]
-            print "\n"
+        return if line.start_with?('nbdkit: curl[4]: debug:')
+        prefixes = {
+            'guestfsd: <= list_filesystems' => "Inspecting filesystems, this can take several minutes".green,
+            'guestfsd: <= inspect_os' => "Inspecting guest OS".green,
+            'mpstats:' => "Gathering mountpoint stats and converting guest".green,
+            'commandrvg: /usr/sbin/update-initramfs' => "Generating initramfs, this can take several minutes(20+) on many systems. Please be patient and do not interrupt the process.".brown,
+            'chroot: /sysroot: running \'librpm\'' => "Querying RPMs with librpm, this can take a while".green,
+            'dracut: *** Creating image file' => "Creating boot image with dracut".green
+          }
+          
+          line_prefix = prefixes.keys.detect { |e| line.start_with?(e) }
+          
+          if line_prefix
+            print "\n#{prefixes[line_prefix]}"
             STDOUT.flush
-            print "Inspecting filesystems...this can take several minutes".green
-        when prefixes[1]
-            print "\n"
-            STDOUT.flush
-            print "Inspecting guest OS".green
-        when prefixes[2]
-            print "\n"
-            STDOUT.flush
-            print "Gathering mountpoint stats and converting guest".green
-        when prefixes[3]
-            print "\n"
-            STDOUT.flush
-            print "Generating initramfs, this can take several minutes(20+) on many systems. Please be patient and do not interrupt the process.".brown
-        else
-            print '.' if not @dotskip
+          else
+            print '.' unless @dotskip
             LOGGER[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
-        end
+          end
     end
 
     def create_one_images(disks)
@@ -1098,7 +1081,7 @@ _EOF_"
                       " #{local_file}.vmdk #{local_file}.#{@options[:format]}"
             system(command) # don't need to interact or anything, just display the output straight.
             puts "Disk #{i} converted in #{(Time.now - t0).round(2)} seconds. Deleting vmdk file".green
-            # puts "that's a lie, not deleting the vmdk".bg_blue
+            #puts "that's a lie, not deleting the vmdk".bg_blue
             command = "rm -f #{local_file}.vmdk"
             system(command)
             local_disks.append("#{local_file}.#{@options[:format]}")
@@ -1107,16 +1090,23 @@ _EOF_"
         create_one_images(local_disks)
     end
 
-    def add_one_nics(vm_template)
+    def get_vcenter_nic_info
         network_types = [
             RbVmomi::VIM::VirtualVmxnet,
             RbVmomi::VIM::VirtualVmxnet2,
             RbVmomi::VIM::VirtualVmxnet3
         ]
-        vc_nets = @props['config'][:hardware][:device].select { |d|
+        # Get and sort the network interfaces
+        vc_nics = @props['config'][:hardware][:device].select { |d|
             network_types.any? { |nt| d.is_a?(nt) }
         }.sort_by(&:key)
 
+        nic_backing = vc_nics.map { |n| [n[:key], n[:backing][:network][:name]] }.to_h
+
+        return vc_nics, nic_backing
+    end
+
+    def add_one_nics(vm_template, vc_nics, vc_nic_backing)
         netmap = {}
         one_networks = OpenNebula::VirtualNetworkPool.new(@client)
         one_networks.info
@@ -1127,11 +1117,10 @@ _EOF_"
         end
         # puts netmap
 
-        if @options[:network] && vc_nets.length > 0
-            # Change this to check existing ONE vnets for VCENTER_NETWORK_MATCH attribute instead, per network.
-            puts "Adding #{vc_nets.length} NICs, defaulting to Network ID #{@options[:network]} if there is no match"
+        if @options[:network] && vc_nics.length > 0
+            puts "Adding #{vc_nics.length} NICs, defaulting to Network ID #{@options[:network]} if there is no match"
             nic_number=0
-            vc_nets.each do |n|
+            vc_nics.each do |n|
                 # find nic with same device key
                 guest_network = @props['guest.net'].find { |gn| gn[:deviceConfigId] == n[:key] }
                 net_templ = {'NIC' => {
@@ -1142,8 +1131,8 @@ _EOF_"
                     net_templ['NIC']['MAC'] = n[:macAddress]
                 end
 
-                if !netmap.has_key?(n[:backing][:network][:name])
-                    net_templ['NIC']['NETWORK_ID'] = "#{netmap[n[:backing][:network][:name]]}"
+                if !netmap.has_key?(vc_nic_backing[n[:key]])
+                    net_templ['NIC']['NETWORK_ID'] = "#{vc_nic_backing[n[:key]]}"
                 end
 
                 if !guest_network
@@ -1230,9 +1219,11 @@ _EOF_"
                   "#{options[:work_dir]} doesn't exist"
         end
         options[:name] = name
+        options[:work_dir] << "/#{name}"
         @options = options
         conv_path = "#{@options[:work_dir]}/conversions/"
         begin
+            Dir.mkdir(@options[:work_dir]) if !Dir.exist?(@options[:work_dir])
             Dir.mkdir(conv_path) if !Dir.exist?(conv_path)
 
             password_file = File.open("#{@options[:work_dir]}/vpassfile", 'w')
@@ -1381,6 +1372,7 @@ _EOF_"
             'runtime.host'
         ]
 
+        puts 'Gathering VM properties'
         vm_pool = get_objects(vi_client, 'VirtualMachine', properties)
         vm = vm_pool.find { |r| r['name'] == @options[:name] }
         if vm.nil?
@@ -1388,25 +1380,37 @@ _EOF_"
         end
 
         @props = vm.to_hash
+        LOGGER[:stdout].puts @props.to_s if DEBUG
 
+        # Some basic preliminary checks
         if @props['summary.runtime.powerState'] != 'poweredOff'
             raise "Virtual Machine #{@options[:name]} is not Powered Off.".red
         end
-
         if !@props['snapshot'].nil?
             raise "Virtual Machine #{@options[:name]} cannot have existing snapshots.".red
         end
-
         if @props['config'][:guestFullName].include?('Windows') && @options[:custom_convert]
             raise "Windows is not supported in OpenNebula's Custom Conversion process".red
         end
 
+        # Gather NIC backing early because it makes a call to vCenter, 
+        # which may not be authenticated after X hours of converting disks
+        vc_nics, vc_nic_backing = get_vcenter_nic_info 
+        
+        vm_template = create_vm_template
+
+        puts 'did it'
+        exit 0
         img_ids = @options[:custom_convert] ? run_custom_conversion : run_v2v_conversion
 
         puts img_ids.nil? ? "No Images ID's reported being created".red : "Created images: #{img_ids}".green
 
-        vm_template = translate_template(img_ids)
-        vm_template = add_one_nics(vm_template)
+        img_ids.each do |i|
+            vmt.add_element('//VMTEMPLATE', {"DISK" => { "IMAGE_ID" => "#{i}" }})
+        end
+
+        # Add the NIC's now, after any conversion stuff has happened since it creates OpenNebula objects
+        vm_template = add_one_nics(vm_template, vc_nics, vc_nic_backing)
 
         print "Allocating the VM template..."
 

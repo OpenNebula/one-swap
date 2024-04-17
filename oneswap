@@ -171,7 +171,7 @@ CommandParser::CmdParser.new(ARGV) do
         :name => 'work_dir',
         :short => '-w directory',
         :large => '--work-dir directory',
-        :description => 'Directory where disk conversion takes place, Default: /tmp',
+        :description => 'Directory where disk conversion takes place, will make subdir for each VM, Default: /tmp/',
         :format => String
     }
 
@@ -266,11 +266,26 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
+    ONE_CLUSTER = {
+        :name => 'one_cluster',
+        :large => '--one-cluster id',
+        :description => 'ID of the Cluster in OpenNebula the VM Template should be scheduled to',
+        :format => Integer
+    }
+
+    ONE_HOST = {
+        :name => 'one_host',
+        :large => '--one-host id',
+        :description => 'ID of the Host in OpenNebula the VM Template should be scheduled to',
+        :format => Integer
+    }
+
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
+    V2V_OPTS = [WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
-    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA,
-                    DELETE, CONTEXT, FALLBACK, VDDK, CUSTOM, RHSRVANY] + AUTH_OPTS + ESXI_OPTS
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM,
+                   ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS
 
     set :option, CommandParser::OPTIONS + OpenNebulaHelper::CLIENT_OPTIONS
 
@@ -333,7 +348,7 @@ CommandParser::CmdParser.new(ARGV) do
 
     EOT
 
-    command :convert, conv_desc, :name, :options => CONVERT_OPTS do
+    command :convert, conv_desc, :vm_name, :options => CONVERT_OPTS do
         begin
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
             raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk]
@@ -347,7 +362,6 @@ CommandParser::CmdParser.new(ARGV) do
                 vcv = `virt-customize --version`.split(' ')[1]
                 if Gem::Version.new(vcv) <= Gem::Version.new('1.49.9')
                     puts 'Windows VirtIO and QEMU Guest Agent require virt-customize >= 1.49.9.'
-                    # exit 1 # otherwise, do:
                     options[:virtio_path] = options[:qemu_ga_win] = false
                 end
             end
