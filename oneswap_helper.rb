@@ -1109,7 +1109,13 @@ _EOF_"
             print "\n#{prefixes[line_prefix]}"
             STDOUT.flush
           else
-            print '.' unless @dotskip
+            if !@dotskip
+                @last_dot_time ||= Time.now
+                if Time.now - @last_dot_time >= 0.1  # Check if 100ms have elapsed since the last dot
+                    print '.'
+                    @last_dot_time = Time.now
+                end
+            end
             LOGGER[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
           end
     end
