@@ -1,3 +1,4 @@
+# coding: utf-8
 # -------------------------------------------------------------------------- #
 # Copyright 2002-2024, OpenNebula Project, OpenNebula Systems                #
 #                                                                            #
@@ -1281,6 +1282,12 @@ _EOF_"
         vc_nics = @props['config'][:hardware][:device].select { |d|
             network_types.any? { |nt| d.is_a?(nt) }
         }.sort_by(&:key)
+
+        vc_nics.each_with_index do |d, i|
+          puts 'the ID of the portgroup is: ' + d[:backing][:port][:portgroupKey]
+          puts 'the UUID of the dvswitch is: ' +  d[:deviceInfo][:summary]
+          puts 'the name of the network interface on the VM is: ' +  d[:deviceInfo][:label]
+        end
 
         nic_backing = vc_nics.map { |n| [n[:key], n[:backing][:network][:name]] }.to_h
 
