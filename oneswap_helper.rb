@@ -1198,6 +1198,14 @@ _EOF_"
     end
 
     def get_vcenter_nic_info
+        con_ops = connection_options('vm', @options)
+        vi_client = RbVmomi::VIM.connect(con_ops)
+        properties = [
+            'name',
+            'key'
+        ]
+        distributed_networks = get_objects(vi_client, 'DistributedVirtualPortgroup', properties)
+
         network_types = [
             RbVmomi::VIM::VirtualVmxnet,
             RbVmomi::VIM::VirtualVmxnet2,
@@ -1208,20 +1216,16 @@ _EOF_"
             network_types.any? { |nt| d.is_a?(nt) }
         }.sort_by(&:key)
 
-        vc_nics.each_with_index do |d, i|
-          puts 'the ID of the portgroup is: ' + d[:backing][:port][:portgroupKey]
-          puts 'the UUID of the dvswitch is: ' +  d[:deviceInfo][:summary]
-          puts 'the name of the network interface on the VM is: ' +  d[:deviceInfo][:label]
-        end
-
-        # nic_backing = vc_nics.map { |n| [n[:key], n[:backing][:network][:name]] }.to_h
-        nic_backing = vc_nics.map do |n| 
+        nic_backing = vc_nics.map do |n|
             if n[:backing].is_a? RbVmomi::VIM::VirtualEthernetCardDistributedVirtualPortBackingInfo
-                [n[:key], n[:backing][:port][:portgroupKey]]
+                ds_network = distributed_networks.find { |dn| dn.to_hash['key'] == n[:backing][:port][:portgroupKey] }
+                [n[:key], ds_network.to_hash['name']]
             else
                 [n[:key], n[:backing][:network][:name]]
             end
         end.compact.to_h
+
+        puts 'The backing of the network interface is: ' + nic_backing.to_s
 
         return vc_nics, nic_backing
     end
