@@ -1051,6 +1051,7 @@ _EOF_"
         raise(err.red) if err
 
         err = error_list.detect { |e| line['message'].start_with?(e[:text]) }
+        puts "DEBUG INFO: #{line['message']}".red
         err ? raise(err[:error].red)  : raise("Unknown error occurred: #{line['message']}".bg_red)
     end
 
@@ -1213,7 +1214,14 @@ _EOF_"
           puts 'the name of the network interface on the VM is: ' +  d[:deviceInfo][:label]
         end
 
-        nic_backing = vc_nics.map { |n| [n[:key], n[:backing][:network][:name]] }.to_h
+        # nic_backing = vc_nics.map { |n| [n[:key], n[:backing][:network][:name]] }.to_h
+        nic_backing = vc_nics.map do |n| 
+            if n[:backing].is_a? RbVmomi::VIM::VirtualEthernetCardDistributedVirtualPortBackingInfo
+                [n[:key], n[:backing][:port][:portgroupKey]]
+            else
+                [n[:key], n[:backing][:network][:name]]
+            end
+        end.compact.to_h
 
         return vc_nics, nic_backing
     end
