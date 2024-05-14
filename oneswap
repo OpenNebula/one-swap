@@ -53,6 +53,7 @@ require 'command_parser'
 require 'rbvmomi'
 require 'one_helper/oneswap_helper'
 require 'fileutils'
+require 'webrick'
 require 'openssl'
 require 'socket'
 require 'ipaddr'
@@ -307,6 +308,26 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
+    HTTP_TRANSFER = {
+        :name => 'http_transfer',
+        :large => '--http-transfer',
+        :description => 'Transfer images over HTTP, for use with a separate oneswap server'
+    }
+
+    HTTP_HOST = {
+        :name => 'http_host',
+        :large => '--http-host host',
+        :description => 'IP of this machine to transfer images over HTTP, will also try to detect it if not specified',
+        :format => String
+    }
+
+    HTTP_PORT = {
+        :name => 'http_port',
+        :large => '--http-port port',
+        :description => 'Port to transfer images over HTTP, for use with a separate oneswap server. Default: 29869',
+        :format => Integer
+    }
+
     CONF_FILE = {
         :name => 'config_file',
         :large => '--config-file /path/to/custom/config.yaml',
@@ -315,11 +336,12 @@ CommandParser::CmdParser.new(ARGV) do
     }
 
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
-    V2V_OPTS = [WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY]
+    V2V_OPTS = [V2V_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY]
+    HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
-    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE,
-                   ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, CONF_FILE,
+                   ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
 
     set :option, CommandParser::OPTIONS + OpenNebulaHelper::CLIENT_OPTIONS
 
@@ -387,6 +409,9 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:config_file] && !File.exist?(options[:config_file])
                 raise "Unable to find the config file at #{options[:config_file]}"
             end
+            cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
+            options.merge!(cfg_file) if cfg_file
+
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
             raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk]
             if options[:hybrid] && ( options[:custom] || options[:esxi_ip] || options[:vddk] )
@@ -408,18 +433,26 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:fallback] && options[:custom_convert]
                 raise "Cannot define both --fallback and --custom."
             end
-            options[:work_dir]     ||= '/tmp'
-            options[:format]       ||= 'qcow2'
-            options[:max_retries]  ||= 0
-            options[:context_path] ||= '/var/lib/one/context/'
-            options[:esxi_user]    ||= 'root'
-            options[:datastore]    ||= 1
-            options[:virt_tools]   ||= '/usr/share/virt-tools'
-            options[:v2v_path]     ||= 'virt-v2v'
-            options[:config_file]  ||= '/var/lib/one/oneswap.yaml'
+            options[:work_dir]      ||= '/tmp'
+            options[:format]        ||= 'qcow2'
+            options[:context]       ||= '/var/lib/one/context/'
+            options[:esxi_user]     ||= 'root'
+            options[:datastore]     ||= 1
+            options[:virt_tools]    ||= '/usr/share/virt-tools'
+            options[:v2v_path]      ||= 'virt-v2v'
+            options[:config_file]   ||= '/var/lib/one/oneswap.yaml'
 
-            cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
-            options.merge!(cfg_file) if cfg_file
+            if options[:http_transfer]
+                options[:http_host] ||= Socket.ip_address_list.detect { |addrinfo| addrinfo.ipv4? && !addrinfo.ipv4_loopback? }&.ip_address
+                if options[:http_host].nil?
+                    raise "Unable to find an IP address for the host"
+                end
+                options[:http_port] ||= 29869
+            else
+                if options[:endpoint]
+                    raise 'Using alternative OpenNebula endpoint requires HTTP Transfer'
+                end
+            end
 
             helper.convert(args[0], options)
         rescue StandardError => e
