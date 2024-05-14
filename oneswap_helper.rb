@@ -1148,12 +1148,36 @@ _EOF_"
             if guest_info
                 package_injection(d, guest_info)
             end
+            if @options[:http_transfer]
+                path = "http://#{@options[:http_host]}:#{@options[:http_port]}/#{File.basename(d)}"
+                server_thread = Thread.new do
+                    server = WEBrick::HTTPServer.new({
+                        Port: @options[:http_port],
+                        DocumentRoot: File.dirname(d),
+                        RequestCallback: ->(req, res) {
+                            res['Cache-Control'] = 'public, max-age=3600'
+                        },
+                        MaxThreads: 8,
+                    })
+
+                    trap('INT') { server.shutdown }
+
+                    server.start
+                end
+            else
+                path = d
+            end
             img.add_element('//IMAGE', {
                     'NAME' => "#{@options[:name]}_#{i}",
                     'TYPE' => guest_info ? 'OS' : 'DATABLOCK',
-                    'PATH' => "#{d}"
+                    'PATH' => "#{path}"
                 })
+            puts "Allocating image #{i} in OpenNebula"
             rc = img.allocate(img.to_xml, @options[:datastore])
+            if @options[:http_transfer]
+                server_thread.kill
+                server_thread.join
+            end
             if rc.class == OpenNebula::Error
                 puts 'Failed to create image. Image Definition:'.red
                 puts img.to_xml
@@ -1512,7 +1536,7 @@ _EOF_"
         format_list.show(list, options)
     end
 
-    # Show VM
+    # Convert VM
     #
     # @param options [Hash] User CLI Options
     def convert_vm

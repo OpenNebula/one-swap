@@ -1,28 +1,48 @@
-#:vcenter:
-#:vuser:
-#:vpass:
-#:port:
-#:network:
-#:skip_ip:
-#:skip_mac:
-#:datastore:
-#:work_dir:
-#:format:
-#:delete:
-#:context:
-#:esxi_ip:
-#:esxi_user:
-#:esxi_pass:
-#:vddk_path:
-#:custom_convert:
-#:fallback:
-#:hybrid:
-#:qemu_ga_win:
-#:qemu_ga_linux:
-#:virtio_path:
-#:virt_tools:
-#:one_cluster:
-#:one_host:
-#:one_datastore:
-#:one_datastore_cluster:
-#:v2v_path:
+# OpenNebula Transfer Options, required for remote OpenNebula server
+#:http_transfer: false      # Enable HTTP transfer
+#:http_host: '192.168.0.10' # Hostname of this server
+#:http_port: 29869          # HTTP Port to transfer over
+
+# vCenter Authentication
+#:vcenter: '172.20.0.123'              # vCenter hostname or IP
+#:vuser: 'administrator@vsphere.local' # vCenter username
+#:vpass: 'changeme123'                 # vCenter password
+#:port: 443                            # vCenter port
+
+# ESXi Authentication
+#:esxi_ip: '172.20.0.123'  # ESXi hostname or IP
+#:esxi_user: 'root'        # ESXi username
+#:esxi_pass: 'changeme123' # ESXi password
+
+# Transfer Options
+#:custom_convert: # Uses OpenNebula's custom conversion process, useful for distributions which are not supported or fail to convert
+#:fallback:       # Fallback to OpenNebula's custom conversion process
+#:hybrid:         # Transfer using rbvmomi2's download, then convert with virt-v2v locally
+
+# NIC Options
+#:network: 1      # ID of the OpenNebula network
+#:skip_ip: false  # Do not create IP in OpenNebula network
+#:skip_mac: false # Do not create MAC in OpenNebula network
+
+# Datastore Options
+#:datastore: 1    # ID of the OpenNebula Image datastore
+
+# virt-v2v Options
+#:work_dir: '/tmp'                  # Directory where disk conversion takes place, will make subdir for each VM
+#:format: 'qcow2'                   # Disk format [ qcow2 | raw ]
+#:vddk_path:                        # Path to VDDK library
+#:qemu_ga_win:                      # Path to QEMU Guest Agent ISO for Windows
+#:qemu_ga_linux:                    # Install QEMU Guest Agent for Linux
+#:virtio_path:                      # Path to VirtIO drivers for Windows
+#:virt_tools: /usr/share/virt-tools # Path to the directory containing rhsrvany.exe
+#:v2v_path: 'virt-v2v'              # Path to virt-v2v
+
+# Extra Options
+#:delete: false                     # Delete the VM Disks after transfer
+#:context: '/var/lib/one/context/'  # Path to OpenNebula context packages
+
+# OpenNebula Placement Options
+#:one_cluster:           # ID of the OpenNebula Cluster
+#:one_host:              # ID of the OpenNebula Host
+#:one_datastore:         # ID of the OpenNebula System Datastore
+#:one_datastore_cluster: # ID of the OpenNebula Cluster for automatic Datastore assignment
