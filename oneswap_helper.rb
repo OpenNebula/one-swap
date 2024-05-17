@@ -467,6 +467,23 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         }                   # Use the block's return value as the method's
     end
 
+    def next_suffix(suffix)
+        return 'a' if suffix.empty?
+        chars = suffix.chars
+        if chars.last == 'z'
+            chars.pop
+            return next_suffix(chars.join) + 'a'
+        end
+
+        chars[-1] = chars.last.succ
+        chars.join
+    end
+
+    # Runs a command and reports its execution status and output.
+    #
+    # @param cmd [String] The command to be executed.
+    # @param out [Boolean] (optional) Whether to return the output or not.
+    # @return [Array] Returns an array containing the stdout and status if out is true.
     def run_cmd_report(cmd, out=false)
         t0 = Time.now
         stdout, stderr, status = nil
@@ -782,7 +799,7 @@ _EOF_"
         pc.RetrieveProperties(:specSet => [filterSpec])
     end
 
-    def build_v2v_hybrid_cmd(disk)
+    def build_v2v_hybrid_cmd(xml_file)
         # virt-v2v
         #   -i disk
         #   '/path/to/local/disk'
@@ -790,8 +807,8 @@ _EOF_"
         #   -os /path/to/working/folder
         #   -of [qcow2|raw]
         command = "#{@options[:v2v_path]} -v --machine-readable"\
-                  ' -i disk'\
-                  " #{disk}"\
+                  ' -i libvirtxml'\
+                  " #{xml_file}"\
                   ' -o local'\
                   " -os #{@options[:work_dir]}/conversions/"\
                   " -of #{@options[:format]}"
@@ -928,8 +945,10 @@ _EOF_"
             if vc_disks.size > 1
                 raise "Hybrid function currently only works with single disk VM's."
             end
-            local_disk = hybrid_downloader(vc_disks)[0]
-            command = build_v2v_hybrid_cmd(local_disk)
+            local_disks = hybrid_downloader(vc_disks)
+            local_xml = build_hybrid_xml(local_disks)
+            File.open(@options[:work_dir] + '/local.xml', 'w') { |f| f.write(local_xml) }
+            command = build_v2v_hybrid_cmd(local_xml)
         elsif @options[:esxi_ip]
             command = build_v2v_esx_cmd
         elsif @options[:vddk_path]
@@ -1156,6 +1175,39 @@ _EOF_"
         end
 
         local_disks
+    end
+
+    def build_hybrid_xml(disks)
+        domain_xml = <<-XML
+          <domain type='kvm'>
+            <name>#{@options[:name]}</name>
+            <memory unit='KiB'>1048576</memory>
+            <vcpu>2</vcpu>
+            <os>
+              <type>hvm</type>
+              <boot dev='hd'/>
+            </os>
+            <features>
+              <acpi/>
+              <apic/>
+              <pae/>
+            </features>
+            <devices>
+        XML
+        suffix = 'a'
+        disks.each_with_index do |d, i|
+            disk_xml = <<-XML
+              <disk type='file' device='disk'>
+                <driver name='qemu' type='#{options[:format]}'/>
+                <source file='#{d}'/>
+                <target dev='hd#{suffix}' bus='ide'/>
+              </disk>
+            XML
+            domain_xml << disk_xml
+            suffix = next_suffix(suffix)
+        end
+        domain_xml << '</devices></domain>'
+        domain_xml
     end
 
     def run_custom_conversion
