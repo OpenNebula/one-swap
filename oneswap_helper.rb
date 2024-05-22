@@ -630,7 +630,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             cmd = 'virt-customize -q'\
                   " -a #{disk}"\
                   " --copy-in #{context_fullpath}:/Temp"\
-                  " --firstboot-command 'msiexec -i c:\\Temp\\#{context_basename} /quiet && powershell -executionpolicy bypass -File \"C:\\Program Files (x86)\\Encore\\one-context-network\\one_context_networking_reset.ps1\" && del c:\\Temp\\#{context_basename}'"
+                  " --firstboot-command 'msiexec -i c:\\Temp\\#{context_basename} /quiet && del c:\\Temp\\#{context_basename}'"
         else
             # os gives versions, so check that instead of distro
             if osinfo['os'].start_with?('redhat-based') ||  osinfo['os'].start_with?('rhel')
