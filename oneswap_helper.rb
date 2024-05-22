@@ -355,6 +355,10 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             "HYPERVISOR" => "kvm"
         }
 
+        if @options[:cpu_model]
+            vm_template_config["CPU_MODEL"] = {"MODEL" => "#{@options[:cpu_model]}"}
+        end
+
         if !@options[:disable_contextualization]
             vm_template_config["CONTEXT"] = {
                 "NETWORK" => "YES",
@@ -619,23 +623,14 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def context_command(disk, osinfo)
-        puts "context_command"
         cmd = nil
         if osinfo['name'] == 'windows'
             context_fullpath = detect_context_package('windows')
-            puts "Context package: #{context_fullpath}"
             context_basename = File.basename(context_fullpath)
-            puts "Context basename: #{context_basename}"
-            # cmd = 'virt-customize -q'\
-            #       " -a #{disk}"\
-            #       " --copy-in #{context_fullpath}:/Temp"\
-            #       " --install /Temp/#{context_basename}"\
-            #       " --delete /Temp/#{context_basename}"
             cmd = 'virt-customize -q'\
                   " -a #{disk}"\
                   " --copy-in #{context_fullpath}:/Temp"\
-                  " --firstboot-command 'msiexec -i c:\\Temp\\one-context-network.msi /quiet && powershell -executionpolicy bypass -File \"C:\\Program Files (x86)\\Encore\\one-context-network\\one_context_networking_reset.ps1\"'"
-            puts "Context command: #{cmd}"
+                  " --firstboot-command 'msiexec -i c:\\Temp\\#{context_basename} /quiet && powershell -executionpolicy bypass -File \"C:\\Program Files (x86)\\Encore\\one-context-network\\one_context_networking_reset.ps1\"'"
         else
             # os gives versions, so check that instead of distro
             if osinfo['os'].start_with?('redhat-based') ||  osinfo['os'].start_with?('rhel')
@@ -652,7 +647,6 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                       " --install /tmp/#{context_basename}"\
                       " --delete /tmp/#{context_basename}"\
                       " --run-command 'systemctl enable network.service || exit 0'"
-                puts "Context command: #{cmd}"
             end
             if osinfo['os'].start_with?('ubuntu') || osinfo['os'].start_with?('debian')
                 context_fullpath = detect_context_package('debian')
@@ -713,7 +707,6 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def win_context_inject(disk, osinfo)
-        puts "win_context_inject"
         cmd = "guestfish <<_EOF_
 add #{disk}
 run
@@ -722,7 +715,6 @@ upload #{@options[:virt_tools]}/rhsrvany.exe /rhsrvany.exe
 upload #{detect_context_package('windows')} /one-context.msi
 _EOF_"
         print "Uploading context files to Windows disk..."
-        puts 'win_context_inject cmd: ' + cmd
         run_cmd_report(cmd)
 
         ccs = get_win_controlset(disk)
@@ -755,7 +747,6 @@ _EOF_"
         cmd = 'virt-customize'\
               " -a #{disk}"\
               " --inject-virtio-win #{@options[:virtio_path]}"
-        puts 'win_virtio_command cmd: ' + cmd
         cmd
     end
 
@@ -763,7 +754,6 @@ _EOF_"
         cmd = 'virt-customize'\
               " -a #{disk}"\
               " --inject-qemu-ga #{@options[:virtio_path]}"
-        puts 'qemu_ga_command cmd: ' + cmd
         cmd
     end
 
@@ -1139,7 +1129,6 @@ _EOF_"
         raise(err.red) if err
 
         err = error_list.detect { |e| line['message'].start_with?(e[:text]) }
-        puts "DEBUG INFO: #{line['message']}".red
         err ? raise(err[:error].red)  : raise("Unknown error occurred: #{line['message']}".bg_red)
     end
 
@@ -1334,8 +1323,6 @@ _EOF_"
             end
         end.compact.to_h
 
-        puts 'The backing of the network interface is: ' + nic_backing.to_s
-
         return vc_nics, nic_backing
     end
 
@@ -1348,7 +1335,7 @@ _EOF_"
             next if !n['//VNET/TEMPLATE/VCENTER_NETWORK_MATCH']
             netmap[n['//VNET/TEMPLATE/VCENTER_NETWORK_MATCH']] = n['//VNET/ID']
         end
-        # puts 'netmap is: ' + netmap.to_s
+        # puts netmap
 
         if @options[:network] && vc_nics.length > 0
             puts "Adding #{vc_nics.length} NICs, defaulting to Network ID #{@options[:network]} if there is no match"
@@ -1361,10 +1348,7 @@ _EOF_"
                 }}
 
                 if !@options[:skip_mac]
-                    puts "Adding MAC address to NIC##{nic_number}"
                     net_templ['NIC']['MAC'] = n[:macAddress]
-                else
-                    puts "Skipping MAC address for NIC##{nic_number}"
                 end
 
                 if !netmap.has_key?(vc_nic_backing[n[:key]])

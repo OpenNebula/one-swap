@@ -257,6 +257,13 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'Remove default contextualization options in OpenNebula. Default is for Network and SSH contextualization to be enabled.'
     }
 
+    CPU_MODEL = {
+        :name => 'cpu_model',
+        :large => '--cpu-model model_type',
+        :description => 'Set a Specific CPU model in OpenNebula. Default is None',
+        :format => String
+    }
+
     DATASTORE = {
         :name => 'datastore',
         :large => '--datastore id',
@@ -415,7 +422,7 @@ CommandParser::CmdParser.new(ARGV) do
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
-                   GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
+                   CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                    PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS
 
     set :option, CommandParser::OPTIONS + OpenNebulaHelper::CLIENT_OPTIONS
