@@ -162,6 +162,109 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'Do not pull MAC from vCenter to be created in OpenNebula'
     }
 
+    PERSISTENT_IMG = {
+        :name => 'persistent_img',
+        :large => '--persistent-img',
+        :description => 'Make the image disk persistent in OpenNebula',
+    }
+
+    GRAPHICS_TYPE = {
+        :name => 'graphics_type',
+        :large => '--graphics-type type',
+        :description => 'The Graphics type to enable in OpenNebula. Options: [vnc, sdl, spice]',
+        :format => String
+    }
+
+    GRAPHICS_LISTEN = {
+        :name => 'graphics_listen',
+        :large => '--graphics-listen ip',
+        :description => 'The Graphics Listen on IP in OpenNebula. Graphics type required.',
+        :format => String
+    }
+
+    GRAPHICS_PORT = {
+        :name => 'graphics_port',
+        :large => '--graphics-port port',
+        :description => 'The Graphics Server port in OpenNebula. Graphics type required.',
+        :format => String
+    }
+
+    GRAPHICS_KEYMAP = {
+        :name => 'graphics_keymap',
+        :large => '--graphics-keymap keymap',
+        :description => 'The Graphics Keymap in OpenNebula. Graphics type required.',
+        :format => String
+    }
+
+    GRAPHICS_PASSWORD = {
+        :name => 'graphics_password',
+        :large => '--graphics-password password',
+        :description => 'The Graphics Password in OpenNebula. Graphics type required.',
+        :format => String
+    }
+
+    GRAPHICS_COMMAND = {
+        :name => 'graphics_command',
+        :large => '--graphics-command command',
+        :description => 'The Graphics Command in OpenNebula. Graphics type required.',
+        :format => String
+    }
+
+    MEMORY_MAX = {
+        :name => 'memory_max',
+        :large => '--memory-max memorymb',
+        :description => 'The Max Memory allowed in MB in OpenNebula. Memory Hot Add required in VMware.',
+        :format => Integer
+    }
+
+    VCPU_MAX = {
+        :name => 'vcpu_max',
+        :large => '--vcpu-max vcpumax',
+        :description => 'The Max vCPU allowed in integer format in OpenNebula. CPU Hot Add required in VMware.',
+        :format => Integer
+    }
+
+    CPU = {
+        :name => 'cpu',
+        :large => '--cpu cpus',
+        :description => 'The Physical CPU allowed in integer format in OpenNebula. Default is to match CPU cores in vCenter.',
+        :format => Integer
+    }
+
+    VCPU = {
+        :name => 'vcpu',
+        :large => '--vcpu vcpus',
+        :description => 'The vCPU allowed in integer format in OpenNebula. Default is to match CPU cores in vCenter',
+        :format => Integer
+    }
+
+    IMG_WAIT = {
+        :name => 'img_wait',
+        :large => '--img-wait sec',
+        :description => 'The amount of time to wait in seconds for the image to be created in OpenNebula. Default is 120 seconds',
+        :format => Integer
+    }
+
+    DEV_PREFIX = {
+        :name => 'dev_prefix',
+        :large => '--dev-prefix sd',
+        :description => 'The Dev Prefix to use on the disks in OpenNebula. ex: sd, hd, vd, xvd. Default is none',
+        :format => String
+    }
+
+    DISABLE_CONTEXTUALIZATION = {
+        :name => 'disable_contextualization',
+        :large => '--disable-contextualization',
+        :description => 'Remove default contextualization options in OpenNebula. Default is for Network and SSH contextualization to be enabled.'
+    }
+
+    CPU_MODEL = {
+        :name => 'cpu_model',
+        :large => '--cpu-model model_type',
+        :description => 'Set a Specific CPU model in OpenNebula. Default is None',
+        :format => String
+    }
+
     DATASTORE = {
         :name => 'datastore',
         :large => '--datastore id',
@@ -340,8 +443,9 @@ CommandParser::CmdParser.new(ARGV) do
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
-    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, CONF_FILE,
-                   ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
+                   CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
+                   PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
 
     set :option, CommandParser::OPTIONS + OpenNebulaHelper::CLIENT_OPTIONS
 

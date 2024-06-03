@@ -1,0 +1,5 @@
+# ignore ruby dev files
+.ruby-version
+
+# ignore mac folder files
+.DS_Store
