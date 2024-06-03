@@ -1,3 +1,4 @@
+# coding: utf-8
 # -------------------------------------------------------------------------- #
 # Copyright 2002-2024, OpenNebula Project, OpenNebula Systems                #
 #                                                                            #
@@ -346,18 +347,93 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def create_base_template
-        vmt = OpenNebula::Template.new(OpenNebula::Template.build_xml, @client)
-        vmt.add_element('//VMTEMPLATE', {
+        vm_template_config = {
             "NAME" => "#{@props['name']}",
             "CPU"  => "#{@props['config'][:hardware][:numCPU]}",
             "vCPU" => "#{@props['config'][:hardware][:numCPU]}",
             "MEMORY" => "#{@props['config'][:hardware][:memoryMB]}",
-            "HYPERVISOR" => "kvm",
-            "CONTEXT" => {
+            "HYPERVISOR" => "kvm"
+        }
+
+        if @options[:cpu_model]
+            vm_template_config["CPU_MODEL"] = {"MODEL" => "#{@options[:cpu_model]}"}
+        end
+
+        if !@options[:disable_contextualization]
+            vm_template_config["CONTEXT"] = {
                 "NETWORK" => "YES",
                 "SSH_PUBLIC_KEY" => "$USER[SSH_PUBLIC_KEY]"
             }
-        })
+        end
+
+        if @options[:cpu]
+            vm_template_config["CPU"] = "#{@options[:cpu]}"
+        end
+
+        if @options[:vcpu]
+            vm_template_config["vCPU"] = "#{@options[:vcpu]}"
+        end
+
+        if @props['config'][:memoryHotAddEnabled]
+            vm_template_config["MEMORY_RESIZE_MODE"] = "HOTPLUG"
+            vm_template_config["MEMORY_MAX"] = "#{@props['config'][:hardware][:memoryMB]}"
+            if @options[:memory_max]
+                vm_template_config["MEMORY_MAX"] = "#{@options[:memory_max]}"
+            end
+    
+            if vm_template_config.include?("HOT_RESIZE")
+                vm_template_config["HOT_RESIZE"]["MEMORY_HOT_ADD_ENABLED"] = "YES"
+            else
+                vm_template_config["HOT_RESIZE"] = { "MEMORY_HOT_ADD_ENABLED" => "YES" }
+            end
+        end
+
+        if @props['config'][:cpuHotAddEnabled]
+            vm_template_config["VCPU_MAX"] = "#{@props['config'][:hardware][:numCPU]}"
+            if @options[:vcpu_max]
+                vm_template_config["VCPU_MAX"] = "#{@options[:vcpu_max]}"
+            end
+            
+            if vm_template_config.include?("HOT_RESIZE")
+                vm_template_config["HOT_RESIZE"]["CPU_HOT_ADD_ENABLED"] = "YES"
+            else
+                vm_template_config["HOT_RESIZE"] = { "CPU_HOT_ADD_ENABLED" => "YES" }
+            end
+        end
+
+        if @options[:graphics_type]
+            possible_options = ['spice', 'vnc', 'sdl']
+
+            if possible_options.include?(@options[:graphics_type].downcase)
+                vm_template_config["GRAPHICS"] = {}
+                vm_template_config["GRAPHICS"]["TYPE"] = @options[:graphics_type].upcase
+
+                if @options[:graphics_port]
+                    vm_template_config["GRAPHICS"]["PORT"] = @options[:graphics_port]
+                end
+    
+                if @options[:graphics_password]
+                    vm_template_config["GRAPHICS"]["PASSWD"] = @options[:graphics_password]
+                end
+    
+                if @options[:graphics_keymap]
+                    vm_template_config["GRAPHICS"]["KEYMAP"] = @options[:graphics_keymap]
+                end
+    
+                if @options[:graphics_listen]
+                    vm_template_config["GRAPHICS"]["LISTEN"] = @options[:graphics_listen]
+                end
+
+                if @options[:graphics_command]
+                    vm_template_config["GRAPHICS"]["COMMAND"] = @options[:graphics_command]
+                end
+            else
+                puts "Invalid graphics type. Please use one of the following: #{possible_options.join(', ')}"
+            end
+        end
+
+        vmt = OpenNebula::Template.new(OpenNebula::Template.build_xml, @client)
+        vmt.add_element('//VMTEMPLATE', vm_template_config)
 
         vmt
     end
@@ -549,13 +625,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     def context_command(disk, osinfo)
         cmd = nil
         if osinfo['name'] == 'windows'
-            return false
+            context_fullpath = detect_context_package('windows')
+            context_basename = File.basename(context_fullpath)
+            cmd = 'virt-customize -q'\
+                  " -a #{disk}"\
+                  " --copy-in #{context_fullpath}:/Temp"\
+                  " --firstboot-command 'msiexec -i c:\\Temp\\#{context_basename} /quiet && del c:\\Temp\\#{context_basename}'"
         else
             # os gives versions, so check that instead of distro
-            if osinfo['os'].start_with?('redhat-based')
-                if osinfo['os'].start_with?('redhat-based8')
+            if osinfo['os'].start_with?('redhat-based') ||  osinfo['os'].start_with?('rhel')
+                if osinfo['os'].start_with?('redhat-based8') || osinfo['os'].start_with?('rhel8')
                     context_fullpath = detect_context_package('rhel8')
-                elsif osinfo['os'].start_with?('redhat-based9')
+                elsif osinfo['os'].start_with?('redhat-based9') || osinfo['os'].start_with?('rhel9')
                     context_fullpath = detect_context_package('rhel9')
                 end
                 context_basename = File.basename(context_fullpath)
@@ -697,8 +778,6 @@ _EOF_"
     end
 
     def package_injection(disk, osinfo)
-        puts "Injecting/installing packages"
-
         injector_cmd = context_command(disk, osinfo)
         if !injector_cmd
             if osinfo['name'] == 'windows'
@@ -1123,11 +1202,18 @@ _EOF_"
     def create_one_images(disks)
         puts 'Creating Images in OpenNebula'
         img_ids = []
+        persistent_image = 'NO'
+        if @options[:persistent_img]
+            persistent_image = 'YES'
+        end
+
         disks.each_with_index do |d, i|
             img = OpenNebula::Image.new(OpenNebula::Image.build_xml, @client)
             guest_info = detect_distro(d)
+            os_name = false
             if guest_info
                 package_injection(d, guest_info)
+                os_name = guest_info['name']
             end
             if @options[:http_transfer]
                 path = "http://#{@options[:http_host]}:#{@options[:http_port]}/#{File.basename(d)}"
@@ -1151,7 +1237,8 @@ _EOF_"
             img.add_element('//IMAGE', {
                     'NAME' => "#{@options[:name]}_#{i}",
                     'TYPE' => guest_info ? 'OS' : 'DATABLOCK',
-                    'PATH' => "#{path}"
+                    'PATH' => "#{path}",
+                    'PERSISTENT' => persistent_image,
                 })
             puts "Allocating image #{i} in OpenNebula"
             rc = img.allocate(img.to_xml, @options[:datastore])
@@ -1159,11 +1246,24 @@ _EOF_"
                 server_thread.kill
                 server_thread.join
             end
+            # rc returns nil if successful, OpenNebula::Error if not
             if rc.class == OpenNebula::Error
                 puts 'Failed to create image. Image Definition:'.red
                 puts img.to_xml
             end
-            img_ids.append(img.id)
+
+            img_wait_sec = 120
+            if @options[:img_wait]
+                img_wait_sec = @options[:img_wait]
+            end
+            puts 'Waiting for image to be ready. Timeout: ' + img_wait_sec.to_s + ' seconds.'
+
+            img_wait_return = img.wait_state('READY', img_wait_sec)
+            if img_wait_return == false
+                puts 'Image did not become ready in time.'
+                puts 'Image Short State: ' + img.short_state_str
+            end
+            img_ids.append({ :id => img.id, :os => os_name })
         end
         img_ids
     end
@@ -1220,6 +1320,14 @@ _EOF_"
     end
 
     def get_vcenter_nic_info
+        con_ops = connection_options('vm', @options)
+        vi_client = RbVmomi::VIM.connect(con_ops)
+        properties = [
+            'name',
+            'key'
+        ]
+        distributed_networks = get_objects(vi_client, 'DistributedVirtualPortgroup', properties)
+
         network_types = [
             RbVmomi::VIM::VirtualVmxnet,
             RbVmomi::VIM::VirtualVmxnet2,
@@ -1230,7 +1338,14 @@ _EOF_"
             network_types.any? { |nt| d.is_a?(nt) }
         }.sort_by(&:key)
 
-        nic_backing = vc_nics.map { |n| [n[:key], n[:backing][:network][:name]] }.to_h
+        nic_backing = vc_nics.map do |n|
+            if n[:backing].is_a? RbVmomi::VIM::VirtualEthernetCardDistributedVirtualPortBackingInfo
+                ds_network = distributed_networks.find { |dn| dn.to_hash['key'] == n[:backing][:port][:portgroupKey] }
+                [n[:key], ds_network.to_hash['name']]
+            else
+                [n[:key], n[:backing][:network][:name]]
+            end
+        end.compact.to_h
 
         return vc_nics, nic_backing
     end
@@ -1253,7 +1368,7 @@ _EOF_"
                 # find nic with same device key
                 guest_network = @props['guest.net'].find { |gn| gn[:deviceConfigId] == n[:key] }
                 net_templ = {'NIC' => {
-                    'NETWORK_ID'  => "#{@options[:network]}"
+                    'NETWORK_ID' => "#{@options[:network]}"
                 }}
 
                 if !@options[:skip_mac]
@@ -1261,7 +1376,22 @@ _EOF_"
                 end
 
                 if !netmap.has_key?(vc_nic_backing[n[:key]])
-                    net_templ['NIC']['NETWORK_ID'] = "#{vc_nic_backing[n[:key]]}"
+                    network_info_found = false
+                    one_networks.each do |on_network|
+                        network_info = on_network.to_hash
+                        if network_info.include?('VNET')
+                            if network_info['VNET']['NAME'] == vc_nic_backing[n[:key]]
+                                network_info_found = true
+                                net_templ['NIC']['NETWORK_ID'] = network_info['VNET']['ID']
+                                net_templ['NIC']['NETWORK'] = "#{vc_nic_backing[n[:key]]}"
+                                break
+                            end
+                        end
+                    end
+                    if !network_info_found
+                        puts "Could not find Open Nebula network matching the provided name. Setting default"
+                        net_templ['NIC']['NETWORK_ID'] = "#{vc_nic_backing[n[:key]]}"
+                    end
                 end
 
                 if !guest_network
@@ -1387,7 +1517,9 @@ _EOF_"
             'summary.runtime.powerState',
             'runtime.host',
             'config.hardware.numCPU',
-            'config.hardware.memoryMB'
+            'config.hardware.memoryMB',
+            'config.memoryHotAddEnabled',
+            'config.cpuHotAddEnabled'
         ]
 
         if options.key?(:datacenter)
@@ -1503,7 +1635,6 @@ _EOF_"
             'runtime.host'
         ]
 
-        puts 'Gathering VM properties'
         vm_pool = get_objects(vi_client, 'VirtualMachine', properties)
         vm = vm_pool.find { |r| r['name'] == @options[:name] }
         if vm.nil?
@@ -1535,7 +1666,15 @@ _EOF_"
         puts img_ids.nil? ? "No Images ID's reported being created".red : "Created images: #{img_ids}".green
 
         img_ids.each do |i|
-            vm_template.add_element('//VMTEMPLATE', {"DISK" => { "IMAGE_ID" => "#{i}" }})
+            img_hash = { 'IMAGE_ID' => "#{i[:id]}" }
+            if @options[:dev_prefix]
+                img_hash["DEV_PREFIX"] = "#{@options[:dev_prefix]}"
+            elsif i[:os]
+                if i[:os] == 'windows'
+                    img_hash["DEV_PREFIX"] = "vd"
+                end
+            end
+            vm_template.add_element('//VMTEMPLATE', {"DISK" => img_hash})
         end
 
         # Add the NIC's now, after any conversion stuff has happened since it creates OpenNebula objects
