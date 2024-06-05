@@ -75,6 +75,7 @@ CommandParser::CmdParser.new(ARGV) do
     ####################
     # Global Arguments #
     ####################
+    set :option, CommandParser::OPTIONS + OpenNebulaHelper::CLIENT_OPTIONS
 
     VCENTER = {
         :name  => 'vcenter',
@@ -302,6 +303,12 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
+    SKIP_CONTEXT = {
+        :name => 'skip_context',
+        :large => '--skip-context',
+        :description => 'Skips the injection of the context package'
+    }
+
     ESXI = {
         :name => 'esxi_ip',
         :large => '--esxi ip',
@@ -347,6 +354,7 @@ CommandParser::CmdParser.new(ARGV) do
     HYBRID = {
         :name => 'hybrid',
         :large => '--hybrid',
+        :description => 'Download the disk using rbvmomi2, then convert the vm using virt-v2v locally.'
     }
 
     WIN_GA = {
@@ -446,8 +454,6 @@ CommandParser::CmdParser.new(ARGV) do
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                    CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                    PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
-
-    set :option, CommandParser::OPTIONS + OpenNebulaHelper::CLIENT_OPTIONS
 
     ############################################################################
     # list resources
