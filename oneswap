@@ -162,6 +162,12 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'Do not pull MAC from vCenter to be created in OpenNebula'
     }
 
+    PERSISTENT_IMG = {
+        :name => 'persistent_img',
+        :large => '--persistent-img',
+        :description => 'Make the image disk persistent in OpenNebula',
+    }
+
     DATASTORE = {
         :name => 'datastore',
         :large => '--datastore id',
@@ -340,7 +346,7 @@ CommandParser::CmdParser.new(ARGV) do
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
-    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, CONF_FILE,
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, PERSISTENT_IMG, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE,
                    ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
 
     set :option, CommandParser::OPTIONS + OpenNebulaHelper::CLIENT_OPTIONS
