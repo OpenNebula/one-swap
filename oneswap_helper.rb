@@ -1285,10 +1285,20 @@ _EOF_"
         puts 'Downloading disks from vCenter storage to local disk'
         vc_disks.each_with_index do |d, i|
             # download each disk to the work dir
-            remote_file = d[:backing][:fileName].sub(/^\[.+?\] /, '').sub(/\.vmdk$/, '-flat.vmdk')
+            remote_file = d[:backing][:fileName].sub(/^\[.+?\] /, '')
+            remote_file = remote_file.sub(/\.vmdk$/, '-flat.vmdk')
+
+            if remote_file.nil? or remote_file.empty?
+                raise "Unable to determine remote path for disk #{i}.".red
+            end
+
             local_file = @options[:work_dir] + '/transfers/' + @props['name'] + "-disk#{i}.vmdk"
             d[:backing][:datastore].download(remote_file, local_file)
             local_disks.append(local_file)
+        end
+
+        if local_disks.empty?
+            raise "Unable to download any disks from vCenter storage.".red
         end
 
         local_disks
@@ -1402,7 +1412,7 @@ _EOF_"
                     end
                     if !network_info_found
                         puts "Could not find Open Nebula network matching the provided name. Setting default"
-                        net_templ['NIC']['NETWORK_ID'] = "#{vc_nic_backing[n[:key]]}"
+                        net_templ['NIC']['NETWORK_ID'] = "#{@options[:network]}"
                     end
                 end
 
@@ -1654,7 +1664,6 @@ _EOF_"
         end
 
         @props = vm.to_hash
-        LOGGER[:stdout].puts @props.to_s if DEBUG
 
         # Some basic preliminary checks
         if @props['summary.runtime.powerState'] != 'poweredOff'
