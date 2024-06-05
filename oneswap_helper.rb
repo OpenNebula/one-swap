@@ -594,21 +594,21 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     def detect_context_package(distro)
         case distro
         when 'rhel8'
-            c_files = Dir.glob("#{@options[:context_path]}/one-context*el8*rpm")
+            c_files = Dir.glob("#{@options[:context]}/one-context*el8*rpm")
         when 'rhel9'
-            c_files = Dir.glob("#{@options[:context_path]}/one-context*el9*rpm")
+            c_files = Dir.glob("#{@options[:context]}/one-context*el9*rpm")
         when 'debian'
-            c_files = Dir.glob("#{@options[:context_path]}/one-context*deb")
+            c_files = Dir.glob("#{@options[:context]}/one-context*deb")
         when 'alpine'
-            c_files = Dir.glob("#{@options[:context_path]}/one-context*apk")
+            c_files = Dir.glob("#{@options[:context]}/one-context*apk")
         when 'alt'
-            c_files = Dir.glob("#{@options[:context_path]}/one-context*alt*rpm")
+            c_files = Dir.glob("#{@options[:context]}/one-context*alt*rpm")
         when 'opensuse'
-            c_files = Dir.glob("#{@options[:context_path]}/one-context*suse*rpm")
+            c_files = Dir.glob("#{@options[:context]}/one-context*suse*rpm")
         when 'freebsd'
-            c_files = Dir.glob("#{@options[:context_path]}/one-context*txz")
+            c_files = Dir.glob("#{@options[:context]}/one-context*txz")
         when 'windows'
-            c_files = Dir.glob("#{@options[:context_path]}/one-context*msi")
+            c_files = Dir.glob("#{@options[:context]}/one-context*msi")
         end
 
         if c_files.length == 1
@@ -785,12 +785,16 @@ _EOF_"
             else
                 puts 'Unsupported guest OS or couldn\'t find context file for context injection. Please install manually.'.brown
             end
+        elsif @options[:skip_context]
+            print 'Skipping context injection...'
+            return
         else
             # Perhaps have a separet function that does a bit more....stuff...
             print 'Injecting one-context...'
             _stdout, status = run_cmd_report(injector_cmd, true)
             if !status.success?
                 puts 'Context injection command appears to have failed.'
+                return
             end
         end
 
@@ -889,17 +893,24 @@ _EOF_"
         dc,cluster,host = nil
         pobj = @props['runtime.host']
         while dc.nil? || cluster.nil? || host.nil?
-            host    = pobj if pobj.class == RbVmomi::VIM::HostSystem
-            cluster = pobj if pobj.class == RbVmomi::VIM::ClusterComputeResource
-            dc      = pobj if pobj.class == RbVmomi::VIM::Datacenter
+            host    = pobj  if pobj.class == RbVmomi::VIM::HostSystem
+            cluster = pobj  if pobj.class == RbVmomi::VIM::ClusterComputeResource
+            cluster = false if pobj.class == RbVmomi::VIM::ComputeResource
+            dc      = pobj  if pobj.class == RbVmomi::VIM::Datacenter
             pobj = pobj[:parent]
             if pobj.nil?
                 raise "Unable to find Host, Cluster, and Datacenter of VM"
             end
         end
 
-        url = "vpx://#{CGI::escape(@options[:vuser])}@#{@options[:vcenter]}"\
-              "/#{dc[:name]}/#{cluster[:name]}/#{host[:name]}?no_verify=1"
+        if cluster == false
+            url = "vpx://#{CGI::escape(@options[:vuser])}@#{@options[:vcenter]}"\
+                  "/#{dc[:name]}/#{host[:name]}?no_verify=1"
+        else
+            url = "vpx://#{CGI::escape(@options[:vuser])}@#{@options[:vcenter]}"\
+                  "/#{dc[:name]}/#{cluster[:name]}/#{host[:name]}?no_verify=1"
+        end
+
         command = "#{@options[:v2v_path]} -v --machine-readable"\
                   " -ic #{url}"\
                   " -ip #{@options[:work_dir]}/vpassfile"\
@@ -1215,13 +1226,34 @@ _EOF_"
                 package_injection(d, guest_info)
                 os_name = guest_info['name']
             end
+            if @options[:http_transfer]
+                path = "http://#{@options[:http_host]}:#{@options[:http_port]}/#{File.basename(d)}"
+                server_thread = Thread.new do
+                    server = WEBrick::HTTPServer.new({
+                        Port: @options[:http_port],
+                        DocumentRoot: File.dirname(d),
+                        RequestCallback: ->(req, res) {
+                            res['Cache-Control'] = 'public, max-age=3600'
+                        },
+                        MaxThreads: 8,
+                    })
+
+                    trap('INT') { server.shutdown }
+
+                    server.start
+                end
+            else
+                path = d
+            end
             img.add_element('//IMAGE', {
                     'NAME' => "#{@options[:name]}_#{i}",
                     'TYPE' => guest_info ? 'OS' : 'DATABLOCK',
-                    'PATH' => "#{d}",
+                    'PATH' => "#{path}",
                     'PERSISTENT' => persistent_image,
                 })
+            puts "Allocating image #{i} in OpenNebula"
             rc = img.allocate(img.to_xml, @options[:datastore])
+
             # rc returns nil if successful, OpenNebula::Error if not
             if rc.class == OpenNebula::Error
                 puts 'Failed to create image. Image Definition:'.red
@@ -1239,6 +1271,10 @@ _EOF_"
                 puts 'Image did not become ready in time.'
                 puts 'Image Short State: ' + img.short_state_str
             end
+            if @options[:http_transfer]
+                server_thread.kill
+                server_thread.join
+            end
             img_ids.append({ :id => img.id, :os => os_name })
         end
         img_ids
@@ -1249,10 +1285,20 @@ _EOF_"
         puts 'Downloading disks from vCenter storage to local disk'
         vc_disks.each_with_index do |d, i|
             # download each disk to the work dir
-            remote_file = d[:backing][:fileName].split(' ')[1].gsub(/\.vmdk$/, '-flat.vmdk')
+            remote_file = d[:backing][:fileName].sub(/^\[.+?\] /, '')
+            remote_file = remote_file.sub(/\.vmdk$/, '-flat.vmdk')
+
+            if remote_file.nil? or remote_file.empty?
+                raise "Unable to determine remote path for disk #{i}.".red
+            end
+
             local_file = @options[:work_dir] + '/transfers/' + @props['name'] + "-disk#{i}.vmdk"
             d[:backing][:datastore].download(remote_file, local_file)
             local_disks.append(local_file)
+        end
+
+        if local_disks.empty?
+            raise "Unable to download any disks from vCenter storage.".red
         end
 
         local_disks
@@ -1265,7 +1311,7 @@ _EOF_"
             puts 'Downloading disks from vCenter storage to local disk'
             vc_disks.each_with_index do |d, i|
                 # download each disk to the work dir
-                remote_file = d[:backing][:fileName].split(' ')[1].gsub(/\.vmdk$/, '-flat.vmdk')
+                remote_file = d[:backing][:fileName].sub(/^\[.+?\] /, '').sub(/\.vmdk$/, '-flat.vmdk')
                 local_file = @options[:work_dir] + '/conversions/' + @props['name'] + "-disk#{i}"
                 d[:backing][:datastore].download(remote_file, local_file + '.vmdk')
                 vmdks.append(local_file)
@@ -1366,7 +1412,7 @@ _EOF_"
                     end
                     if !network_info_found
                         puts "Could not find Open Nebula network matching the provided name. Setting default"
-                        net_templ['NIC']['NETWORK_ID'] = "#{vc_nic_backing[n[:key]]}"
+                        net_templ['NIC']['NETWORK_ID'] = "#{@options[:network]}"
                     end
                 end
 
@@ -1592,7 +1638,7 @@ _EOF_"
         format_list.show(list, options)
     end
 
-    # Show VM
+    # Convert VM
     #
     # @param options [Hash] User CLI Options
     def convert_vm
@@ -1618,7 +1664,6 @@ _EOF_"
         end
 
         @props = vm.to_hash
-        LOGGER[:stdout].puts @props.to_s if DEBUG
 
         # Some basic preliminary checks
         if @props['summary.runtime.powerState'] != 'poweredOff'
