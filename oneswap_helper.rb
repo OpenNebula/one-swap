@@ -543,6 +543,23 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         }                   # Use the block's return value as the method's
     end
 
+    def next_suffix(suffix)
+        return 'a' if suffix.empty?
+        chars = suffix.chars
+        if chars.last == 'z'
+            chars.pop
+            return next_suffix(chars.join) + 'a'
+        end
+
+        chars[-1] = chars.last.succ
+        chars.join
+    end
+
+    # Runs a command and reports its execution status and output.
+    #
+    # @param cmd [String] The command to be executed.
+    # @param out [Boolean] (optional) Whether to return the output or not.
+    # @return [Array] Returns an array containing the stdout and status if out is true.
     def run_cmd_report(cmd, out=false)
         t0 = Time.now
         stdout, stderr, status = nil
@@ -623,6 +640,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def context_command(disk, osinfo)
+        puts "context_command"
         cmd = nil
         if osinfo['name'] == 'windows'
             context_fullpath = detect_context_package('windows')
@@ -647,6 +665,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                       " --install /tmp/#{context_basename}"\
                       " --delete /tmp/#{context_basename}"\
                       " --run-command 'systemctl enable network.service || exit 0'"
+                puts "Context command: #{cmd}"
             end
             if osinfo['os'].start_with?('ubuntu') || osinfo['os'].start_with?('debian')
                 context_fullpath = detect_context_package('debian')
@@ -707,6 +726,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def win_context_inject(disk, osinfo)
+        puts "win_context_inject"
         cmd = "guestfish <<_EOF_
 add #{disk}
 run
@@ -715,6 +735,7 @@ upload #{@options[:virt_tools]}/rhsrvany.exe /rhsrvany.exe
 upload #{detect_context_package('windows')} /one-context.msi
 _EOF_"
         print "Uploading context files to Windows disk..."
+        puts 'win_context_inject cmd: ' + cmd
         run_cmd_report(cmd)
 
         ccs = get_win_controlset(disk)
@@ -747,6 +768,7 @@ _EOF_"
         cmd = 'virt-customize'\
               " -a #{disk}"\
               " --inject-virtio-win #{@options[:virtio_path]}"
+        puts 'win_virtio_command cmd: ' + cmd
         cmd
     end
 
@@ -754,6 +776,7 @@ _EOF_"
         cmd = 'virt-customize'\
               " -a #{disk}"\
               " --inject-qemu-ga #{@options[:virtio_path]}"
+        puts 'qemu_ga_command cmd: ' + cmd
         cmd
     end
 
@@ -865,7 +888,7 @@ _EOF_"
         pc.RetrieveProperties(:specSet => [filterSpec])
     end
 
-    def build_v2v_hybrid_cmd(disk)
+    def build_v2v_hybrid_cmd(xml_file)
         # virt-v2v
         #   -i disk
         #   '/path/to/local/disk'
@@ -873,8 +896,8 @@ _EOF_"
         #   -os /path/to/working/folder
         #   -of [qcow2|raw]
         command = "#{@options[:v2v_path]} -v --machine-readable"\
-                  ' -i disk'\
-                  " #{disk}"\
+                  ' -i libvirtxml'\
+                  " #{xml_file}"\
                   ' -o local'\
                   " -os #{@options[:work_dir]}/conversions/"\
                   " -of #{@options[:format]}"
@@ -1018,8 +1041,10 @@ _EOF_"
             if vc_disks.size > 1
                 raise "Hybrid function currently only works with single disk VM's."
             end
-            local_disk = hybrid_downloader(vc_disks)[0]
-            command = build_v2v_hybrid_cmd(local_disk)
+            local_disks = hybrid_downloader(vc_disks)
+            local_xml = build_hybrid_xml(local_disks)
+            File.open(@options[:work_dir] + '/local.xml', 'w') { |f| f.write(local_xml) }
+            command = build_v2v_hybrid_cmd(local_xml)
         elsif @options[:esxi_ip]
             command = build_v2v_esx_cmd
         elsif @options[:vddk_path]
@@ -1140,6 +1165,7 @@ _EOF_"
         raise(err.red) if err
 
         err = error_list.detect { |e| line['message'].start_with?(e[:text]) }
+        puts "DEBUG INFO: #{line['message']}".red
         err ? raise(err[:error].red)  : raise("Unknown error occurred: #{line['message']}".bg_red)
     end
 
@@ -1254,6 +1280,11 @@ _EOF_"
             puts "Allocating image #{i} in OpenNebula"
             rc = img.allocate(img.to_xml, @options[:datastore])
 
+            if @options[:http_transfer]
+                server_thread.kill
+                server_thread.join
+            end
+
             # rc returns nil if successful, OpenNebula::Error if not
             if rc.class == OpenNebula::Error
                 puts 'Failed to create image. Image Definition:'.red
@@ -1302,6 +1333,39 @@ _EOF_"
         end
 
         local_disks
+    end
+
+    def build_hybrid_xml(disks)
+        domain_xml = <<-XML
+          <domain type='kvm'>
+            <name>#{@options[:name]}</name>
+            <memory unit='KiB'>1048576</memory>
+            <vcpu>2</vcpu>
+            <os>
+              <type>hvm</type>
+              <boot dev='hd'/>
+            </os>
+            <features>
+              <acpi/>
+              <apic/>
+              <pae/>
+            </features>
+            <devices>
+        XML
+        suffix = 'a'
+        disks.each_with_index do |d, i|
+            disk_xml = <<-XML
+              <disk type='file' device='disk'>
+                <driver name='qemu' type='#{options[:format]}'/>
+                <source file='#{d}'/>
+                <target dev='hd#{suffix}' bus='ide'/>
+              </disk>
+            XML
+            domain_xml << disk_xml
+            suffix = next_suffix(suffix)
+        end
+        domain_xml << '</devices></domain>'
+        domain_xml
     end
 
     def run_custom_conversion
@@ -1381,7 +1445,7 @@ _EOF_"
             next if !n['//VNET/TEMPLATE/VCENTER_NETWORK_MATCH']
             netmap[n['//VNET/TEMPLATE/VCENTER_NETWORK_MATCH']] = n['//VNET/ID']
         end
-        # puts netmap
+        # puts 'netmap is: ' + netmap.to_s
 
         if @options[:network] && vc_nics.length > 0
             puts "Adding #{vc_nics.length} NICs, defaulting to Network ID #{@options[:network]} if there is no match"
@@ -1394,7 +1458,10 @@ _EOF_"
                 }}
 
                 if !@options[:skip_mac]
+                    puts "Adding MAC address to NIC##{nic_number}"
                     net_templ['NIC']['MAC'] = n[:macAddress]
+                else
+                    puts "Skipping MAC address for NIC##{nic_number}"
                 end
 
                 if !netmap.has_key?(vc_nic_backing[n[:key]])
