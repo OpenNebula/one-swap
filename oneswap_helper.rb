@@ -1038,13 +1038,11 @@ _EOF_"
     def run_v2v_conversion
         if @options[:hybrid]
             vc_disks = @props['config'][:hardware][:device].grep(RbVmomi::VIM::VirtualDisk).sort_by(&:key)
-            if vc_disks.size > 1
-                raise "Hybrid function currently only works with single disk VM's."
-            end
             local_disks = hybrid_downloader(vc_disks)
             local_xml = build_hybrid_xml(local_disks)
-            File.open(@options[:work_dir] + '/local.xml', 'w') { |f| f.write(local_xml) }
-            command = build_v2v_hybrid_cmd(local_xml)
+            local_xml_file = @options[:work_dir] + '/local.xml'
+            File.open(local_xml_file, 'w') { |f| f.write(local_xml) }
+            command = build_v2v_hybrid_cmd(local_xml_file)
         elsif @options[:esxi_ip]
             command = build_v2v_esx_cmd
         elsif @options[:vddk_path]
@@ -1280,11 +1278,6 @@ _EOF_"
             puts "Allocating image #{i} in OpenNebula"
             rc = img.allocate(img.to_xml, @options[:datastore])
 
-            if @options[:http_transfer]
-                server_thread.kill
-                server_thread.join
-            end
-
             # rc returns nil if successful, OpenNebula::Error if not
             if rc.class == OpenNebula::Error
                 puts 'Failed to create image. Image Definition:'.red
@@ -1356,9 +1349,8 @@ _EOF_"
         disks.each_with_index do |d, i|
             disk_xml = <<-XML
               <disk type='file' device='disk'>
-                <driver name='qemu' type='#{options[:format]}'/>
                 <source file='#{d}'/>
-                <target dev='hd#{suffix}' bus='ide'/>
+                <target dev='sd#{suffix}' bus='scsi'/>
               </disk>
             XML
             domain_xml << disk_xml
