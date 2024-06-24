@@ -629,6 +629,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             context_basename = File.basename(context_fullpath)
             cmd = 'virt-customize -q'\
                   " -a #{disk}"\
+                  ' --mkdir /Temp'\
                   " --copy-in #{context_fullpath}:/Temp"\
                   " --firstboot-command 'msiexec -i c:\\Temp\\#{context_basename} /quiet && del c:\\Temp\\#{context_basename}'"
         else
