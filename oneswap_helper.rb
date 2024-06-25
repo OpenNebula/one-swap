@@ -312,6 +312,14 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         end
     end
 
+    def check_one_connectivity
+        user = OpenNebula::User.new_with_id(OpenNebula::User::SELF, @client)
+        rc = user.info
+        if rc.class == OpenNebula::Error
+            raise 'Failed to get User info, indicating authentication failed'
+        end
+    end
+
     def cleanup_passwords
         puts "Deleting password files."
         File.delete("#{@options[:work_dir]}/vpassfile")
@@ -1479,6 +1487,7 @@ _EOF_"
     # @param options [Hash] User CLI options
     # @param object  [Hash] Object Type
     def list(options)
+        check_one_connectivity
         case options[:object]
         when 'datacenters'
             list_datacenters(options)
@@ -1496,6 +1505,7 @@ _EOF_"
     # @param name    [Hash] Object Name
     # @param options [Hash] User CLI options
     def convert(name, options)
+        check_one_connectivity
         if !Dir.exist?(options[:work_dir])
             raise 'Provided working directory '\
                   "#{options[:work_dir]} doesn't exist"
