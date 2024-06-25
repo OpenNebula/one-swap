@@ -351,7 +351,6 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         cleanup_passwords
         cleanup_disks
         cleanup_dirs
-
     end
 
     def create_base_template
@@ -1487,7 +1486,6 @@ _EOF_"
     # @param options [Hash] User CLI options
     # @param object  [Hash] Object Type
     def list(options)
-        check_one_connectivity
         case options[:object]
         when 'datacenters'
             list_datacenters(options)
