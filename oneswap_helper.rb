@@ -1475,7 +1475,7 @@ _EOF_"
                 
                 #vm_template.add_element('//VMTEMPLATE', net_templ)
             end
-        elsif vc_nets.length > 0
+        elsif vc_nics.length > 0
             puts "You will need to create NICs and assign networks in the VM Template in OpenNebula manually."
         end
         vm_template
