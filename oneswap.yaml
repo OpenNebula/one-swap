@@ -29,14 +29,14 @@
 #:datastore: 1    # ID of the OpenNebula Image datastore
 
 # virt-v2v Options
-#:work_dir: '/tmp'                  # Directory where disk conversion takes place, will make subdir for each VM
-#:format: 'qcow2'                   # Disk format [ qcow2 | raw ]
-#:vddk_path:                        # Path to VDDK library
-#:qemu_ga_win:                      # Path to QEMU Guest Agent ISO for Windows
-#:qemu_ga_linux:                    # Install QEMU Guest Agent for Linux
-#:virtio_path:                      # Path to VirtIO drivers for Windows
-#:virt_tools: /usr/share/virt-tools # Path to the directory containing rhsrvany.exe
-#:v2v_path: 'virt-v2v'              # Path to virt-v2v
+#:work_dir: '/tmp'                        # Directory where disk conversion takes place, will make subdir for each VM
+#:format: 'qcow2'                         # Disk format [ qcow2 | raw ]
+#:vddk_path:                              # Path to VDDK library
+#:qemu_ga_win:                            # Path to QEMU Guest Agent ISO for Windows
+#:qemu_ga_linux:                          # Install QEMU Guest Agent for Linux
+#:virtio_path:                            # Path to VirtIO drivers for Windows
+#:virt_tools: /usr/local/share/virt-tools # Path to the directory containing rhsrvany.exe
+#:v2v_path: 'virt-v2v'                    # Path to virt-v2v
 
 # Extra Options
 #:delete: false                     # Delete the VM Disks after transfer
