@@ -380,7 +380,7 @@ CommandParser::CmdParser.new(ARGV) do
     RHSRVANY = {
         :name => 'virt_tools',
         :large => '--virt-tools /path/to/virt-tools',
-        :description => 'Path to the directory containing rhsrvany.exe, defaults to /usr/share/virt-tools. See https://github.com/rwmjones/rhsrvany.',
+        :description => 'Path to the directory containing rhsrvany.exe, defaults to /usr/local/share/virt-tools. See https://github.com/rwmjones/rhsrvany.',
         :format => String
     }
 
@@ -554,7 +554,7 @@ CommandParser::CmdParser.new(ARGV) do
             options[:context]       ||= '/var/lib/one/context/'
             options[:esxi_user]     ||= 'root'
             options[:datastore]     ||= 1
-            options[:virt_tools]    ||= '/usr/share/virt-tools'
+            options[:virt_tools]    ||= '/usr/local/share/virt-tools'
             options[:v2v_path]      ||= 'virt-v2v'
             options[:config_file]   ||= '/var/lib/one/oneswap.yaml'
 
