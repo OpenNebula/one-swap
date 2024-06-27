@@ -525,6 +525,7 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:config_file] && !File.exist?(options[:config_file])
                 raise "Unable to find the config file at #{options[:config_file]}"
             end
+            options[:config_file]   ||= '/var/lib/one/oneswap.yaml'
             cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
 
@@ -556,7 +557,7 @@ CommandParser::CmdParser.new(ARGV) do
             options[:datastore]     ||= 1
             options[:virt_tools]    ||= '/usr/local/share/virt-tools'
             options[:v2v_path]      ||= 'virt-v2v'
-            options[:config_file]   ||= '/var/lib/one/oneswap.yaml'
+
 
             if options[:http_transfer]
                 options[:http_host] ||= Socket.ip_address_list.detect { |addrinfo| addrinfo.ipv4? && !addrinfo.ipv4_loopback? }&.ip_address
