@@ -647,7 +647,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def context_command(disk, osinfo)
-        puts "context_command"
+        # puts "context_command"
         cmd = nil
         if osinfo['name'] == 'windows'
             context_fullpath = detect_context_package('windows')
@@ -659,11 +659,13 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                   " --firstboot-command 'msiexec -i c:\\Temp\\#{context_basename} /quiet && del c:\\Temp\\#{context_basename}'"
         else
             # os gives versions, so check that instead of distro
-            if osinfo['os'].start_with?('redhat-based') ||  osinfo['os'].start_with?('rhel')
+            if osinfo['os'] =~ /^(redhat-based|rhel|ubuntu|debian)/ # start_with any of these
                 if osinfo['os'].start_with?('redhat-based8') || osinfo['os'].start_with?('rhel8')
                     context_fullpath = detect_context_package('rhel8')
                 elsif osinfo['os'].start_with?('redhat-based9') || osinfo['os'].start_with?('rhel9')
                     context_fullpath = detect_context_package('rhel9')
+                elsif osinfo['os'].start_with?('ubuntu') || osinfo['os'].start_with?('debian')
+                    context_fullpath = detect_context_package('debian')
                 end
                 context_basename = File.basename(context_fullpath)
                 cmd = 'virt-customize -q'\
@@ -673,36 +675,29 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                       " --install /tmp/#{context_basename}"\
                       " --delete /tmp/#{context_basename}"\
                       " --run-command 'systemctl enable network.service || exit 0'"
-                puts "Context command: #{cmd}"
+                fallback_cmd = 'virt-customize -q'\
+                               " -a #{disk}"\
+                               ' --firstboot-install epel-release'\
+                               " --copy-in #{context_fullpath}:/tmp"\
+                               " --firstboot-install /tmp/#{context_basename}"\
+                               " --run-command 'systemctl enable network.service || exit 0'"
             end
-            if osinfo['os'].start_with?('ubuntu') || osinfo['os'].start_with?('debian')
-                context_fullpath = detect_context_package('debian')
-                context_basename = File.basename(context_fullpath)
-                cmd = 'virt-customize -q'\
-                      " -a #{disk}"\
-                      ' --uninstall cloud-init'\
-                      " --copy-in #{context_fullpath}:/tmp"\
-                      " --install /tmp/#{context_basename}"\
-                      " --delete /tmp/#{context_basename}"\
-                      " --run-command 'systemctl enable network.service || exit 0'"
-            end
-            if osinfo['os'].start_with?('alt')
-                context_fullpath = detect_context_package('alt')
-                context_basename = File.basename(context_fullpath)
-                cmd = 'virt-customize -q'\
-                      " -a #{disk}"\
-                      " --copy-in #{context_fullpath}:/tmp"\
-                      " --install /tmp/#{context_basename}"\
-                      " --delete /tmp/#{context_basename}"
-            end
-            if osinfo['os'].start_with?('opensuse')
-                context_fullpath = detect_context_package('freebsd')
+            if osinfo['os'].start_with?('alt') || osinfo['os'].start_with?('opensuse')
+                if osinfo['os'].start_with('alt')
+                    context_fullpath = detect_context_package('alt')
+                elsif osinfo['os'].start_with('opensuse')
+                    context_fullpath = detect_context_package('opensuse')
+                end
                 context_basename = File.basename(context_fullpath)
                 cmd = 'virt-customize -q'\
                       " -a #{disk}"\
                       " --copy-in #{context_fullpath}:/tmp"\
                       " --install /tmp/#{context_basename}"\
                       " --delete /tmp/#{context_basename}"
+                fallback_cmd = 'virt-customize -q'\
+                               " -a #{disk}"\
+                               " --copy-in #{context_fullpath}:/tmp"\
+                               " --firstboot-install /tmp/#{context_basename}"
             end
             if osinfo['os'].start_with?('freebsd')
                 # may not mount properly sometimes due to internal fs
@@ -714,13 +709,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                       " --copy-in #{context_fullpath}:/tmp"\
                       " --install /tmp/#{context_basename}"\
                       " --delete /tmp/#{context_basename}"
+                fallback_cmd = 'virt-customize -q'\
+                               " -a #{disk}"\
+                               ' --firstboot-install curl,bash,sudo,base64,ruby,open-vm-tools-nox11'\
+                               " --copy-in #{context_fullpath}:/tmp"\
+                               " --firstboot-install /tmp/#{context_basename}"
             end
             if osinfo['os'].start_with?('alpine')
                 puts 'Alpine is not compatible with offline install, please install context manually.'.brown
             end
             return false if not context_fullpath
         end
-        cmd
+        return cmd, fallback_cmd
     end
 
     def get_win_controlset(disk)
@@ -809,7 +809,7 @@ _EOF_"
     end
 
     def package_injection(disk, osinfo)
-        injector_cmd = context_command(disk, osinfo)
+        injector_cmd, fallback_cmd = context_command(disk, osinfo)
         if !injector_cmd
             if osinfo['name'] == 'windows'
                 win_context_inject(disk, osinfo)
@@ -824,8 +824,13 @@ _EOF_"
             print 'Injecting one-context...'
             _stdout, status = run_cmd_report(injector_cmd, true)
             if !status.success?
-                puts 'Context injection command appears to have failed.'
-                return
+                print 'Context injection command appears to have failed. Attempting fallback'.brown
+                _stdout, status = run_cmd_report(fallback_cmd, true)
+                if !status.success?
+                    puts 'Context injection fallback command failed somehow, please install context manually.'.red
+                    return
+                end
+                print 'Context will install on first boot, you may need to boot it twice.'.brown
             end
         end
 
