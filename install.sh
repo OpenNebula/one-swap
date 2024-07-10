@@ -24,20 +24,27 @@ function usage {
 
 function link_install {
     echo "Creating symbolic links."
-    ln -s `pwd`/oneswap /usr/bin/oneswap
+    unlink /usr/local/bin/oneswap
+    unlink /usr/lib/one/ruby/cli/one_helper/oneswap_helper.rb
+    unlink /var/lib/one/oneswap.yaml
+    ln -s `pwd`/oneswap /usr/local/bin/oneswap
     ln -s `pwd`/oneswap_helper.rb /usr/lib/one/ruby/cli/one_helper/oneswap_helper.rb
+    ln -s `pwd`/oneswap.yaml /var/lib/one/oneswap.yaml
     chmod +x `pwd`/oneswap
-    ls -lh /usr/bin/oneswap
+    ls -lh /usr/local/bin/oneswap
     ls -lh /usr/lib/one/ruby/cli/one_helper/oneswap_helper.rb
+    ls -lh /var/lib/one/oneswap.yaml
 }
 
 function copy_install {
     echo "Copying files for install."
-    cp -f `pwd`/oneswap /usr/bin/oneswap
+    cp -f `pwd`/oneswap /usr/local/bin/oneswap
     cp -f `pwd`/oneswap_helper.rb /usr/lib/one/ruby/cli/one_helper/oneswap_helper.rb
+    cp -f `pwd`/oneswap.yaml /var/lib/one/oneswap.yaml
     chmod +x `pwd`/oneswap
-    ls -lh /usr/bin/oneswap
+    ls -lh /usr/local/bin/oneswap
     ls -lh /usr/lib/one/ruby/cli/one_helper/oneswap_helper.rb
+    ls -lh /var/lib/one/oneswap.yaml
 }
 
 while getopts "lc" option; do

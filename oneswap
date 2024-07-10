@@ -523,7 +523,7 @@ CommandParser::CmdParser.new(ARGV) do
     command :convert, conv_desc, :vm_name, :options => CONVERT_OPTS do
         begin
             if options[:config_file] && !File.exist?(options[:config_file])
-                raise "Unable to find the config file at #{options[:config_file]}"
+                puts "Unable to find the config file at #{options[:config_file]}"
             end
             options[:config_file]   ||= '/var/lib/one/oneswap.yaml'
             cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])

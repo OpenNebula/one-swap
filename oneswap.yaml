@@ -62,4 +62,4 @@
 #:memory_max:                 # Memory max in MB
 #:vcpu_max:                   # vCPU max allowed in integer format. CPU Hot Add required in VMWare.
 #:cpu:                        # Physical CPU allowed in integer format. Default: match CPU cores from vCenter
-#:vcpu:                       # vCPU allowed in integer format. Default: match CPU cores from vCener
+#:vcpu:                       # vCPU allowed in integer format. Default: match CPU cores from vCenter
