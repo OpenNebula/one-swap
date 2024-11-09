@@ -570,6 +570,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     def run_cmd_report(cmd, out=false)
         t0 = Time.now
         stdout, stderr, status = nil
+        puts "Running: #{cmd}"
         show_wait_spinner {
             stdout, stderr, status = Open3.capture3(cmd)
         }
@@ -621,6 +622,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             c_files = Dir.glob("#{@options[:context]}/one-context*el8*rpm")
         when 'rhel9'
             c_files = Dir.glob("#{@options[:context]}/one-context*el9*rpm")
+        when 'fedora'
+            c_files = Dir.glob("#{@options[:context]}/one-context*fc*rpm")
         when 'debian'
             c_files = Dir.glob("#{@options[:context]}/one-context*deb")
         when 'alpine'
@@ -659,22 +662,52 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                   " --firstboot-command 'msiexec -i c:\\Temp\\#{context_basename} /quiet && del c:\\Temp\\#{context_basename}'"
         else
             # os gives versions, so check that instead of distro
-            if osinfo['os'] =~ /^(redhat-based|rhel|ubuntu|debian)/ # start_with any of these
-                if osinfo['os'].start_with?('redhat-based8') || osinfo['os'].start_with?('rhel8')
+            if osinfo['os'] =~ /^(redhat-based|rhel|fedora|ubuntu|debian)/ # start_with any of these
+                case osinfo['os']
+                when /^fedora/
+                    context_fullpath = detect_context_package('fedora')
+                    context_basename = File.basename(context_fullpath)
+                    cmd = 'virt-customize -q'\
+                          " -a #{disk}"\
+                          " --copy-in #{context_fullpath}:/tmp"\
+                          " --install /tmp/#{context_basename}"\
+                          " --delete /tmp/#{context_basename}"\
+                          " --run-command 'systemctl enable systemd-networkd'"\
+                          " --run-command 'systemctl disable systemd-networkd-wait-online'"\
+                          " --run-command 'sed -i \"s/SELINUX=enforcing/SELINUX=disabled/\" /etc/selinux/config || exit 0'"
+                when /^redhat-based8/, /^rhel8/
                     context_fullpath = detect_context_package('rhel8')
-                elsif osinfo['os'].start_with?('redhat-based9') || osinfo['os'].start_with?('rhel9')
+                    context_basename = File.basename(context_fullpath)
+                    cmd = 'virt-customize -q'\
+                          " -a #{disk}"\
+                          " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-8-$(arch)-rpms'"\
+                          " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm'"\
+                          " --copy-in #{context_fullpath}:/tmp"\
+                          " --install /tmp/#{context_basename}"\
+                          " --delete /tmp/#{context_basename}"\
+                          " --run-command 'systemctl enable NetworkManager.service || exit 0'"
+                when /^redhat-based9/, /^rhel9/
                     context_fullpath = detect_context_package('rhel9')
-                elsif osinfo['os'].start_with?('ubuntu') || osinfo['os'].start_with?('debian')
+                    context_basename = File.basename(context_fullpath)
+                    cmd = 'virt-customize -q'\
+                          " -a #{disk}"\
+                          " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms'"\
+                          " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm'"\
+                          " --copy-in #{context_fullpath}:/tmp"\
+                          " --install /tmp/#{context_basename}"\
+                          " --delete /tmp/#{context_basename}"\
+                          " --run-command 'systemctl enable NetworkManager.service || exit 0'"
+                when /^ubuntu/, /^debian/
                     context_fullpath = detect_context_package('debian')
+                    context_basename = File.basename(context_fullpath)
+                    cmd = 'virt-customize -q'\
+                          " -a #{disk}"\
+                          " --copy-in #{context_fullpath}:/tmp"\
+                          " --install /tmp/#{context_basename}"\
+                          " --delete /tmp/#{context_basename}"\
+                          " --run-command 'systemctl enable network.service || exit 0'"
                 end
-                context_basename = File.basename(context_fullpath)
-                cmd = 'virt-customize -q'\
-                      " -a #{disk}"\
-                      ' --install epel-release'\
-                      " --copy-in #{context_fullpath}:/tmp"\
-                      " --install /tmp/#{context_basename}"\
-                      " --delete /tmp/#{context_basename}"\
-                      " --run-command 'systemctl enable network.service || exit 0'"
+
                 fallback_cmd = 'virt-customize -q'\
                                " -a #{disk}"\
                                ' --firstboot-install epel-release'\
@@ -805,6 +838,7 @@ _EOF_"
               " -a #{disk}"\
               ' -i'\
               " #{cmd}"
+        puts "Running: #{cmd}"
         _stdout, _stderr, _status = Open3.capture3(cmd)
     end
 
