@@ -446,6 +446,13 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
+    OVA_PATH = {
+        :name => 'ova_path',
+        :large => '--ova-path /path/to/files',
+        :description => 'Path to OVA files in case the guest was exported as a "Folder of files" or if the OVA has been previously unpacked',
+        :format => String
+    }
+
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
     V2V_OPTS = [V2V_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY]
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
@@ -454,6 +461,7 @@ CommandParser::CmdParser.new(ARGV) do
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                    CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                    PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
+    IMPORT_OVA_OPTS = [OVA_PATH] + V2V_OPTS
 
     ############################################################################
     # list resources
@@ -500,7 +508,7 @@ CommandParser::CmdParser.new(ARGV) do
 
         Examples:
             VOPTS='--vcenter 12.34.56.78 --vuser Administrator@vsphere.local --vpass changeme123'
-            
+
             - Convert a virtual machine:
 
             oneswap convert vm-1234 $VOPTS [--fallback|--custom] [--network ID] [--datacenter ID]
@@ -578,5 +586,62 @@ CommandParser::CmdParser.new(ARGV) do
         end
 
         0
+    end
+
+    import_ova_desc = <<-EOT.unindent
+        Import an OVA file exported from VMware
+
+        Examples:
+           - import from an OVA file:
+
+             oneswap import-ova OVA.ova
+
+           - import from an OVF file:
+
+             oneswap import-ova --path /path/to/files
+    EOT
+
+    command :import_ova, import_ova_desc, :file, :options => IMPORT_OVA_OPTS do
+
+        begin
+            if options[:config_file] && !File.exist?(options[:config_file])
+                puts "Unable to find the config file at #{options[:config_file]}"
+            end
+
+            options[:config_file] ||= '/var/lib/one/oneswap.yaml'
+            cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
+            options.merge!(cfg_file) if cfg_file
+
+            raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
+            raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk]
+            if options[:hybrid] && ( options[:custom] || options[:esxi_ip] || options[:vddk] )
+                raise 'Cannot use Hybrid option with Custom, ESXi, or VDDK options.'
+            end
+            if options[:virtio_path] && !File.exist?(options[:virtio_path])
+                raise "Windows VirtIO ISO cannot be found at #{options[:virtio_path]}"
+            end
+            if options[:qemu_ga_win] && !File.exist?(options[:qemu_ga_win])
+                raise "Windows QEMU Guest Agent ISO cannot be found at #{options[:qemu_ga_win]}"
+            end
+            if (options[:virtio_path] || options[:qemu_ga_win]) && options[:custom_convert]
+                vcv = `virt-customize --version`.split(' ')[1]
+                if Gem::Version.new(vcv) <= Gem::Version.new('1.49.9')
+                    puts 'Windows VirtIO and QEMU Guest Agent require virt-customize >= 1.49.9.'
+                    options[:virtio_path] = options[:qemu_ga_win] = false
+                end
+            end
+
+            options[:work_dir]      ||= '/tmp'
+            options[:format]        ||= 'qcow2'
+            options[:context]       ||= '/var/lib/one/context/'
+            options[:datastore]     ||= 1
+            options[:virt_tools]    ||= '/usr/local/share/virt-tools'
+            options[:v2v_path]      ||= 'virt-v2v'
+
+            helper.import(args[0], options)
+        rescue StandardError => e
+            STDERR.puts e.message
+            exit 1
+        end
     end
 end

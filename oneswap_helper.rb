@@ -26,7 +26,7 @@ class String
     def magenta;        "\e[35m#{self}\e[0m" end
     def cyan;           "\e[36m#{self}\e[0m" end
     def gray;           "\e[37m#{self}\e[0m" end
-    
+
     def bg_black;       "\e[40m#{self}\e[0m" end
     def bg_red;         "\e[41m#{self}\e[0m" end
     def bg_green;       "\e[42m#{self}\e[0m" end
@@ -35,7 +35,7 @@ class String
     def bg_magenta;     "\e[45m#{self}\e[0m" end
     def bg_cyan;        "\e[46m#{self}\e[0m" end
     def bg_gray;        "\e[47m#{self}\e[0m" end
-    
+
     def bold;           "\e[1m#{self}\e[22m" end
     def italic;         "\e[3m#{self}\e[23m" end
     def underline;      "\e[4m#{self}\e[24m" end
@@ -241,7 +241,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         begin
             _config = YAML.safe_load(File.read(path))
         rescue StandardError => _e
-            str_error="Unable to read '#{path}'. Invalid YAML syntax:\n"
+            str_error = "Unable to read '#{path}'. Invalid YAML syntax:\n"
 
             raise str_error
         end
@@ -353,6 +353,138 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         cleanup_dirs
     end
 
+    def create_vm_template_from_ova
+        # Open XML domain file generated from conversion
+        domain_xml = File.open("#{@options[:work_dir]}/conversions/#{@options[:name]}*.xml")
+        xml_template = Nokogiri::XML(domain_xml)
+
+        vm_template_config = {
+            "NAME" => xml_template.xpath("//name").text(),
+            "CPU"  => xml_template.xpath("//vcpu").text(),
+            "vCPU" => xml_template.xpath("//vcpu").text(),
+            "MEMORY" => xml_template.xpath("//memory").text(),
+            "HYPERVISOR" => "kvm"
+        }
+
+        local_cpu = xml_template.xpath("//cpu")
+        if !local_cpu.empty?
+            local_cpu_model = local_cpu.xpath("@mode").text()
+            if local_cpu_model.eql?("host-model")
+                vm_template_config["CPU_MODEL"] = {"MODEL" => "#{local_cpu.xpath("/model").text()}"}
+            else
+                vm_template_config["CPU_MODEL"] = {"MODEL" => "#{local_cpu_model}"}
+        end
+
+        # Get all network interfaces
+        # Check if there's interfaces configured
+        local_interfaces = xml_template.xpath("//devices//interface")
+        if !local_interfaces.empty?
+            # Add network context
+            vm_template_config["CONTEXT"] = {
+                "NETWORK" => "YES",
+                "SSH_PUBLIC_KEY" => "$USER[SSH_PUBLIC_KEY]"
+            }
+            # TODO Should we create interfaces? Do not think so...
+            #local_interfaces.each do |interface|
+            #end
+        end
+
+        # If the currentMemory attribute is present, it means memory hotplug is enabled
+        # memory indicates maximum allocation of memory at boot time,
+        # while currentMemory is the actual allocation of memory
+        if !xml_template.xpath("//currentMemory").empty?
+            vm_template_config["MEMORY_RESIZE_MODE"] = "HOTPLUG"
+            vm_template_config["MEMORY_MAX"] = xml_template.xpath("//memory").text()
+            if !xml_template.xpath("//maxMemory").empty?
+                vm_template_config["MEMORY_MAX"] = xml_template.xpath("//maxMemory").text()
+            end
+
+            if vm_template_config.include?("HOT_RESIZE")
+                vm_template_config["HOT_RESIZE"]["MEMORY_HOT_ADD_ENABLED"] = "YES"
+            else
+                vm_template_config["HOT_RESIZE"] = { "MEMORY_HOT_ADD_ENABLED" => "YES" }
+            end
+        end
+
+        if xml_template.xpath("//vcpus//vcpu/@hotpluggable")=='yes'
+            # TODO Search max vCPU parameter in libvirt domain
+            # vm_template_config["VCPU_MAX"] = "#{@props['config'][:hardware][:numCPU]}"
+            # if @options[:vcpu_max]
+            #     vm_template_config["VCPU_MAX"] = "#{@options[:vcpu_max]}"
+            # end
+
+            if vm_template_config.include?("HOT_RESIZE")
+                vm_template_config["HOT_RESIZE"]["CPU_HOT_ADD_ENABLED"] = "YES"
+            else
+                vm_template_config["HOT_RESIZE"] = { "CPU_HOT_ADD_ENABLED" => "YES" }
+            end
+        end
+
+        if !xml_template.xpath("//devices//graphics").empty?
+            possible_options = ['spice', 'vnc', 'sdl']
+
+            local_graphics = xml_template.xpath("//devices//graphics")
+            if possible_options.include?(local_graphics.xpath("@type").text().downcase)
+                vm_template_config["GRAPHICS"] = {}
+                vm_template_config["GRAPHICS"]["TYPE"] = local_graphics.xpath("@type").text().upcase
+
+                if !local_graphics.xpath("@port").empty?
+                    vm_template_config["GRAPHICS"]["PORT"] = local_graphics.xpath("@port").text()
+                end
+
+                if !local_graphics.xpath("@passwd").empty?
+                    vm_template_config["GRAPHICS"]["PASSWD"] = local_graphics.xpath("@passwd").text()
+                end
+
+                if !local_graphics.xpath("@keymap").empty?
+                    vm_template_config["GRAPHICS"]["KEYMAP"] = local_graphics.xpath("@passwd").text()
+                end
+
+                if !local_graphics.xpath("//listen/@address").empty?
+                    vm_template_config["GRAPHICS"]["LISTEN"] = local_graphics.xpath("//listen/@address").text()
+                end
+
+                # TODO command not an atribute of graphics in libvirt domain
+                #if @options[:graphics_command]
+                #    vm_template_config["GRAPHICS"]["COMMAND"] = @options[:graphics_command]
+                #end
+            else
+                puts "Invalid graphics type. Please use one of the following: #{possible_options.join(', ')}"
+            end
+        end
+
+        vmt = OpenNebula::Template.new(OpenNebula::Template.build_xml, @client)
+        vmt.add_element('//VMTEMPLATE', vm_template_config)
+
+        # Add UEFI configuration
+        # Create @props variable here to call template_firmware function
+
+        # If //os//loader exists it means it uses UEFI
+        if !xml_template.xpath("//os///loader").empty?
+            local_loader_path = xml_template.xpath("//os///loader").text()
+            if xml_template.xpath("//os///loader/@secure").text() == 'yes'
+                @props = {
+                    :config => {
+                        :firmware => 'efi',
+                        :bootOptions => {
+                            :efiSecureBootEnabled => 'yes'
+                        }
+                    }
+                }
+            else
+                @props = {
+                    :config => {
+                        :firmware => 'efi'
+                    }
+                }
+            end
+
+        end
+        vmt.add_element('//VMTEMPLATE', template_firmware)
+
+        vmt
+    end
+
     def create_base_template
         vm_template_config = {
             "NAME" => "#{@props['name']}",
@@ -387,7 +519,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             if @options[:memory_max]
                 vm_template_config["MEMORY_MAX"] = "#{@options[:memory_max]}"
             end
-    
+
             if vm_template_config.include?("HOT_RESIZE")
                 vm_template_config["HOT_RESIZE"]["MEMORY_HOT_ADD_ENABLED"] = "YES"
             else
@@ -400,7 +532,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             if @options[:vcpu_max]
                 vm_template_config["VCPU_MAX"] = "#{@options[:vcpu_max]}"
             end
-            
+
             if vm_template_config.include?("HOT_RESIZE")
                 vm_template_config["HOT_RESIZE"]["CPU_HOT_ADD_ENABLED"] = "YES"
             else
@@ -418,15 +550,15 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 if @options[:graphics_port]
                     vm_template_config["GRAPHICS"]["PORT"] = @options[:graphics_port]
                 end
-    
+
                 if @options[:graphics_password]
                     vm_template_config["GRAPHICS"]["PASSWD"] = @options[:graphics_password]
                 end
-    
+
                 if @options[:graphics_keymap]
                     vm_template_config["GRAPHICS"]["KEYMAP"] = @options[:graphics_keymap]
                 end
-    
+
                 if @options[:graphics_listen]
                     vm_template_config["GRAPHICS"]["LISTEN"] = @options[:graphics_listen]
                 end
@@ -912,8 +1044,8 @@ _EOF_"
         end
 
         view = viewmgr.CreateContainerView({
-                :container => rootFolder, 
-                :type => [type], 
+                :container => rootFolder,
+                :type => [type],
                 :recursive => true
             });
         filterSpec = RbVmomi::VIM.PropertyFilterSpec(
@@ -953,13 +1085,13 @@ _EOF_"
     end
 
     def build_v2v_vc_cmd
-        # virt-v2v 
+        # virt-v2v
         #   -ic 'vpx://UserName@vCenter.Host.FQDN
         #             /Datacenter/Cluster/Host?no_verify=1'
         #   -ip password_file.txt ### Should be a 0600 file with only the password, no newline
         #   'virtual-machine-name'
-        #   -o local 
-        #   -os /path/to/working/folder 
+        #   -o local
+        #   -os /path/to/working/folder
         #   -of [qcow2|raw]
         dc,cluster,host = nil
         pobj = @props['runtime.host']
@@ -993,13 +1125,13 @@ _EOF_"
     end
 
     def build_v2v_esx_cmd
-        # virt-v2v 
+        # virt-v2v
         #   -i vmx
         #   -ic 'ssh://UserName@ESXI.host.fqdn
         #             /vmfs/volumes/datastore/vmpath/vmfile.vmx
         #   -ip password_file.txt ### Should be a 0600 file with only the password, no newline
-        #   -o local 
-        #   -os /path/to/working/folder 
+        #   -o local
+        #   -os /path/to/working/folder
         #   -of [qcow2|raw]
 
         # [datastore1] example-vm/example-vm.vmx
@@ -1026,15 +1158,15 @@ _EOF_"
         # openssl s_client -connect 147.75.45.11:443 </dev/null 2>/dev/null |
         # openssl x509 -in /dev/stdin -fingerprint -sha1 -noout 2>/dev/null
 
-        # virt-v2v 
+        # virt-v2v
         #   -ic 'vpx://UserName@vCenter.Host.FQDN/Datacenter/Cluster/Host?no_verify=1'
         #   -ip password_file.txt ### Should be a 0600 file with only the password, no newline
         #   -it vddk
         #   -io vddk-libdir=/path/to/vmware-vix-disklib-distrib
         #   -io vddk-thumbprint=xx:xx:xx:xx... # gather this
         #   'virtual-machine-name'
-        #   -o local 
-        #   -os /path/to/working/folder 
+        #   -o local
+        #   -os /path/to/working/folder
         #   -of [qcow2|raw]
         dc,cluster,host = nil
         pobj = @props['runtime.host']
@@ -1052,16 +1184,16 @@ _EOF_"
         ssl_context = OpenSSL::SSL::SSLContext.new
         ssl_client = OpenSSL::SSL::SSLSocket.new(tcp_client, ssl_context)
         ssl_client.connect
-        
+
         ssl_client.puts("GET / HTTP/1.0\r\n\r\n")
         ssl_client.read
-        
+
         ssl_client.sysclose
         tcp_client.close
-        
+
         cert = ssl_client.peer_cert
         @options[:vddk_thumb] = OpenSSL::Digest::SHA1.new(cert.to_der).to_s.scan(/../).join(':')
-        
+
         puts "Certificate thumbprint: #{@options[:vddk_thumb]}"
 
         url = "vpx://#{CGI::escape(@options[:vuser])}@#{@options[:vcenter]}"\
@@ -1076,6 +1208,21 @@ _EOF_"
                   " -os #{@options[:work_dir]}/conversions/"\
                   " -of #{@options[:format]}"\
                   " '#{@props['name']}'"
+        command
+    end
+
+    def build_v2v_ova
+        # virt-v2v
+        #   -i VM.ova
+        #   -o local
+        #   -os /path/to/working/folder
+        #   -of [qcow2|raw]
+
+        command = "#{@options[:v2v_path]} -v --machine-readable"\
+                  " -i ova #{@options[:ova_path]}"\
+                  ' -o local'\
+                  " -os #{@options[:work_dir]}/conversions/"\
+                  " -of #{@options[:format]}"
         command
     end
 
@@ -1095,6 +1242,8 @@ _EOF_"
             command = build_v2v_esx_cmd
         elsif @options[:vddk_path]
             command = build_v2v_vddk_cmd
+        elsif @options[:ova_path]
+            command = build_v2v_ova
         else
             command = build_v2v_vc_cmd
         end
@@ -1126,7 +1275,7 @@ _EOF_"
             if error_check
                 raise "Error: #{error_check.message}"
             end
-            if exit_status != 0 
+            if exit_status != 0
                 raise "virt-v2v exited in error code #{exit_status} but did not provide an error"
             end
 
@@ -1135,7 +1284,7 @@ _EOF_"
             if disks_on_file.length == 0
                 raise "There are no disks on the local filesystem due to previous failures."
             end
-    
+
             img_ids = create_one_images(disks_on_file)
             img_ids
         rescue StandardError => e
@@ -1264,9 +1413,9 @@ _EOF_"
             'chroot: /sysroot: running \'librpm\'' => "Querying RPMs with librpm, this can take a while".green,
             'dracut: *** Creating image file' => "Creating boot image with dracut".green
           }
-          
+
           line_prefix = prefixes.keys.detect { |e| line.start_with?(e) }
-          
+
           if line_prefix
             print "\n#{prefixes[line_prefix]}"
             STDOUT.flush
@@ -1571,7 +1720,7 @@ _EOF_"
                     end
                 end
                 nic_number += 1
-                
+
                 #vm_template.add_element('//VMTEMPLATE', net_templ)
             end
         elsif vc_nics.length > 0
@@ -1628,6 +1777,34 @@ _EOF_"
             password_file.close
 
             convert_vm
+        ensure
+            password_file.close unless password_file.nil? or password_file.closed?
+            cleanup_all
+        end
+    end
+
+    # Import a VM from file (OVA, folder with files)
+    #
+    # @param name    [Hash] Object Name
+    # @param options [Hash] User CLI options
+    def import(file, options)
+        name = File.basename(file, '.ova')
+        check_one_connectivity
+        if !Dir.exist?(options[:work_dir])
+            raise 'Provided working directory '\
+                  "#{options[:work_dir]} doesn't exist"
+        end
+        options[:name] = name
+        options[:work_dir] << "/#{name}"
+        @options = options
+        conv_path = "#{@options[:work_dir]}/conversions/"
+        tran_path = "#{@options[:work_dir]}/transfers/"
+        begin
+            Dir.mkdir(@options[:work_dir]) if !Dir.exist?(@options[:work_dir])
+            Dir.mkdir(conv_path) if !Dir.exist?(conv_path)
+            Dir.mkdir(tran_path) if !Dir.exist?(tran_path)
+
+            import_vm
         ensure
             password_file.close unless password_file.nil? or password_file.closed?
             cleanup_all
@@ -1746,6 +1923,44 @@ _EOF_"
         format_list.show(list, options)
     end
 
+    # Import VM
+    #
+    # @param options [Hash] User CLI Options
+    def import_vm
+        # Convert OVA to KVM compatible, getting disks and XML file for the VM
+        img_ids = run_v2v_conversion
+        puts img_ids.nil? ? "No Images ID's reported being created".red : "Created images: #{img_ids}".green
+
+        # Create base template using XML from OVA conversion
+        vm_template = create_vm_template_from_ova
+
+        img_ids.each do |i|
+            img_hash = { 'IMAGE_ID' => "#{i[:id]}" }
+            if @options[:dev_prefix]
+                img_hash["DEV_PREFIX"] = "#{@options[:dev_prefix]}"
+            elsif i[:os]
+                if i[:os] == 'windows'
+                    img_hash["DEV_PREFIX"] = "vd"
+                end
+            end
+            vm_template.add_element('//VMTEMPLATE', {"DISK" => img_hash})
+        end
+
+        # TODO Add NICs now
+
+        print "Allocating the VM template..."
+
+        rc = vm_template.allocate(vm_template.to_xml)
+
+        if rc.nil?
+            puts 'Success'.green
+            puts "VM Template ID: #{vm_template.id}\n"
+        else
+            puts 'Failed'.red
+            puts "\nVM Template:\n#{vm_template.to_xml}\n"
+        end
+    end
+
     # Convert VM
     #
     # @param options [Hash] User CLI Options
@@ -1784,10 +1999,10 @@ _EOF_"
             raise "Windows is not supported in OpenNebula's Custom Conversion process".red
         end
 
-        # Gather NIC backing early because it makes a call to vCenter, 
+        # Gather NIC backing early because it makes a call to vCenter,
         # which may not be authenticated after X hours of converting disks
-        vc_nics, vc_nic_backing = get_vcenter_nic_info 
-        
+        vc_nics, vc_nic_backing = get_vcenter_nic_info
+
         vm_template = create_vm_template
 
         img_ids = @options[:custom_convert] ? run_custom_conversion : run_v2v_conversion
