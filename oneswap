@@ -446,10 +446,10 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
-    OVA_PATH = {
-        :name => 'ova_path',
-        :large => '--ova-path /path/to/files',
-        :description => 'Path to OVA files in case the guest was exported as a "Folder of files" or if the OVA has been previously unpacked',
+    OVA = {
+        :name => 'ova',
+        :large => '--ova ova.ova',
+        :description => 'File name or path to OVA files folder in case the guest was exported as a "Folder of files" or if the OVA has been previously unpacked',
         :format => String
     }
 
@@ -461,7 +461,7 @@ CommandParser::CmdParser.new(ARGV) do
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                    CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                    PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
-    IMPORT_OVA_OPTS = [OVA_PATH] + V2V_OPTS
+    IMPORT_OPTS = [OVA, DATASTORE, NETWORK] + V2V_OPTS
 
     ############################################################################
     # list resources
@@ -588,20 +588,20 @@ CommandParser::CmdParser.new(ARGV) do
         0
     end
 
-    import_ova_desc = <<-EOT.unindent
+    import_desc = <<-EOT.unindent
         Import an OVA file exported from VMware
 
         Examples:
            - import from an OVA file:
 
-             oneswap import-ova OVA.ova
+             oneswap import "Template Name" --ova OVA.ova
 
            - import from an OVF file:
 
-             oneswap import-ova --path /path/to/files
+             oneswap import "Template Name" --ova /path/to/files
     EOT
 
-    command :import_ova, import_ova_desc, :file, :options => IMPORT_OVA_OPTS do
+    command :import, import_desc, :object, :options => IMPORT_OPTS do
 
         begin
             if options[:config_file] && !File.exist?(options[:config_file])
@@ -638,7 +638,7 @@ CommandParser::CmdParser.new(ARGV) do
             options[:virt_tools]    ||= '/usr/local/share/virt-tools'
             options[:v2v_path]      ||= 'virt-v2v'
 
-            helper.import(args[0], options)
+            helper.import(options)
         rescue StandardError => e
             STDERR.puts e.message
             exit 1

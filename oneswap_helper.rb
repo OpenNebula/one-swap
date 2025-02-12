@@ -353,26 +353,63 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         cleanup_dirs
     end
 
+    def mem_to_mb(value, unit)
+        units = {
+          'b' => 1.0 / (1024 * 1024),      # bytes to MB
+          'bytes' => 1.0 / (1024 * 1024),  # bytes to MB
+          'kb' => 1.0 / 1024,              # KB to MB
+          'k' => 1.0 / 1024,               # kB (kibibytes) to MB
+          'kib' => 1.0 / 1024,             # KiB to MB
+          'mb' => 1.0,                     # MB to MB
+          'm' => 1.0,                      # MiB to MB
+          'mib' => 1.0,                    # MiB to MB
+          'gb' => 1024.0,                  # GB to MB
+          'g' => 1024.0,                   # GiB to MB
+          'gib' => 1024.0,                 # GiB to MB
+          'tb' => 1024.0 * 1024,           # TB to MB
+          't' => 1024.0 * 1024,            # TiB to MB
+          'tib' => 1024.0 * 1024           # TiB to MB
+        }
+
+        # Convertir la unidad a minúsculas para hacer la búsqueda insensible a mayúsculas/minúsculas
+        unit = unit.strip.downcase
+
+        # Check if unit is within the hash keys
+        if units.key?(unit)
+          value_mb = value.to_i * units[unit]
+          return value_mb.to_i
+        else
+          raise ArgumentError, "unit not valid: '#{unit}'. Valid units: 'b', 'bytes', 'KB', 'k', 'KiB', 'MB', 'M', 'MiB', 'GB', 'G', 'GiB', 'TB', 'T', 'TiB'."
+        end
+      end
+
     def create_vm_template_from_ova
         # Open XML domain file generated from conversion
-        domain_xml = File.open("#{@options[:work_dir]}/conversions/#{@options[:name]}*.xml")
+        xml_file = Dir.glob("#{@options[:work_dir]}/conversions/*.xml")
+        if xml_file.empty?
+            puts "No XML domain file found"
+            exit 0
+        end
+
+        domain_xml = File.read(xml_file.first)
         xml_template = Nokogiri::XML(domain_xml)
 
         vm_template_config = {
-            "NAME" => xml_template.xpath("//name").text(),
-            "CPU"  => xml_template.xpath("//vcpu").text(),
-            "vCPU" => xml_template.xpath("//vcpu").text(),
-            "MEMORY" => xml_template.xpath("//memory").text(),
+            "NAME" => xml_template.xpath("//name").text,
+            "CPU"  => xml_template.xpath("//vcpu").text,
+            "vCPU" => xml_template.xpath("//vcpu").text,
+            "MEMORY" => mem_to_mb(xml_template.xpath("//memory").text, xml_template.xpath("//memory/@unit").text),
             "HYPERVISOR" => "kvm"
         }
 
         local_cpu = xml_template.xpath("//cpu")
         if !local_cpu.empty?
-            local_cpu_model = local_cpu.xpath("@mode").text()
-            if local_cpu_model.eql?("host-model")
-                vm_template_config["CPU_MODEL"] = {"MODEL" => "#{local_cpu.xpath("/model").text()}"}
-            else
-                vm_template_config["CPU_MODEL"] = {"MODEL" => "#{local_cpu_model}"}
+            local_cpu_model = local_cpu.xpath("@mode").text
+            if local_cpu_model.eql?("custom")
+                vm_template_config["CPU_MODEL"] = {"MODEL" => "#{local_cpu.xpath("/model").text}"}
+            elsif local_cpu_model.eql?("host-passthrough")
+                vm_template_config["CPU_MODEL"] = {"MODEL" => "host-passthrough"}
+            end
         end
 
         # Get all network interfaces
@@ -385,8 +422,20 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 "SSH_PUBLIC_KEY" => "$USER[SSH_PUBLIC_KEY]"
             }
             # TODO Should we create interfaces? Do not think so...
-            #local_interfaces.each do |interface|
-            #end
+            puts "Adding #{local_interfaces} NICs using Network ID #{@options[:network]}"
+            nic_number=0
+            local_interfaces.each do |interface|
+                vm_template_config['NIC'] = {
+                    'NETWORK_ID' => "#{@options[:network]}"
+                }
+
+                # Check for MAC Address
+                if !local_interfaces.xpath("//mac/@address").empty?
+                    puts "Adding MAC address to NIC##{nic_number}"
+                    vm_template_config['NIC']['MAC'] = local_interfaces.xpath("//mac/@address").text
+                end
+            end
+            nic_number += 1
         end
 
         # If the currentMemory attribute is present, it means memory hotplug is enabled
@@ -394,9 +443,9 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         # while currentMemory is the actual allocation of memory
         if !xml_template.xpath("//currentMemory").empty?
             vm_template_config["MEMORY_RESIZE_MODE"] = "HOTPLUG"
-            vm_template_config["MEMORY_MAX"] = xml_template.xpath("//memory").text()
+            vm_template_config["MEMORY_MAX"] = mem_to_mb(xml_template.xpath("//memory").text, xml_template.xpath("//memory/@unit").text)
             if !xml_template.xpath("//maxMemory").empty?
-                vm_template_config["MEMORY_MAX"] = xml_template.xpath("//maxMemory").text()
+                vm_template_config["MEMORY_MAX"] = mem_to_mb(xml_template.xpath("//maxMemory").text, xml_template.xpath("//maxMemory/@unit").text)
             end
 
             if vm_template_config.include?("HOT_RESIZE")
@@ -424,24 +473,24 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             possible_options = ['spice', 'vnc', 'sdl']
 
             local_graphics = xml_template.xpath("//devices//graphics")
-            if possible_options.include?(local_graphics.xpath("@type").text().downcase)
+            if possible_options.include?(local_graphics.xpath("@type").text.downcase)
                 vm_template_config["GRAPHICS"] = {}
-                vm_template_config["GRAPHICS"]["TYPE"] = local_graphics.xpath("@type").text().upcase
+                vm_template_config["GRAPHICS"]["TYPE"] = local_graphics.xpath("@type").text.upcase
 
                 if !local_graphics.xpath("@port").empty?
-                    vm_template_config["GRAPHICS"]["PORT"] = local_graphics.xpath("@port").text()
+                    vm_template_config["GRAPHICS"]["PORT"] = local_graphics.xpath("@port").text
                 end
 
                 if !local_graphics.xpath("@passwd").empty?
-                    vm_template_config["GRAPHICS"]["PASSWD"] = local_graphics.xpath("@passwd").text()
+                    vm_template_config["GRAPHICS"]["PASSWD"] = local_graphics.xpath("@passwd").text
                 end
 
                 if !local_graphics.xpath("@keymap").empty?
-                    vm_template_config["GRAPHICS"]["KEYMAP"] = local_graphics.xpath("@passwd").text()
+                    vm_template_config["GRAPHICS"]["KEYMAP"] = local_graphics.xpath("@passwd").text
                 end
 
                 if !local_graphics.xpath("//listen/@address").empty?
-                    vm_template_config["GRAPHICS"]["LISTEN"] = local_graphics.xpath("//listen/@address").text()
+                    vm_template_config["GRAPHICS"]["LISTEN"] = local_graphics.xpath("//listen/@address").text
                 end
 
                 # TODO command not an atribute of graphics in libvirt domain
@@ -460,11 +509,11 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         # Create @props variable here to call template_firmware function
 
         # If //os//loader exists it means it uses UEFI
-        if !xml_template.xpath("//os///loader").empty?
-            local_loader_path = xml_template.xpath("//os///loader").text()
-            if xml_template.xpath("//os///loader/@secure").text() == 'yes'
+        if !xml_template.xpath("//os//loader").empty?
+            local_loader_path = xml_template.xpath("//os//loader").text
+            if xml_template.xpath("//os//loader/@secure").text == 'yes'
                 @props = {
-                    :config => {
+                    'config' => {
                         :firmware => 'efi',
                         :bootOptions => {
                             :efiSecureBootEnabled => 'yes'
@@ -473,8 +522,10 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 }
             else
                 @props = {
-                    :config => {
-                        :firmware => 'efi'
+                    'config' => {
+                        :firmware => 'efi',
+                        :bootOptions => {
+                        }
                     }
                 }
             end
@@ -831,6 +882,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                           " --run-command 'systemctl enable NetworkManager.service || exit 0'"
                 when /^ubuntu/, /^debian/
                     context_fullpath = detect_context_package('debian')
+                    return false if !context_fullpath
                     context_basename = File.basename(context_fullpath)
                     cmd = 'virt-customize -q'\
                           " -a #{disk}"\
@@ -1219,7 +1271,7 @@ _EOF_"
         #   -of [qcow2|raw]
 
         command = "#{@options[:v2v_path]} -v --machine-readable"\
-                  " -i ova #{@options[:ova_path]}"\
+                  " -i ova #{@options[:ova]}"\
                   ' -o local'\
                   " -os #{@options[:work_dir]}/conversions/"\
                   " -of #{@options[:format]}"
@@ -1242,7 +1294,7 @@ _EOF_"
             command = build_v2v_esx_cmd
         elsif @options[:vddk_path]
             command = build_v2v_vddk_cmd
-        elsif @options[:ova_path]
+        elsif @options[:ova]
             command = build_v2v_ova
         else
             command = build_v2v_vc_cmd
@@ -1787,8 +1839,8 @@ _EOF_"
     #
     # @param name    [Hash] Object Name
     # @param options [Hash] User CLI options
-    def import(file, options)
-        name = File.basename(file, '.ova')
+    def import(options)
+        name = File.basename(options[:ova], '.ova')
         check_one_connectivity
         if !Dir.exist?(options[:work_dir])
             raise 'Provided working directory '\
@@ -1806,7 +1858,6 @@ _EOF_"
 
             import_vm
         ensure
-            password_file.close unless password_file.nil? or password_file.closed?
             cleanup_all
         end
     end
