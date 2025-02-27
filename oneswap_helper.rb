@@ -529,7 +529,14 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                     }
                 }
             end
-
+        elsif
+            @props = {
+                'config' => {
+                    :firmware => 'bios',
+                    :bootOptions => {
+                    }
+                }
+            }
         end
         vmt.add_element('//VMTEMPLATE', template_firmware)
 
