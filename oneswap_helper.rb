@@ -899,10 +899,10 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                                " --firstboot-install /tmp/#{context_basename}"\
                                " --run-command 'systemctl enable network.service || exit 0'"
             end
-            if osinfo['os'].start_with?('alt') || osinfo['os'].start_with?('opensuse')
-                if osinfo['os'].start_with('alt')
+            if osinfo['os'].start_with?('alt') || osinfo['os'].start_with?('opensuse') || osinfo['os'].start_with?('sles')
+                if osinfo['os'].start_with?('alt')
                     context_fullpath = detect_context_package('alt')
-                elsif osinfo['os'].start_with('opensuse')
+                elsif osinfo['os'].start_with?('opensuse') || osinfo['os'].start_with?('sles')
                     context_fullpath = detect_context_package('opensuse')
                 end
                 context_basename = File.basename(context_fullpath)
