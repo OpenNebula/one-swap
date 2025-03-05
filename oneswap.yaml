@@ -37,6 +37,7 @@
 #:virtio_path:                            # Path to VirtIO drivers for Windows
 #:virt_tools: /usr/local/share/virt-tools # Path to the directory containing rhsrvany.exe
 #:v2v_path: 'virt-v2v'                    # Path to virt-v2v
+#:root: 'first'                           # Choose the root filesystem to be converted
 
 # Extra Options
 #:delete: false                     # Delete the VM Disks after transfer

@@ -371,12 +371,11 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
           'tib' => 1024.0 * 1024           # TiB to MB
         }
 
-        # Convertir la unidad a minúsculas para hacer la búsqueda insensible a mayúsculas/minúsculas
         unit = unit.strip.downcase
 
         # Check if unit is within the hash keys
         if units.key?(unit)
-          value_mb = value.to_i * units[unit]
+          value_mb = value.to_f * units[unit]
           return value_mb.to_i
         else
           raise ArgumentError, "unit not valid: '#{unit}'. Valid units: 'b', 'bytes', 'KB', 'k', 'KiB', 'MB', 'M', 'MiB', 'GB', 'G', 'GiB', 'TB', 'T', 'TiB'."
@@ -407,8 +406,17 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             local_cpu_model = local_cpu.xpath("@mode").text
             if local_cpu_model.eql?("custom")
                 vm_template_config["CPU_MODEL"] = {"MODEL" => "#{local_cpu.xpath("/model").text}"}
-            elsif local_cpu_model.eql?("host-passthrough")
+            else
                 vm_template_config["CPU_MODEL"] = {"MODEL" => "host-passthrough"}
+            end
+        end
+
+        # CPU Features from <features>
+        local_features = xml_template.xpath("//features//*")
+        if !local_features.empty?
+            vm_template_config["FEATURES"] = {}
+            local_features.each do |feature|
+                vm_template_config["FEATURES"]["#{feature.name.upcase}"] = nil
             end
         end
 
@@ -508,9 +516,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         # Add UEFI configuration
         # Create @props variable here to call template_firmware function
 
-        # If //os//loader exists it means it uses UEFI
-        if !xml_template.xpath("//os//loader").empty?
-            local_loader_path = xml_template.xpath("//os//loader").text
+        # Check for EFI configuration
+        if xml_template.xpath("//os/@firmware").text == 'efi'
             if xml_template.xpath("//os//loader/@secure").text == 'yes'
                 @props = {
                     'config' => {
@@ -529,7 +536,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                     }
                 }
             end
-        elsif
+        else
             @props = {
                 'config' => {
                     :firmware => 'bios',
@@ -1276,12 +1283,14 @@ _EOF_"
         #   -o local
         #   -os /path/to/working/folder
         #   -of [qcow2|raw]
+        #   --root=[ask|single|first|/dev/sdX]
 
         command = "#{@options[:v2v_path]} -v --machine-readable"\
                   " -i ova #{@options[:ova]}"\
                   ' -o local'\
                   " -os #{@options[:work_dir]}/conversions/"\
-                  " -of #{@options[:format]}"
+                  " -of #{@options[:format]}"\
+                  " --root=#{@options[:root]}"
         command
     end
 

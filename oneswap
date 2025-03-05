@@ -453,8 +453,15 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
+    ROOT = {
+        :name => 'root',
+        :large => '--root option',
+        :description => 'Choose the root filesystem to be converted. Can be ask, single, first or /dev/sdX',
+        :format => String
+    }
+
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
-    V2V_OPTS = [V2V_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY]
+    V2V_OPTS = [V2V_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY, ROOT]
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
@@ -594,14 +601,14 @@ CommandParser::CmdParser.new(ARGV) do
         Examples:
            - import from an OVA file:
 
-             oneswap import "Template Name" --ova OVA.ova
+             oneswap import --ova OVA.ova
 
            - import from an OVF file:
 
-             oneswap import "Template Name" --ova /path/to/files
+             oneswap import --ova /path/to/files
     EOT
 
-    command :import, import_desc, :object, :options => IMPORT_OPTS do
+    command :import, import_desc, :options => IMPORT_OPTS do
 
         begin
             if options[:config_file] && !File.exist?(options[:config_file])
@@ -637,6 +644,7 @@ CommandParser::CmdParser.new(ARGV) do
             options[:datastore]     ||= 1
             options[:virt_tools]    ||= '/usr/local/share/virt-tools'
             options[:v2v_path]      ||= 'virt-v2v'
+            options[:root]          ||= 'first'
 
             helper.import(options)
         rescue StandardError => e
