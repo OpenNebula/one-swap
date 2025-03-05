@@ -1,32 +1,35 @@
 # OpenNebula Transfer Options, required for remote OpenNebula server
-#:http_transfer: false      # Enable HTTP transfer
-#:http_host: '192.168.0.10' # Hostname of this server
-#:http_port: 29869          # HTTP Port to transfer over
+#:http_transfer: false                    # Enable HTTP transfer
+#:http_host: '192.168.0.10'               # Hostname of this server
+#:http_port: 29869                        # HTTP Port to transfer over
 
 # vCenter Authentication
-#:vcenter: '172.20.0.123'              # vCenter hostname or IP
-#:vuser: 'administrator@vsphere.local' # vCenter username
-#:vpass: 'changeme123'                 # vCenter password
-#:port: 443                            # vCenter port
+#:vcenter: '172.20.0.123'                 # vCenter hostname or IP
+#:vuser: 'administrator@vsphere.local'    # vCenter username
+#:vpass: 'changeme123'                    # vCenter password
+#:port: 443                               # vCenter port
 
 # ESXi Authentication
-#:esxi_ip: '172.20.0.123'  # ESXi hostname or IP
-#:esxi_user: 'root'        # ESXi username
-#:esxi_pass: 'changeme123' # ESXi password
+#:esxi_ip: '172.20.0.123'                 # ESXi hostname or IP
+#:esxi_user: 'root'                       # ESXi username
+#:esxi_pass: 'changeme123'                # ESXi password
 
 # Transfer Options
-#:custom_convert: # Uses OpenNebula's custom conversion process, useful for distributions which are not supported or fail to convert
-#:fallback:       # Fallback to OpenNebula's custom conversion process
-#:hybrid:         # Transfer using rbvmomi2's download, then convert with virt-v2v locally
-#:img_wait:       # Amount of time to wait in seconds for image to be created in OpenNebula, default: 120
+#:custom_convert:                         # Uses OpenNebula's custom conversion process, useful for distributions which are not supported or fail to convert
+#:fallback:                               # Fallback to OpenNebula's custom conversion process
+#:hybrid:                                 # Transfer using rbvmomi2's download, then convert with virt-v2v locally
+#:img_wait:                               # Amount of time to wait in seconds for image to be created in OpenNebula, default: 120
+
+# Import Options
+#:ova: /path/to/ova                       # Path to OVA or folder with OVF files
 
 # NIC Options
-#:network: 1      # ID of the OpenNebula network
-#:skip_ip: false  # Do not create IP in OpenNebula network
-#:skip_mac: false # Do not create MAC in OpenNebula network
+#:network: 1                              # ID of the OpenNebula network
+#:skip_ip: false                          # Do not create IP in OpenNebula network
+#:skip_mac: false                         # Do not create MAC in OpenNebula network
 
 # Datastore Options
-#:datastore: 1    # ID of the OpenNebula Image datastore
+#:datastore: 1                            # ID of the OpenNebula Image datastore
 
 # virt-v2v Options
 #:work_dir: '/tmp'                        # Directory where disk conversion takes place, will make subdir for each VM
@@ -40,27 +43,27 @@
 #:root: 'first'                           # Choose the root filesystem to be converted
 
 # Extra Options
-#:delete: false                     # Delete the VM Disks after transfer
-#:context: '/var/lib/one/context/'  # Path to OpenNebula context packages
+#:delete: false                           # Delete the VM Disks after transfer
+#:context: '/var/lib/one/context/'        # Path to OpenNebula context packages
 
 # OpenNebula Placement Options
-#:one_cluster:           # ID of the OpenNebula Cluster
-#:one_host:              # ID of the OpenNebula Host
-#:one_datastore:         # ID of the OpenNebula System Datastore
-#:one_datastore_cluster: # ID of the OpenNebula Cluster for automatic Datastore assignment
+#:one_cluster:                            # ID of the OpenNebula Cluster
+#:one_host:                               # ID of the OpenNebula Host
+#:one_datastore:                          # ID of the OpenNebula System Datastore
+#:one_datastore_cluster:                  # ID of the OpenNebula Cluster for automatic Datastore assignment
 
 # Extra VM Options:
-#:dev_prefix:                 # Device prefix for the VM disks ex: sd, hd, vd
-#:cpu_model:                  # CPU model
-#:graphics_type:              # Graphics type: vnc, sdl, spice
-#:graphics_listen:            # Graphics listen IP
-#:graphics_port:              # Graphics port
-#:graphics_keymap:            # Graphics keymap
-#:graphics_password:          # Graphics password
-#:graphics_command:           # Graphics command
-#:disable_contextualization:  # Remove default contextualization options in OpenNebula, Default: Network and SSH enabled
-#:persistent_img:             # Persistent Image, default: false
-#:memory_max:                 # Memory max in MB
-#:vcpu_max:                   # vCPU max allowed in integer format. CPU Hot Add required in VMWare.
-#:cpu:                        # Physical CPU allowed in integer format. Default: match CPU cores from vCenter
-#:vcpu:                       # vCPU allowed in integer format. Default: match CPU cores from vCenter
+#:dev_prefix:                             # Device prefix for the VM disks ex: sd, hd, vd
+#:cpu_model:                              # CPU model
+#:graphics_type:                          # Graphics type: vnc, sdl, spice
+#:graphics_listen:                        # Graphics listen IP
+#:graphics_port:                          # Graphics port
+#:graphics_keymap:                        # Graphics keymap
+#:graphics_password:                      # Graphics password
+#:graphics_command:                       # Graphics command
+#:disable_contextualization:              # Remove default contextualization options in OpenNebula, Default: Network and SSH enabled
+#:persistent_img:                         # Persistent Image, default: false
+#:memory_max:                             # Memory max in MB
+#:vcpu_max:                               # vCPU max allowed in integer format. CPU Hot Add required in VMWare.
+#:cpu:                                    # Physical CPU allowed in integer format. Default: match CPU cores from vCenter
+#:vcpu:                                   # vCPU allowed in integer format. Default: match CPU cores from vCenter

@@ -416,7 +416,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         if !local_features.empty?
             vm_template_config["FEATURES"] = {}
             local_features.each do |feature|
-                vm_template_config["FEATURES"]["#{feature.name.upcase}"] = nil
+                vm_template_config["FEATURES"]["#{feature.name.upcase}"] = 'YES'
             end
         end
 
