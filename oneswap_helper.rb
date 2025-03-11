@@ -429,12 +429,17 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 "NETWORK" => "YES",
                 "SSH_PUBLIC_KEY" => "$USER[SSH_PUBLIC_KEY]"
             }
-            # TODO Should we create interfaces? Do not think so...
-            puts "Adding #{local_interfaces} NICs using Network ID #{@options[:network]}"
-            nic_number=0
+
+            network_ids = @options[:network].to_s.split(',').map(&:strip)
+
+            puts "Adding #{local_interfaces} NICs using Network ID(s) #{network_ids.join(', ')}"
+
+            nic_number = 0
             local_interfaces.each do |interface|
+                network_id = network_ids[nic_number] || network_ids.last  # Reuse last ID if not enough
+
                 vm_template_config['NIC'] = {
-                    'NETWORK_ID' => "#{@options[:network]}"
+                    'NETWORK_ID' => network_id
                 }
 
                 # Check for MAC Address
@@ -442,8 +447,9 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                     puts "Adding MAC address to NIC##{nic_number}"
                     vm_template_config['NIC']['MAC'] = local_interfaces.xpath("//mac/@address").text
                 end
+
+                nic_number += 1
             end
-            nic_number += 1
         end
 
         # If the currentMemory attribute is present, it means memory hotplug is enabled
@@ -1502,10 +1508,10 @@ _EOF_"
     def create_one_images(disks)
         puts 'Creating Images in OpenNebula'
         img_ids = []
-        persistent_image = 'NO'
-        if @options[:persistent_img]
-            persistent_image = 'YES'
-        end
+        persistent_image = @options[:persistent_img] ? 'YES' : 'NO'
+
+        # Normalize datastore input to an array of integers
+        datastores = @options[:datastore].to_s.split(',').map(&:strip).map(&:to_i)
 
         disks.each_with_index do |d, i|
             img = OpenNebula::Image.new(OpenNebula::Image.build_xml, @client)
@@ -1515,6 +1521,7 @@ _EOF_"
                 package_injection(d, guest_info)
                 os_name = guest_info['name']
             end
+
             if @options[:http_transfer]
                 path = "http://#{@options[:http_host]}:#{@options[:http_port]}/#{File.basename(d)}"
                 server_thread = Thread.new do
@@ -1534,25 +1541,26 @@ _EOF_"
             else
                 path = d
             end
-            img.add_element('//IMAGE', {
-                    'NAME' => "#{@options[:name]}_#{i}",
-                    'TYPE' => guest_info ? 'OS' : 'DATABLOCK',
-                    'PATH' => "#{path}",
-                    'PERSISTENT' => persistent_image,
-                })
-            puts "Allocating image #{i} in OpenNebula"
-            rc = img.allocate(img.to_xml, @options[:datastore])
 
-            # rc returns nil if successful, OpenNebula::Error if not
+            img.add_element('//IMAGE', {
+                'NAME' => "#{@options[:name]}_#{i}",
+                'TYPE' => guest_info ? 'OS' : 'DATABLOCK',
+                'PATH' => path,
+                'PERSISTENT' => persistent_image,
+            })
+
+            puts "Allocating image #{i} in OpenNebula"
+
+            # Pick datastore index if available, else default to the first one
+            ds_id = datastores[i] || datastores.first
+            rc = img.allocate(img.to_xml, ds_id)
+
             if rc.class == OpenNebula::Error
                 puts 'Failed to create image. Image Definition:'.red
                 puts img.to_xml
             end
 
-            img_wait_sec = 120
-            if @options[:img_wait]
-                img_wait_sec = @options[:img_wait]
-            end
+            img_wait_sec = @options[:img_wait] || 120
             puts 'Waiting for image to be ready. Timeout: ' + img_wait_sec.to_s + ' seconds.'
 
             img_wait_return = img.wait_state('READY', img_wait_sec)
@@ -1560,12 +1568,15 @@ _EOF_"
                 puts 'Image did not become ready in time.'
                 puts 'Image Short State: ' + img.short_state_str
             end
+
             if @options[:http_transfer]
                 server_thread.kill
                 server_thread.join
             end
+
             img_ids.append({ :id => img.id, :os => os_name })
         end
+
         img_ids
     end
 
@@ -1702,17 +1713,21 @@ _EOF_"
             next if !n['//VNET/TEMPLATE/VCENTER_NETWORK_MATCH']
             netmap[n['//VNET/TEMPLATE/VCENTER_NETWORK_MATCH']] = n['//VNET/ID']
         end
-        # puts 'netmap is: ' + netmap.to_s
 
         if @options[:network] && vc_nics.length > 0
-            puts "Adding #{vc_nics.length} NICs, defaulting to Network ID #{@options[:network]} if there is no match"
-            nic_number=0
-            vc_nics.each do |n|
-                # find nic with same device key
+            networks = @options[:network].to_s.split(',').map(&:strip).map(&:to_i)
+            if networks.length == 1
+                networks = Array.new(vc_nics.length, networks.first)
+            elsif networks.length != vc_nics.length
+                raise "Error: Number of networks (#{networks.length}) must match number of NICs (#{vc_nics.length})"
+            end
+
+            puts "Adding #{vc_nics.length} NICs, assigning networks from #{@options[:network]}"
+            nic_number = 0
+            vc_nics.each_with_index do |n, index|
                 guest_network = @props['guest.net'].find { |gn| gn[:deviceConfigId] == n[:key] }
-                net_templ = {'NIC' => {
-                    'NETWORK_ID' => "#{@options[:network]}"
-                }}
+                assigned_network = networks[index]
+                net_templ = {'NIC' => { 'NETWORK_ID' => "#{assigned_network}" }}
 
                 if !@options[:skip_mac]
                     puts "Adding MAC address to NIC##{nic_number}"
@@ -1725,23 +1740,20 @@ _EOF_"
                     network_info_found = false
                     one_networks.each do |on_network|
                         network_info = on_network.to_hash
-                        if network_info.include?('VNET')
-                            if network_info['VNET']['NAME'] == vc_nic_backing[n[:key]]
-                                network_info_found = true
-                                net_templ['NIC']['NETWORK_ID'] = network_info['VNET']['ID']
-                                net_templ['NIC']['NETWORK'] = "#{vc_nic_backing[n[:key]]}"
-                                break
-                            end
+                        if network_info.include?('VNET') && network_info['VNET']['NAME'] == vc_nic_backing[n[:key]]
+                            network_info_found = true
+                            net_templ['NIC']['NETWORK_ID'] = network_info['VNET']['ID']
+                            net_templ['NIC']['NETWORK'] = vc_nic_backing[n[:key]]
+                            break
                         end
                     end
-                    if !network_info_found
-                        puts "Could not find Open Nebula network matching the provided name. Setting default"
-                        net_templ['NIC']['NETWORK_ID'] = "#{@options[:network]}"
+                    unless network_info_found
+                        puts "Could not find OpenNebula network matching the provided name. Setting to assigned network: #{assigned_network}"
+                        net_templ['NIC']['NETWORK_ID'] = "#{assigned_network}"
                     end
                 end
 
                 if !guest_network
-                    # no guest network information, but still have networks...
                     puts "Found network '#{vc_nic_backing[n[:key]]}' but no guest network information. Adding blank NIC."
                     vm_template.add_element('//VMTEMPLATE', net_templ)
                     next
@@ -1754,26 +1766,18 @@ _EOF_"
                     netkey = 'NIC_ALIAS'
                     guest_network[:ipConfig][:ipAddress].each do |ip|
                         net_templ = {netkey => @options[:skip_mac] ? {} : {'MAC' => n[:macAddress] }}
-                        if !netmap.has_key?(guest_network[:network])
-                            puts "Missing VCENTER_NETWORK_MATCH attribute in OpenNebula network(s).  Unable to correlate all networks."
-                            puts "Defaulting to provided ID: #{@options[:network]}"
-                            net_templ[netkey]['NETWORK_ID'] = "#{@options[:network]}"
-                        else
-                            net_templ[netkey]['NETWORK_ID'] = "#{netmap[guest_network[:network]]}"
-                        end
-                        # create single IP in an address range of OpenNebula network for each IP on the NIC
+                        net_templ[netkey]['NETWORK_ID'] = netmap[guest_network[:network]] || "#{assigned_network}"
+
                         if ip[:ipAddress]
                             ipv = "#{ip_version(ip[:ipAddress])}"
                         else
                             puts "Skipping address range creation"
                             next
                         end
-                        if netkey =='NETWORK_ALIAS'
-                            net_templ[netkey]['PARENT'] = "NIC#{nic_number}"
-                        end
+                        net_templ[netkey]['PARENT'] = "NIC#{nic_number}" if netkey == 'NETWORK_ALIAS'
                         ar_template = "AR=[TYPE=#{ipv},SIZE=1,IP=#{ip[:ipAddress]}]"
                         print "Creating AR for IP #{ip[:ipAddress]}..."
-                        xml = OpenNebula::VirtualNetwork.build_xml(net_templ[netkey]['ID'])
+                        xml = OpenNebula::VirtualNetwork.build_xml(net_templ[netkey]['NETWORK_ID'])
                         vn  = OpenNebula::VirtualNetwork.new(xml, @client)
                         rc = vn.add_ar(ar_template)
                         if rc.nil?
@@ -1788,8 +1792,6 @@ _EOF_"
                     end
                 end
                 nic_number += 1
-
-                #vm_template.add_element('//VMTEMPLATE', net_templ)
             end
         elsif vc_nics.length > 0
             puts "You will need to create NICs and assign networks in the VM Template in OpenNebula manually."
@@ -2012,8 +2014,6 @@ _EOF_"
             end
             vm_template.add_element('//VMTEMPLATE', {"DISK" => img_hash})
         end
-
-        # TODO Add NICs now
 
         print "Allocating the VM template..."
 

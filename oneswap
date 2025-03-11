@@ -148,7 +148,7 @@ CommandParser::CmdParser.new(ARGV) do
         :name => 'network',
         :large => '--network id',
         :description => 'If a VCENTER_NETWORK_MATCH attribute in an OpenNebula does not match the name of a vCenter network, assign to this OpenNebula Network ID instead.',
-        :format => Integer
+        :format => String
     }
 
     NO_IP = {
@@ -270,7 +270,7 @@ CommandParser::CmdParser.new(ARGV) do
         :name => 'datastore',
         :large => '--datastore id',
         :description => 'Create images in the Image Datastore with this ID, Default: 1',
-        :format => Integer
+        :format => String
     }
 
     WORK_DIR = {
