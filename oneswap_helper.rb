@@ -869,6 +869,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 case osinfo['os']
                 when /^fedora/
                     context_fullpath = detect_context_package('fedora')
+                    return false if !context_fullpath
                     context_basename = File.basename(context_fullpath)
                     cmd = 'virt-customize -q'\
                           " -a #{disk}"\
@@ -880,6 +881,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                           " --run-command 'sed -i \"s/SELINUX=enforcing/SELINUX=disabled/\" /etc/selinux/config || exit 0'"
                 when /^redhat-based8/, /^rhel8/
                     context_fullpath = detect_context_package('rhel8')
+                    return false if !context_fullpath
                     context_basename = File.basename(context_fullpath)
                     cmd = 'virt-customize -q'\
                           " -a #{disk}"\
@@ -891,6 +893,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                           " --run-command 'systemctl enable NetworkManager.service || exit 0'"
                 when /^redhat-based9/, /^rhel9/
                     context_fullpath = detect_context_package('rhel9')
+                    return false if !context_fullpath
                     context_basename = File.basename(context_fullpath)
                     cmd = 'virt-customize -q'\
                           " -a #{disk}"\
