@@ -299,7 +299,7 @@ CommandParser::CmdParser.new(ARGV) do
     CONTEXT = {
         :name => 'context',
         :large => '--context-package /path/to/context/',
-        :description => 'Directory with the context packages for guest OS injection, will search by default in /var/lib/one/context/',
+        :description => 'Directory with the context packages for guest OS injection, will search by default in /usr/share/one/context',
         :format => String
     }
 
@@ -442,7 +442,7 @@ CommandParser::CmdParser.new(ARGV) do
     CONF_FILE = {
         :name => 'config_file',
         :large => '--config-file /path/to/custom/config.yaml',
-        :description => 'Path to custom Configuration File, default is /var/lib/one/oneswap.yaml',
+        :description => 'Path to custom Configuration File, default is /etc/one/oneswap.yaml',
         :format => String
     }
 
@@ -493,7 +493,7 @@ CommandParser::CmdParser.new(ARGV) do
 
     command :list, list_desc, :object, :options => LIST_OPTS do
         begin
-            options[:config_file] ||= '/var/lib/one/oneswap.yaml'
+            options[:config_file] ||= '/etc/one/oneswap.yaml'
             if options[:config_file] && !File.exist?(options[:config_file])
                 raise "Unable to find the config file at #{options[:config_file]}"
             end
@@ -540,7 +540,7 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:config_file] && !File.exist?(options[:config_file])
                 puts "Unable to find the config file at #{options[:config_file]}"
             end
-            options[:config_file]   ||= '/var/lib/one/oneswap.yaml'
+            options[:config_file]   ||= '/etc/one/oneswap.yaml'
             cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
 
@@ -567,7 +567,7 @@ CommandParser::CmdParser.new(ARGV) do
             end
             options[:work_dir]      ||= '/tmp'
             options[:format]        ||= 'qcow2'
-            options[:context]       ||= '/var/lib/one/context/'
+            options[:context]       ||= '/usr/share/one/context'
             options[:esxi_user]     ||= 'root'
             options[:datastore]     ||= 1
             options[:virt_tools]    ||= '/usr/local/share/virt-tools'
@@ -640,7 +640,7 @@ CommandParser::CmdParser.new(ARGV) do
 
             options[:work_dir]      ||= '/tmp'
             options[:format]        ||= 'qcow2'
-            options[:context]       ||= '/var/lib/one/context/'
+            options[:context]       ||= '/usr/share/one/context/'
             options[:datastore]     ||= 1
             options[:virt_tools]    ||= '/usr/local/share/virt-tools'
             options[:v2v_path]      ||= 'virt-v2v'
