@@ -20,14 +20,15 @@ ARGS=$*
 
 usage() {
  echo
- echo "Usage: install.sh [-d ONE_LOCATION] [-h] [-l]"
+ echo "Usage: install.sh [-d ONE_LOCATION] [-h] [-l] [-m]"
  echo
  echo "-d: OpenNebula's CLI folder. Must be an absolute path."
  echo "-l: create only symlinks"
+ echo "-m: generate and install man page for oneswap"
  echo "-h: prints this help"
 }
 
-PARAMETERS="hlu:g:d:"
+PARAMETERS="hlmu:g:d:"
 
 if [ $(getopt --version | tr -d " ") = "--" ]; then
     TEMP_OPT=`getopt $PARAMETERS "$@"`
@@ -43,12 +44,14 @@ fi
 eval set -- "$TEMP_OPT"
 
 LINK="no"
+MANPAGE="no"
 SRC_DIR=$PWD
 
 while true ; do
     case "$1" in
         -h) usage; exit 0;;
         -l) LINK='yes'; shift ;;
+        -m) MANPAGE='yes'; shift ;;
         -d) ROOT="$2" ; shift 2 ;;
         --) shift ; break ;;
         *)  usage; exit 1 ;;
@@ -73,7 +76,7 @@ else
 fi
 
 LIB_DIRS="$LIB_LOCATION/ruby/cli/one_helper"
-
+MAN_LOCATION="/usr/share/man/man1"
 
 MAKE_DIRS="$BIN_LOCATION $SHARE_LOCATION $LIB_LOCATION $ETC_LOCATION
            $VAR_LOCATION $LIB_DIRS"
@@ -95,6 +98,22 @@ CONF_FILES="oneswap.yaml"
 #-----------------------------------------------------------------------------
 # INSTALL.SH SCRIPT
 #-----------------------------------------------------------------------------
+
+if [ "$MANPAGE" = "yes" ]; then
+    # base document
+    echo "# oneswap(1) -- OpenNebula OneSwap Tool" > oneswap.1.ronn
+    echo >> oneswap.1.ronn
+    $BIN_LOCATION/oneswap --help >> oneswap.1.ronn
+
+    # manual pages/html
+    ronn --style toc --manual="oneswap(1) -- OpenNebula OneSwap Tool" oneswap.1.ronn
+    gzip -c oneswap.1 > oneswap.1.gz
+
+    cp oneswap.1.gz $MAN_LOCATION
+    rm -f oneswap.1.ronn oneswap.1.gz
+
+    exit 0
+fi
 
 for d in $MAKE_DIRS; do
 	mkdir -p $DESTDIR$d
