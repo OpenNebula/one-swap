@@ -857,6 +857,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         cmd = nil
         if osinfo['name'] == 'windows'
             context_fullpath = detect_context_package('windows')
+            return false if !context_fullpath
             context_basename = File.basename(context_fullpath)
             cmd = 'virt-customize -q'\
                   " -a #{disk}"\
@@ -909,6 +910,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                     context_basename = File.basename(context_fullpath)
                     cmd = 'virt-customize -q'\
                           " -a #{disk}"\
+                          " --uninstall cloud-init"\
                           " --copy-in #{context_fullpath}:/tmp"\
                           " --install /tmp/#{context_basename}"\
                           " --delete /tmp/#{context_basename}"\
@@ -928,6 +930,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 elsif osinfo['os'].start_with?('opensuse') || osinfo['os'].start_with?('sles')
                     context_fullpath = detect_context_package('opensuse')
                 end
+                return false if !context_fullpath
                 context_basename = File.basename(context_fullpath)
                 cmd = 'virt-customize -q'\
                       " -a #{disk}"\
@@ -942,6 +945,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             if osinfo['os'].start_with?('freebsd')
                 # may not mount properly sometimes due to internal fs
                 context_fullpath = detect_context_package('freebsd')
+                return false if !context_fullpath
                 context_basename = File.basename(context_fullpath)
                 cmd = 'virt-customize -q'\
                       " -a #{disk}"\
