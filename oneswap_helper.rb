@@ -844,7 +844,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         if c_files.length == 1
             c_files[0]
         elsif c_files.length > 1
-            latest = c_files.max_by { |f| Gem::Version.new(f.match(/(\d+\.\d+\.\d+)\.msi$/)[1])}
+            latest = c_files.max_by { |f| Gem::Version.new(f.match(/(\d+\.\d+\.\d+(?:-\d+)?)\.msi$/)[1])}
             latest
         else
             # download the correct one
@@ -1524,9 +1524,19 @@ _EOF_"
             img = OpenNebula::Image.new(OpenNebula::Image.build_xml, @client)
             guest_info = detect_distro(d)
             os_name = false
-            if guest_info
-                package_injection(d, guest_info)
-                os_name = guest_info['name']
+            begin
+                if guest_info
+                    package_injection(d, guest_info)
+                    os_name = guest_info['name']
+                end
+            rescue Exception => e
+                if osinfo['name'] == 'windows'
+                    puts "Error with package injection. Conversion failed. Check that you have virtio and context packages in place.".red
+                    exit -1
+                else
+                    puts "Error with package injection, converted VM may fail to boot".red
+                    puts "#{e.message}"
+                end
             end
 
             if @options[:http_transfer]
