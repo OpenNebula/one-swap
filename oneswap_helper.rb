@@ -398,7 +398,11 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             "CPU"  => xml_template.xpath("//vcpu").text,
             "vCPU" => xml_template.xpath("//vcpu").text,
             "MEMORY" => mem_to_mb(xml_template.xpath("//memory").text, xml_template.xpath("//memory/@unit").text),
-            "HYPERVISOR" => "kvm"
+            "HYPERVISOR" => "kvm",
+            "CONTEXT" => {
+                "NETWORK" => "YES",
+                "SSH_PUBLIC_KEY" => "$USER[SSH_PUBLIC_KEY]"
+            }
         }
 
         local_cpu = xml_template.xpath("//cpu")
@@ -417,38 +421,6 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             vm_template_config["FEATURES"] = {}
             local_features.each do |feature|
                 vm_template_config["FEATURES"]["#{feature.name.upcase}"] = 'YES'
-            end
-        end
-
-        # Get all network interfaces
-        # Check if there's interfaces configured
-        local_interfaces = xml_template.xpath("//devices//interface")
-        if !local_interfaces.empty?
-            # Add network context
-            vm_template_config["CONTEXT"] = {
-                "NETWORK" => "YES",
-                "SSH_PUBLIC_KEY" => "$USER[SSH_PUBLIC_KEY]"
-            }
-
-            network_ids = @options[:network].to_s.split(',').map(&:strip)
-
-            puts "Adding #{local_interfaces} NICs using Network ID(s) #{network_ids.join(', ')}"
-
-            nic_number = 0
-            local_interfaces.each do |interface|
-                network_id = network_ids[nic_number] || network_ids.last  # Reuse last ID if not enough
-
-                vm_template_config['NIC'] = {
-                    'NETWORK_ID' => network_id
-                }
-
-                # Check for MAC Address
-                if !local_interfaces.xpath("//mac/@address").empty?
-                    puts "Adding MAC address to NIC##{nic_number}"
-                    vm_template_config['NIC']['MAC'] = local_interfaces.xpath("//mac/@address").text
-                end
-
-                nic_number += 1
             end
         end
 
@@ -518,6 +490,31 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
         vmt = OpenNebula::Template.new(OpenNebula::Template.build_xml, @client)
         vmt.add_element('//VMTEMPLATE', vm_template_config)
+
+        # Get network interfaces
+        local_interfaces = xml_template.xpath("//devices//interface")
+        if !local_interfaces.empty?
+            network_ids = @options[:network].to_s.split(',').map(&:strip)
+
+            puts "Adding #{local_interfaces} NICs using Network ID(s) #{network_ids.join(', ')}"
+
+            nic_number = 0
+            local_interfaces.each do |interface|
+                network_id = network_ids[nic_number] || network_ids.last  # Reuse last ID if not enough
+
+                net_hash = { 'NETWORK_ID' => "#{network_id}" }
+
+                # Check for MAC Address
+                if !local_interfaces.xpath("//mac/@address").empty?
+                    puts "Adding MAC address to NIC##{nic_number}"
+                    net_hash['MAC'] = local_interfaces.xpath("//mac/@address").text
+                end
+
+                vmt.add_element('//VMTEMPLATE', {"NIC" => net_hash})
+
+                nic_number += 1
+            end
+        end
 
         # Add UEFI configuration
         # Create @props variable here to call template_firmware function
@@ -844,7 +841,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         if c_files.length == 1
             c_files[0]
         elsif c_files.length > 1
-            latest = c_files.max_by { |f| Gem::Version.new(f.match(/(\d+\.\d+\.\d+(?:-\d+)?)\.msi$/)[1])}
+            latest = c_files.max_by { |f| Gem::Version.new(f.match(/(\d+\.\d+\.\d+(?:-\d+)?)/)[1])}
             latest
         else
             # download the correct one
