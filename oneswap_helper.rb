@@ -2029,6 +2029,27 @@ _EOF_"
             vm_template.add_element('//VMTEMPLATE', {"DISK" => img_hash})
         end
 
+        # Optimize template for Windows VMs
+        if img_ids[0][:os] == 'windows'
+            # Add USB tablet input device
+            input_hash = { 'BUS' => 'usb', 'TYPE' => 'tablet' }
+            vm_template.add_element('//VMTEMPLATE', {"INPUT" => input_hash})
+
+            # Configure video settings
+            video_hash = { 'RESOLUTION' => '1440x900', 'TYPE' => 'virtio', 'VRAM' => '16384' }
+            vm_template.add_element('//VMTEMPLATE', {"VIDEO" => video_hash})
+
+            # Configure features for Windows VM (Hyper-V and local time)
+            features_hash = { 'HYPERV' => 'YES', 'LOCALTIME' => 'YES' }
+            if vm_template.element_xml('FEATURES').nil?
+              puts 'Create features element and add hyperv'
+              vm_template.add_element('//VMTEMPLATE', {"FEATURES" => features_hash})
+            else
+              puts 'Add hyperv to features element'
+              vm_template.add_element('//VMTEMPLATE/FEATURES', features_hash)
+            end
+          end
+
         print "Allocating the VM template..."
 
         rc = vm_template.allocate(vm_template.to_xml)
