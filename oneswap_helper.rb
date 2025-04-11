@@ -2090,6 +2090,17 @@ _EOF_"
 
         @props = vm.to_hash
 
+        #If clone option is set, clone the VM
+        if @options[:clone]       
+            puts "Cloning VM #{@props['name']}..."
+            begin
+                cloned_vm = clone_vm(vi_client, vm)
+                @props = cloned_vm.to_hash
+            rescue RbVmomi::Fault => e
+                raise "Failed to clone VM #{@vm.name}: #{e.message}"
+            end
+        end
+    
         # Some basic preliminary checks
         if @props['summary.runtime.powerState'] != 'poweredOff'
             raise "Virtual Machine #{@options[:name]} is not Powered Off.".red
@@ -2123,6 +2134,12 @@ _EOF_"
             vm_template.add_element('//VMTEMPLATE', {"DISK" => img_hash})
         end
 
+        #If clone option is set, delete cloned VM
+        if @options[:clone]
+            puts "Cleaning up cloned VM #{@props['name']}..."
+            delete_vm(vm)
+        end
+
         # Add the NIC's now, after any conversion stuff has happened since it creates OpenNebula objects
         vm_template = add_one_nics(vm_template, vc_nics, vc_nic_backing)
 
@@ -2138,4 +2155,43 @@ _EOF_"
             puts "\nVM Template:\n#{vm_template.to_xml}\n"
         end
     end
+
+    # Clone a VM in vCenter
+    def clone_vm(vi_client, vm, clone_name = nil)
+
+        attr = vm.to_hash
+        puts "\nCloning VM: #{attr['parent']}\n"
+        clone_spec = RbVmomi::VIM.VirtualMachineCloneSpec(
+            location: RbVmomi::VIM.VirtualMachineRelocateSpec,
+            powerOn: false,
+            template: false
+        )
+
+        target_name = clone_name || "#{attr['name']}-clone"
+
+        clone_task = vm.CloneVM_Task(
+            folder: vm.parent ,
+            name: target_name,
+            spec: clone_spec
+        )
+
+        clone_task.wait_for_completion
+
+        cloned_vm = vi_client.find_vm_by_name(target_name)
+        raise "Failed to find cloned VM #{target_name}" unless cloned_vm
+
+        puts "VM #{attr['name']} cloned successfully as #{target_name}."
+
+        cloned_vm
+    end
+
+
+    # Delete a VM in vCenter
+    def delete_vm(vm)
+        attr = vm.to_hash
+        delete_task = vm.Destroy_Task
+        delete_task.wait_for_completion
+        puts "VM #{attr.name} deleted successfully."
+    end
+
 end
