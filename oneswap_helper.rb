@@ -1559,6 +1559,7 @@ _EOF_"
             begin
                 if guest_info
                     package_injection(d, guest_info)
+                    remove_vmtools_injection(d, guest_info)
                     os_name = guest_info['name']
                 end
             rescue Exception => e
@@ -1846,6 +1847,30 @@ _EOF_"
             puts "You will need to create NICs and assign networks in the VM Template in OpenNebula manually."
         end
         vm_template
+    end
+
+    # Remove VMWare Tools injection from the VM
+    def remove_vmtools_injection(disk, osinfo)
+        if @options[:remove_vmtools]
+            puts 'Starting VMWare Tools Removal script injection...'
+            if osinfo['name'] == 'windows'
+                default_path = '/usr/share/one/scripts/vmware_tools_removal.ps1'
+            else
+                default_path = '/usr/share/one/scripts/vmware_tools_removal.sh'
+            end
+            script_path = File.exist?(default_path) ? default_path : nil
+            unless script_path && File.exist?(script_path)
+                puts 'Unable to find vmware_tools_removal script, please remove VMWare Tools manually.'
+                return
+            end
+            cmd = "virt-customize -q -a #{disk} --firstboot '#{script_path}'"
+            _stdout, status = run_cmd_report(cmd)
+            if !status.success?
+                puts 'Remove VMWare tools injection failed somehow, please remove VMWare Tools manually.'
+                return
+            end
+            puts "VMware Tools removal injection completed. The script will run on the first boot.".green
+        end
     end
 
     # General method to list vCenter objects
