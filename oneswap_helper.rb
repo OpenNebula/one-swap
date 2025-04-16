@@ -2261,5 +2261,4 @@ _EOF_"
             puts "\nVM Template:\n#{vm_template.to_xml}\n"
         end
     end
-
 end
