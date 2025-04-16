@@ -380,7 +380,30 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         else
           raise ArgumentError, "unit not valid: '#{unit}'. Valid units: 'b', 'bytes', 'KB', 'k', 'KiB', 'MB', 'M', 'MiB', 'GB', 'G', 'GiB', 'TB', 'T', 'TiB'."
         end
-      end
+    end
+
+    def tune_windows_tmpl(template)
+        vm_template = template
+        # Add USB tablet input device
+        input_hash = { 'BUS' => 'usb', 'TYPE' => 'tablet' }
+        vm_template.add_element('//VMTEMPLATE', {"INPUT" => input_hash})
+
+        # Configure video settings
+        video_hash = { 'RESOLUTION' => '1440x900', 'TYPE' => 'virtio', 'VRAM' => '16384' }
+        vm_template.add_element('//VMTEMPLATE', {"VIDEO" => video_hash})
+
+        # Configure features for Windows VM (Hyper-V and local time)
+        features_hash = { 'HYPERV' => 'YES', 'LOCALTIME' => 'YES' }
+        if vm_template.element_xml('FEATURES').nil?
+            puts 'Create features element and add hyperv'
+            vm_template.add_element('//VMTEMPLATE', {"FEATURES" => features_hash})
+        else
+            puts 'Add hyperv to features element'
+            vm_template.add_element('//VMTEMPLATE/FEATURES', features_hash)
+        end
+
+        return vm_template
+    end
 
     def create_vm_template_from_ova
         # Open XML domain file generated from conversion
@@ -477,6 +500,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
                 if !local_graphics.xpath("//listen/@address").empty?
                     vm_template_config["GRAPHICS"]["LISTEN"] = local_graphics.xpath("//listen/@address").text
+                else
+                    vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
                 end
 
                 # TODO command not an atribute of graphics in libvirt domain
@@ -486,6 +511,10 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             else
                 puts "Invalid graphics type. Please use one of the following: #{possible_options.join(', ')}"
             end
+        else
+            vm_template_config["GRAPHICS"] = {}
+            vm_template_config["GRAPHICS"]["TYPE"] = 'VNC'
+            vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
         end
 
         vmt = OpenNebula::Template.new(OpenNebula::Template.build_xml, @client)
@@ -629,6 +658,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
                 if @options[:graphics_listen]
                     vm_template_config["GRAPHICS"]["LISTEN"] = @options[:graphics_listen]
+                else
+                    vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
                 end
 
                 if @options[:graphics_command]
@@ -637,6 +668,10 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             else
                 puts "Invalid graphics type. Please use one of the following: #{possible_options.join(', ')}"
             end
+        else
+            vm_template_config["GRAPHICS"] = {}
+            vm_template_config["GRAPHICS"]["TYPE"] = 'VNC'
+            vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
         end
 
         vmt = OpenNebula::Template.new(OpenNebula::Template.build_xml, @client)
@@ -2031,24 +2066,8 @@ _EOF_"
 
         # Optimize template for Windows VMs
         if img_ids[0][:os] == 'windows'
-            # Add USB tablet input device
-            input_hash = { 'BUS' => 'usb', 'TYPE' => 'tablet' }
-            vm_template.add_element('//VMTEMPLATE', {"INPUT" => input_hash})
-
-            # Configure video settings
-            video_hash = { 'RESOLUTION' => '1440x900', 'TYPE' => 'virtio', 'VRAM' => '16384' }
-            vm_template.add_element('//VMTEMPLATE', {"VIDEO" => video_hash})
-
-            # Configure features for Windows VM (Hyper-V and local time)
-            features_hash = { 'HYPERV' => 'YES', 'LOCALTIME' => 'YES' }
-            if vm_template.element_xml('FEATURES').nil?
-              puts 'Create features element and add hyperv'
-              vm_template.add_element('//VMTEMPLATE', {"FEATURES" => features_hash})
-            else
-              puts 'Add hyperv to features element'
-              vm_template.add_element('//VMTEMPLATE/FEATURES', features_hash)
-            end
-          end
+            vm_template = tune_windows_tmpl(vm_template)
+        end
 
         print "Allocating the VM template..."
 
@@ -2145,6 +2164,10 @@ _EOF_"
 
         # Add the NIC's now, after any conversion stuff has happened since it creates OpenNebula objects
         vm_template = add_one_nics(vm_template, vc_nics, vc_nic_backing)
+
+        if img_ids[0][:os] == 'windows'
+            vm_template = tune_windows_tmpl(vm_template)
+        end
 
         print "Allocating the VM template..."
 
