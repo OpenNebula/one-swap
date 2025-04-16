@@ -639,7 +639,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
     def create_base_template
         vm_template_config = {
-            "NAME" => "#{@props['name']}",
+            "NAME" => "#{@options[:name]}",
             "CPU"  => "#{@props['config'][:hardware][:numCPU]}",
             "vCPU" => "#{@props['config'][:hardware][:numCPU]}",
             "MEMORY" => "#{@props['config'][:hardware][:memoryMB]}",
@@ -2238,7 +2238,7 @@ _EOF_"
             begin
                 delete_vm(cloned_vm)
             rescue RbVmomi::Fault => e
-                raise "Failed to delete VM #{@options[:name]}: #{e.message}"
+                puts "Failed to delete cloned VM #{@options[:name]}: #{e.message}, remove the cloned VM manually."
             end
         end
 

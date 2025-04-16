@@ -465,13 +465,7 @@ CommandParser::CmdParser.new(ARGV) do
         :large => '--clone',
         :description => 'Trigger a VM full clone and convert that clone without requiring to poweroff the original VM',
     }
-
-    CLONE = {
-        :name => 'clone',
-        :large => '--clone',
-        :description => 'Trigger a VM full clone and convert that clone without requiring to poweroff the original VM',
-    }
-
+    
     REMOVEVMTOOLS = {
         :name => 'remove_vmtools',
         :large => '--remove_vmtools',
@@ -592,7 +586,6 @@ CommandParser::CmdParser.new(ARGV) do
             options[:v2v_path]       ||= 'virt-v2v'
             options[:remove_vmtools] ||= false
             options[:clone]          ||= false
-
 
             if options[:http_transfer]
                 options[:http_host] ||= Socket.ip_address_list.detect { |addrinfo| addrinfo.ipv4? && !addrinfo.ipv4_loopback? }&.ip_address
