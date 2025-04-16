@@ -1524,6 +1524,7 @@ _EOF_"
             begin
                 if guest_info
                     package_injection(d, guest_info)
+                    remove_vmtools_injection(d, guest_info)
                     os_name = guest_info['name']
                 end
             rescue Exception => e
@@ -1813,22 +1814,28 @@ _EOF_"
         vm_template
     end
 
-    def remove_vmtools(vm_template)
-        script_path = nil
-        if @props['config'][:guestFullName].include?('Windows')
-            puts 'Adding VMWare Tools Removal Powershell script to VM Template Context.'
-            script_path = "/usr/share/one/scripts/vmware_tools_removal.ps1"
-        elsif ['Ubuntu', 'Debian', 'Red Hat', 'CentOS'].any? { |os| @props['config'][:guestFullName].include?(os) }
-            puts 'Adding VMWare Tools Removal Bash script to VM Template Context.'
-            script_path = "/usr/share/one/scripts/vmware_tools_removal.sh"
+    # Remove VMWare Tools injection from the VM
+    def remove_vmtools_injection(disk, osinfo)
+        if @options[:remove_vmtools]
+            puts 'Starting VMWare Tools Removal script injection...'
+            if osinfo['name'] == 'windows'
+                default_path = '/usr/share/one/scripts/vmware_tools_removal.ps1'
+            else
+                default_path = '/usr/share/one/scripts/vmware_tools_removal.sh'
+            end
+            script_path = File.exist?(default_path) ? default_path : nil
+            unless script_path && File.exist?(script_path)
+                puts 'Unable to find vmware_tools_removal script, please remove VMWare Tools manually.'
+                return
+            end
+            cmd = "virt-customize -q -a #{disk} --firstboot '#{script_path}'"
+            _stdout, status = run_cmd_report(cmd)
+            if !status.success?
+                puts 'Remove VMWare tools injection failed somehow, please remove VMWare Tools manually.'
+                return
+            end
+            puts "VMware Tools removal injection completed. The script will run on the first boot.".green
         end
-        if script_path && File.exist?(script_path)
-            script_base64 = Base64.encode64(File.binread(script_path))
-            vm_template.add_element('//VMTEMPLATE/CONTEXT', {"START_SCRIPT_BASE64" => script_base64})
-        else
-            warn "VMware Tools removal script not found at #{script_path} or OS not supported." if script_path
-        end
-        vm_template
     end
 
     # General method to list vCenter objects
@@ -2143,10 +2150,6 @@ _EOF_"
 
         # Add the NIC's now, after any conversion stuff has happened since it creates OpenNebula objects
         vm_template = add_one_nics(vm_template, vc_nics, vc_nic_backing)
-
-        if @options[:remove_vmtools] && !@options[:disable_contextualization]
-            vm_template = remove_vmtools(vm_template)
-        end
 
         print "Allocating the VM template..."
 
