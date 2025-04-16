@@ -382,6 +382,61 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         end
     end
 
+    # This method creates a VM full clone in vCenter
+    #
+    # @param vi_client [RbVmomi::VIM] The vCenter client
+    # @param properties [Array] The properties to retrieve from the VM
+    # @param vm [RbVmomi::VIM::VirtualMachine] The VM to clone
+    # @param clone_name [String] The name for the cloned VM
+    #
+    def clone_vm(vi_client, properties, vm, clone_name = nil)
+        attr = vm.to_hash
+        vm = vm.obj
+    
+        target_name = clone_name || "#{attr['name']}-clone"
+      
+        puts "\nCloning #{attr['name']} into #{target_name}\n"
+
+        relocate_spec = RbVmomi::VIM.VirtualMachineRelocateSpec
+
+        clone_spec = RbVmomi::VIM.VirtualMachineCloneSpec(
+          location: relocate_spec,
+          powerOn: false,
+          template: false
+        )
+
+        clone_task = vm.CloneVM_Task(
+          folder: vm.parent,
+          name: target_name,
+          spec: clone_spec
+        )
+
+        clone_task.wait_for_completion
+    
+        vm_pool = get_objects(vi_client, 'VirtualMachine', properties)
+        cloned_vm = vm_pool.find { |r| r['name'] == "#{target_name}" }
+        if cloned_vm.nil?
+            raise "Unable to find Cloned VM by name '#{target_name}'"
+        end
+        puts "VM #{attr['name']} cloned successfully."
+        cloned_vm
+    end
+
+
+    # This method deletes a VM in vCenter
+    #
+    # @param vm [RbVmomi::VIM::VirtualMachine] The VM to delete
+    #
+    def delete_vm(vm)
+        vm = vm.obj
+        vm_name = vm.name
+        puts "Initiating deletion of virtual machine '#{vm.name}'..."
+        destroy_task = vm.Destroy_Task
+        destroy_task.wait_for_completion
+        puts "Virtual machine '#{vm_name}' deleted successfully."
+        return true
+    end
+
     def tune_windows_tmpl(template)
         vm_template = template
         # Add USB tablet input device
@@ -2205,61 +2260,6 @@ _EOF_"
             puts 'Failed'.red
             puts "\nVM Template:\n#{vm_template.to_xml}\n"
         end
-    end
-
-    # This method creates a VM full clone in vCenter
-    #
-    # @param vi_client [RbVmomi::VIM] The vCenter client
-    # @param properties [Array] The properties to retrieve from the VM
-    # @param vm [RbVmomi::VIM::VirtualMachine] The VM to clone
-    # @param clone_name [String] The name for the cloned VM
-    #
-    def clone_vm(vi_client, properties, vm, clone_name = nil)
-        attr = vm.to_hash
-        vm = vm.obj
-    
-        target_name = clone_name || "#{attr['name']}-clone"
-      
-        puts "\nCloning #{attr['name']} into #{target_name}\n"
-
-        relocate_spec = RbVmomi::VIM.VirtualMachineRelocateSpec
-
-        clone_spec = RbVmomi::VIM.VirtualMachineCloneSpec(
-          location: relocate_spec,
-          powerOn: false,
-          template: false
-        )
-
-        clone_task = vm.CloneVM_Task(
-          folder: vm.parent,
-          name: target_name,
-          spec: clone_spec
-        )
-
-        clone_task.wait_for_completion
-    
-        vm_pool = get_objects(vi_client, 'VirtualMachine', properties)
-        cloned_vm = vm_pool.find { |r| r['name'] == "#{target_name}" }
-        if cloned_vm.nil?
-            raise "Unable to find Cloned VM by name '#{target_name}'"
-        end
-        puts "VM #{attr['name']} cloned successfully."
-        cloned_vm
-    end
-
-
-    # This method deletes a VM in vCenter
-    #
-    # @param vm [RbVmomi::VIM::VirtualMachine] The VM to delete
-    #
-    def delete_vm(vm)
-        vm = vm.obj
-        vm_name = vm.name
-        puts "Initiating deletion of virtual machine '#{vm.name}'..."
-        destroy_task = vm.Destroy_Task
-        destroy_task.wait_for_completion
-        puts "Virtual machine '#{vm_name}' deleted successfully."
-        return true
     end
 
 end

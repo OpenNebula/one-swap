@@ -583,13 +583,15 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:fallback] && options[:custom_convert]
                 raise "Cannot define both --fallback and --custom."
             end
-            options[:work_dir]      ||= '/tmp'
-            options[:format]        ||= 'qcow2'
-            options[:context]       ||= '/usr/share/one/context'
-            options[:esxi_user]     ||= 'root'
-            options[:datastore]     ||= 1
-            options[:virt_tools]    ||= '/usr/local/share/virt-tools'
-            options[:v2v_path]      ||= 'virt-v2v'
+            options[:work_dir]       ||= '/tmp'
+            options[:format]         ||= 'qcow2'
+            options[:context]        ||= '/usr/share/one/context'
+            options[:esxi_user]      ||= 'root'
+            options[:datastore]      ||= 1
+            options[:virt_tools]     ||= '/usr/local/share/virt-tools'
+            options[:v2v_path]       ||= 'virt-v2v'
+            options[:remove_vmtools] ||= false
+            options[:clone]          ||= false
 
 
             if options[:http_transfer]
