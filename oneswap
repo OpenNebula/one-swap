@@ -463,8 +463,7 @@ CommandParser::CmdParser.new(ARGV) do
     CLONE = {
         :name => 'clone',
         :large => '--clone',
-        :description => 'Trigger a VM clone and convert that clone without requiring to poweroff the original VM',
-        :format      => [TrueClass, FalseClass]
+        :description => 'Trigger a VM full clone and convert that clone without requiring to poweroff the original VM',
     }
 
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
