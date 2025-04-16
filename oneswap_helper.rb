@@ -380,7 +380,30 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         else
           raise ArgumentError, "unit not valid: '#{unit}'. Valid units: 'b', 'bytes', 'KB', 'k', 'KiB', 'MB', 'M', 'MiB', 'GB', 'G', 'GiB', 'TB', 'T', 'TiB'."
         end
-      end
+    end
+
+    def tune_windows_tmpl(template)
+        vm_template = template
+        # Add USB tablet input device
+        input_hash = { 'BUS' => 'usb', 'TYPE' => 'tablet' }
+        vm_template.add_element('//VMTEMPLATE', {"INPUT" => input_hash})
+
+        # Configure video settings
+        video_hash = { 'RESOLUTION' => '1440x900', 'TYPE' => 'virtio', 'VRAM' => '16384' }
+        vm_template.add_element('//VMTEMPLATE', {"VIDEO" => video_hash})
+
+        # Configure features for Windows VM (Hyper-V and local time)
+        features_hash = { 'HYPERV' => 'YES', 'LOCALTIME' => 'YES' }
+        if vm_template.element_xml('FEATURES').nil?
+            puts 'Create features element and add hyperv'
+            vm_template.add_element('//VMTEMPLATE', {"FEATURES" => features_hash})
+        else
+            puts 'Add hyperv to features element'
+            vm_template.add_element('//VMTEMPLATE/FEATURES', features_hash)
+        end
+
+        return vm_template
+    end
 
     def create_vm_template_from_ova
         # Open XML domain file generated from conversion
@@ -477,6 +500,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
                 if !local_graphics.xpath("//listen/@address").empty?
                     vm_template_config["GRAPHICS"]["LISTEN"] = local_graphics.xpath("//listen/@address").text
+                else
+                    vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
                 end
 
                 # TODO command not an atribute of graphics in libvirt domain
@@ -486,6 +511,10 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             else
                 puts "Invalid graphics type. Please use one of the following: #{possible_options.join(', ')}"
             end
+        else
+            vm_template_config["GRAPHICS"] = {}
+            vm_template_config["GRAPHICS"]["TYPE"] = 'VNC'
+            vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
         end
 
         vmt = OpenNebula::Template.new(OpenNebula::Template.build_xml, @client)
@@ -629,6 +658,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
                 if @options[:graphics_listen]
                     vm_template_config["GRAPHICS"]["LISTEN"] = @options[:graphics_listen]
+                else
+                    vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
                 end
 
                 if @options[:graphics_command]
@@ -637,6 +668,10 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             else
                 puts "Invalid graphics type. Please use one of the following: #{possible_options.join(', ')}"
             end
+        else
+            vm_template_config["GRAPHICS"] = {}
+            vm_template_config["GRAPHICS"]["TYPE"] = 'VNC'
+            vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
         end
 
         vmt = OpenNebula::Template.new(OpenNebula::Template.build_xml, @client)
@@ -1524,6 +1559,7 @@ _EOF_"
             begin
                 if guest_info
                     package_injection(d, guest_info)
+                    remove_vmtools_injection(d, guest_info)
                     os_name = guest_info['name']
                 end
             rescue Exception => e
@@ -1813,6 +1849,30 @@ _EOF_"
         vm_template
     end
 
+    # Remove VMWare Tools injection from the VM
+    def remove_vmtools_injection(disk, osinfo)
+        if @options[:remove_vmtools]
+            puts 'Starting VMWare Tools Removal script injection...'
+            if osinfo['name'] == 'windows'
+                default_path = '/usr/share/one/scripts/vmware_tools_removal.ps1'
+            else
+                default_path = '/usr/share/one/scripts/vmware_tools_removal.sh'
+            end
+            script_path = File.exist?(default_path) ? default_path : nil
+            unless script_path && File.exist?(script_path)
+                puts 'Unable to find vmware_tools_removal script, please remove VMWare Tools manually.'
+                return
+            end
+            cmd = "virt-customize -q -a #{disk} --firstboot '#{script_path}'"
+            _stdout, status = run_cmd_report(cmd)
+            if !status.success?
+                puts 'Remove VMWare tools injection failed somehow, please remove VMWare Tools manually.'
+                return
+            end
+            puts "VMware Tools removal injection completed. The script will run on the first boot.".green
+        end
+    end
+
     # General method to list vCenter objects
     #
     # @param options [Hash] User CLI options
@@ -2031,24 +2091,8 @@ _EOF_"
 
         # Optimize template for Windows VMs
         if img_ids[0][:os] == 'windows'
-            # Add USB tablet input device
-            input_hash = { 'BUS' => 'usb', 'TYPE' => 'tablet' }
-            vm_template.add_element('//VMTEMPLATE', {"INPUT" => input_hash})
-
-            # Configure video settings
-            video_hash = { 'RESOLUTION' => '1440x900', 'TYPE' => 'virtio', 'VRAM' => '16384' }
-            vm_template.add_element('//VMTEMPLATE', {"VIDEO" => video_hash})
-
-            # Configure features for Windows VM (Hyper-V and local time)
-            features_hash = { 'HYPERV' => 'YES', 'LOCALTIME' => 'YES' }
-            if vm_template.element_xml('FEATURES').nil?
-              puts 'Create features element and add hyperv'
-              vm_template.add_element('//VMTEMPLATE', {"FEATURES" => features_hash})
-            else
-              puts 'Add hyperv to features element'
-              vm_template.add_element('//VMTEMPLATE/FEATURES', features_hash)
-            end
-          end
+            vm_template = tune_windows_tmpl(vm_template)
+        end
 
         print "Allocating the VM template..."
 
@@ -2145,6 +2189,10 @@ _EOF_"
 
         # Add the NIC's now, after any conversion stuff has happened since it creates OpenNebula objects
         vm_template = add_one_nics(vm_template, vc_nics, vc_nic_backing)
+
+        if img_ids[0][:os] == 'windows'
+            vm_template = tune_windows_tmpl(vm_template)
+        end
 
         print "Allocating the VM template..."
 

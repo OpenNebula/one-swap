@@ -466,6 +466,18 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'Trigger a VM full clone and convert that clone without requiring to poweroff the original VM',
     }
 
+    CLONE = {
+        :name => 'clone',
+        :large => '--clone',
+        :description => 'Trigger a VM full clone and convert that clone without requiring to poweroff the original VM',
+    }
+
+    REMOVEVMTOOLS = {
+        :name => 'remove_vmtools',
+        :large => '--remove_vmtools',
+        :description => 'Add contextualization script to force remove VMware tools from the VM'
+     }
+
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
     V2V_OPTS = [V2V_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY, ROOT]
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
@@ -473,7 +485,7 @@ CommandParser::CmdParser.new(ARGV) do
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                    CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
-                   PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
+                   PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVEVMTOOLS] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
     IMPORT_OPTS = [OVA, DATASTORE, NETWORK] + V2V_OPTS
 
     ############################################################################
@@ -578,7 +590,7 @@ CommandParser::CmdParser.new(ARGV) do
             options[:datastore]     ||= 1
             options[:virt_tools]    ||= '/usr/local/share/virt-tools'
             options[:v2v_path]      ||= 'virt-v2v'
-            options[:clone]         ||= false
+
 
             if options[:http_transfer]
                 options[:http_host] ||= Socket.ip_address_list.detect { |addrinfo| addrinfo.ipv4? && !addrinfo.ipv4_loopback? }&.ip_address
