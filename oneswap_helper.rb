@@ -1813,6 +1813,24 @@ _EOF_"
         vm_template
     end
 
+    def remove_vmtools(vm_template)
+        script_path = nil
+        if @props['config'][:guestFullName].include?('Windows')
+            puts 'Adding VMWare Tools Removal Powershell script to VM Template Context.'
+            script_path = "/usr/share/one/scripts/vmware_tools_removal.ps1"
+        elsif ['Ubuntu', 'Debian', 'Red Hat', 'CentOS'].any? { |os| @props['config'][:guestFullName].include?(os) }
+            puts 'Adding VMWare Tools Removal Bash script to VM Template Context.'
+            script_path = "/usr/share/one/scripts/vmware_tools_removal.sh"
+        end
+        if script_path && File.exist?(script_path)
+            script_base64 = Base64.encode64(File.binread(script_path))
+            vm_template.add_element('//VMTEMPLATE/CONTEXT', {"START_SCRIPT_BASE64" => script_base64})
+        else
+            warn "VMware Tools removal script not found at #{script_path} or OS not supported." if script_path
+        end
+        vm_template
+    end
+
     # General method to list vCenter objects
     #
     # @param options [Hash] User CLI options
@@ -2125,6 +2143,10 @@ _EOF_"
 
         # Add the NIC's now, after any conversion stuff has happened since it creates OpenNebula objects
         vm_template = add_one_nics(vm_template, vc_nics, vc_nic_backing)
+
+        if @options[:remove_vmtools] && !@options[:disable_contextualization]
+            vm_template = remove_vmtools(vm_template)
+        end
 
         print "Allocating the VM template..."
 

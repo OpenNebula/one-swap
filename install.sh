@@ -67,19 +67,21 @@ if [ -z "$ROOT" ] ; then
     BIN_LOCATION="/usr/bin"
     VAR_LOCATION="/var/lib/one"
     ETC_LOCATION="/etc/one"
+    SCRIPTS_LOCATION="$SHARE_LOCATION/scripts"
 else
     LIB_LOCATION="$ROOT/lib"
     SHARE_LOCATION="$ROOT/share"
     BIN_LOCATION="$ROOT/bin"
     VAR_LOCATION="$ROOT/var"
     ETC_LOCATION="$ROOT/etc/one"
+    SCRIPTS_LOCATION="$SHARE_LOCATION/scripts"
 fi
 
 LIB_DIRS="$LIB_LOCATION/ruby/cli/one_helper"
 MAN_LOCATION="/usr/share/man/man1"
 
 MAKE_DIRS="$BIN_LOCATION $SHARE_LOCATION $LIB_LOCATION $ETC_LOCATION
-           $VAR_LOCATION $LIB_DIRS"
+           $VAR_LOCATION $LIB_DIRS $SCRIPTS_LOCATION"
 
 #-------------------------------------------------------------------------------
 # FILE DEFINITION, WHAT IS GOING TO BE INSTALLED AND WHERE
@@ -88,12 +90,14 @@ INSTALL_FILES=(
     BIN_FILES:$BIN_LOCATION
 	ONE_CLI_LIB_FILES:$LIB_LOCATION/ruby/cli/one_helper
     CONF_FILES:$ETC_LOCATION
+    SCRIPTS_FILES:$SCRIPTS_LOCATION
 )
 
 
 BIN_FILES="oneswap"
 ONE_CLI_LIB_FILES="oneswap_helper.rb"
 CONF_FILES="oneswap.yaml"
+SCRIPTS_FILES="scripts/*"
 
 #-----------------------------------------------------------------------------
 # INSTALL.SH SCRIPT

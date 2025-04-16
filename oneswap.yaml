@@ -45,6 +45,7 @@
 # Extra Options
 #:delete: false                           # Delete the VM Disks after transfer
 #:context: '/var/lib/one/context/'        # Path to OpenNebula context packages
+#:remove_vmtools: false                   # Add context script to force remove of VMWare Tools
 
 # OpenNebula Placement Options
 #:one_cluster:                            # ID of the OpenNebula Cluster
