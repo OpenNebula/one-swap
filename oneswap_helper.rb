@@ -2132,7 +2132,7 @@ _EOF_"
         end
     end
 
-    # Import Imagee
+    # Import Image
     #
     # @param options [Hash] User CLI Options
     #
