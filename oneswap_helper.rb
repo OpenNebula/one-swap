@@ -1475,6 +1475,26 @@ _EOF_"
         end
     end
 
+    # Create and run the qemu-img vmdk conversion
+    # This uses qemu-img to convert an vmdk image to desired format (Default: qcow2).
+    # Outputs a converted image location if success
+    def convert_vmdk(vmdk_path, output_format: 'qcow2')
+        raise "Input file not found: #{vmdk_path}" unless File.exist?(vmdk_path)
+        puts "Converting disk #{vmdk_path} to #{output_format}..."
+        base_name = File.basename(vmdk_path, '.vmdk')
+        output_path = File.join(@options[:work_dir], 'conversions', "#{base_name}.#{output_format}")
+        command = "qemu-img convert -O #{output_format} -p -S 4k -W #{vmdk_path} #{output_path}"
+        t0 = Time.now
+        success = system(command)
+        duration = (Time.now - t0).round(2)
+        if success
+          puts "Disk converted successfully in #{duration} seconds."
+          return output_path
+        else
+          raise "Failed to convert #{vmdk_path} to #{output_format}"
+        end
+    end
+
     def handle_v2v_error(line)
         LOGGER[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
         pass_list  = [
@@ -1987,7 +2007,8 @@ _EOF_"
     # @param name    [Hash] Object Name
     # @param options [Hash] User CLI options
     def import(options)
-        name = File.basename(options[:ova], '.ova')
+        source = options[:ova] || options[:vmdk]
+        name = File.basename(source, File.extname(source))
         check_one_connectivity
         if !Dir.exist?(options[:work_dir])
             raise 'Provided working directory '\
@@ -2003,7 +2024,11 @@ _EOF_"
             Dir.mkdir(conv_path) if !Dir.exist?(conv_path)
             Dir.mkdir(tran_path) if !Dir.exist?(tran_path)
 
-            import_vm
+            if options[:vmdk]
+                import_image
+            else
+                import_vm
+            end
         ensure
             cleanup_all
         end
@@ -2160,6 +2185,22 @@ _EOF_"
             puts 'Failed'.red
             puts "\nVM Template:\n#{vm_template.to_xml}\n"
         end
+    end
+
+    # Import Image
+    #
+    # @param options [Hash] User CLI Options
+    #
+    def import_image
+        # Convert VMDK to QCOW2 compatible
+        print "Converting the Image => "
+        img_loc = convert_vmdk(@options[:vmdk])
+        puts img_loc.nil? ? "No Image reported being converted".red : "Converted image: #{img_loc}".green
+
+        # Import Image to OpenNebula
+        print "Allocating the Image => "
+        img_ids = create_one_images([img_loc])
+        puts img_ids.nil? || img_ids.first[:id].nil? ? "No Image reported being created".red : "Created image: #{img_ids.first[:id]}".green
     end
 
     # Convert VM
