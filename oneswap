@@ -456,7 +456,7 @@ CommandParser::CmdParser.new(ARGV) do
     VMDK = {
         :name => 'vmdk',
         :large => '--vmdk vmdk.vmdk',
-        :description => 'File name or path to VMDK files folder in case the guest was exported as a "Folder of files" or if the VMDK has been previously unpacked',
+        :description => 'Full VMDK file path to import.',
         :format => String
     }
 
@@ -609,20 +609,20 @@ CommandParser::CmdParser.new(ARGV) do
     end
 
     import_desc = <<-EOT.unindent
-        Import an OVA/VMDK file exported from VMware
+        Import an OVA as VM or VMDK as Image file exported from VMware
 
         Examples:
-           - import from an OVA file:
+           - import VM from an OVA file:
 
              oneswap import --ova OVA.ova
 
-           - import from an OVF file:
+           - import VM from an OVF file:
 
              oneswap import --ova /path/to/files
 
-            - import from an VMDK file:
+            - import Image from an VMDK file:
 
-             oneswap import --vmdk /path/to/files
+             oneswap import --vmdk disk.vmdk
     EOT
 
     command :import, import_desc, :options => IMPORT_OPTS do

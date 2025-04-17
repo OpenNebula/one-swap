@@ -2146,7 +2146,6 @@ _EOF_"
         print "Allocating the Image => "
         img_ids = create_one_images([img_loc])
         puts img_ids.nil? || img_ids.first[:id].nil? ? "No Image reported being created".red : "Created image: #{img_ids.first[:id]}".green
-
     end
 
     # Convert VM
