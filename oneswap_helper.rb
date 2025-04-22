@@ -1929,9 +1929,9 @@ _EOF_"
         if @options[:remove_vmtools]
             puts 'Starting VMWare Tools Removal script injection...'
             if osinfo['name'] == 'windows'
-                default_path = '/usr/lib/one/oneswap/scripts/vmware_tools_removal.ps1'
+                default_path = "#{SCRIPTS_LOCATION}/vmware_tools_removal.ps1"
             else
-                default_path = '/usr/lib/one/oneswap/scripts/vmware_tools_removal.sh'
+                default_path = "#{SCRIPTS_LOCATION}/vmware_tools_removal.sh"
             end
             script_path = File.exist?(default_path) ? default_path : nil
             unless script_path && File.exist?(script_path)
