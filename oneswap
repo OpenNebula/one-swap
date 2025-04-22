@@ -21,9 +21,11 @@ ONE_LOCATION = ENV['ONE_LOCATION']
 if !ONE_LOCATION
     RUBY_LIB_LOCATION = '/usr/lib/one/ruby'
     GEMS_LOCATION     = '/usr/share/one/gems'
+    SCRIPTS_LOCATION = '/usr/lib/one/oneswap/scripts'
 else
     RUBY_LIB_LOCATION = ONE_LOCATION + '/lib/ruby'
     GEMS_LOCATION     = ONE_LOCATION + '/share/gems'
+    SCRIPTS_LOCATION = ONE_LOCATION + '/lib/oneswap/scripts'
 end
 
 # %%RUBYGEMS_SETUP_BEGIN%%
@@ -472,7 +474,7 @@ CommandParser::CmdParser.new(ARGV) do
         :large => '--clone',
         :description => 'Trigger a VM full clone and convert that clone without requiring to poweroff the original VM',
     }
-    
+
     REMOVEVMTOOLS = {
         :name => 'remove_vmtools',
         :large => '--remove_vmtools',
@@ -487,7 +489,7 @@ CommandParser::CmdParser.new(ARGV) do
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                    CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                    PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVEVMTOOLS] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
-    IMPORT_OPTS = [OVA, VMDK, DATASTORE, NETWORK, SKIP_CONTEXT] + V2V_OPTS
+    IMPORT_OPTS = [OVA, VMDK, DATASTORE, NETWORK, SKIP_CONTEXT, REMOVEVMTOOLS] + V2V_OPTS
 
     ############################################################################
     # list resources

@@ -67,14 +67,14 @@ if [ -z "$ROOT" ] ; then
     BIN_LOCATION="/usr/bin"
     VAR_LOCATION="/var/lib/one"
     ETC_LOCATION="/etc/one"
-    SCRIPTS_LOCATION="$SHARE_LOCATION/scripts"
+    SCRIPTS_LOCATION="$LIB_LOCATION/oneswap/scripts"
 else
     LIB_LOCATION="$ROOT/lib"
     SHARE_LOCATION="$ROOT/share"
     BIN_LOCATION="$ROOT/bin"
     VAR_LOCATION="$ROOT/var"
     ETC_LOCATION="$ROOT/etc/one"
-    SCRIPTS_LOCATION="$SHARE_LOCATION/scripts"
+    SCRIPTS_LOCATION="$LIB_LOCATION/oneswap/scripts"
 fi
 
 LIB_DIRS="$LIB_LOCATION/ruby/cli/one_helper"
