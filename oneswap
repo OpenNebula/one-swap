@@ -472,7 +472,7 @@ CommandParser::CmdParser.new(ARGV) do
         :large => '--clone',
         :description => 'Trigger a VM full clone and convert that clone without requiring to poweroff the original VM',
     }
-    
+
     REMOVEVMTOOLS = {
         :name => 'remove_vmtools',
         :large => '--remove_vmtools',

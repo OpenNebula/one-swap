@@ -392,9 +392,9 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     def clone_vm(vi_client, properties, vm, clone_name = nil)
         attr = vm.to_hash
         vm = vm.obj
-    
+
         target_name = clone_name || "#{attr['name']}-clone"
-      
+
         puts "\nCloning #{attr['name']} into #{target_name}\n"
 
         relocate_spec = RbVmomi::VIM.VirtualMachineRelocateSpec
@@ -412,7 +412,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         )
 
         clone_task.wait_for_completion
-    
+
         vm_pool = get_objects(vi_client, 'VirtualMachine', properties)
         cloned_vm = vm_pool.find { |r| r['name'] == "#{target_name}" }
         if cloned_vm.nil?
@@ -1929,9 +1929,9 @@ _EOF_"
         if @options[:remove_vmtools]
             puts 'Starting VMWare Tools Removal script injection...'
             if osinfo['name'] == 'windows'
-                default_path = '/usr/share/one/scripts/vmware_tools_removal.ps1'
+                default_path = '/usr/lib/one/oneswap/scripts/vmware_tools_removal.ps1'
             else
-                default_path = '/usr/share/one/scripts/vmware_tools_removal.sh'
+                default_path = '/usr/lib/one/oneswap/scripts/vmware_tools_removal.sh'
             end
             script_path = File.exist?(default_path) ? default_path : nil
             unless script_path && File.exist?(script_path)
@@ -2231,7 +2231,7 @@ _EOF_"
         @props = vm.to_hash
 
         # If clone option is set, clone the VM and override VM properties
-        if @options[:clone]       
+        if @options[:clone]
             begin
                 cloned_vm = clone_vm(vi_client, properties, vm)
                 @props = cloned_vm.to_hash
