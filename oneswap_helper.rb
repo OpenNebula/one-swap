@@ -2007,12 +2007,7 @@ _EOF_"
         ## Precheck OpenNebula Networks (check if exists)
         one_networks = OpenNebula::VirtualNetworkPool.new(@client)
         one_networks.info
-        n_exists = false
-        one_networks.each do |n|
-            next if n.id != @options[:network].to_i
-            n_exists = true
-        end
-        if !n_exists
+        unless one_networks.any? { |n| n.id == @options[:network].to_i }
             raise "Network with ID #{@options[:network]} does not exist.".red
         end
     end
