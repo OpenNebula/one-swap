@@ -1959,29 +1959,26 @@ _EOF_"
         puts 'Running OpenNebula prechecks...'
         ## Precheck datastore space (check if it will be enough space for the image)
         vm_obj = vm.obj
-        total_size_kb = 0
+        vm_size_kb = 0
 
         vm_obj.config.hardware.device.each do |device|
             if device.is_a?(RbVmomi::VIM::VirtualDisk)
-                total_size_kb += device.capacityInKB
+                vm_size_kb += device.capacityInKB
             end
         end
-        total_size_gb = total_size_kb.to_f / (1024 * 1024)
+        vm_size_gb = vm_size_kb.to_f / (1024 * 1024)
+
         ds_target_id = @options[:datastore].to_i
         one_datastores = OpenNebula::DatastorePool.new(@client)
-        one_datastores.info
+        one_datastores.info        
         one_datastores.each do |ds|
             if ds.id == ds_target_id
                 ds.info
-                name = ds.name
-                ds_path = ds['BASE_PATH']
-                output = `df -k '#{ds_path}'`
-                lines = output.split("\n")
-                fields = lines[1].split
-                available_kb = fields[3].to_i
-                available_gb = available_kb.to_f / (1024 * 1024)
-                if total_size_kb > available_kb
-                    raise "Not enough space in the datastore. Available: #{available_gb.round(2)} Expected: #{total_size_gb.round(2)}".red
+                available_mb = ds['FREE_MB'].to_i
+                available_kb = available_mb * 1024
+                available_gb = available_mb.to_f / 1024
+                if vm_size_kb > available_kb
+                    raise "Not enough space in the datastore. Available: #{available_gb.round(2)} GB, VM Size: #{vm_size_gb.round(2)} GB".red
                 end
             end
         end
