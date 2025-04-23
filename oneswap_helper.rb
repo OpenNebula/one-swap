@@ -1947,7 +1947,76 @@ _EOF_"
             puts "VMware Tools removal injection completed. The script will run on the first boot.".green
         end
     end
+    
+    # Run a OpenNebula system prechecks:
+    #
+    # - Check if there is enough space in the datastore
+    # - Check if the Image name already exists
+    # - Check if the VM Template name already exists
+    # - Check if the OpenNebula network exists
+    #
+    def one_prechecks(vm)
+        puts 'Running OpenNebula prechecks...'
+        ## Precheck datastore space (check if it will be enough space for the image)
+        vm_obj = vm.obj
+        total_size_kb = 0
 
+        vm_obj.config.hardware.device.each do |device|
+            if device.is_a?(RbVmomi::VIM::VirtualDisk)
+                total_size_kb += device.capacityInKB
+            end
+        end
+        total_size_gb = total_size_kb.to_f / (1024 * 1024)
+        ds_target_id = @options[:datastore].to_i
+        one_datastores = OpenNebula::DatastorePool.new(@client)
+        one_datastores.info
+        one_datastores.each do |ds|
+            if ds.id == ds_target_id
+                ds.info
+                name = ds.name
+                ds_path = ds['BASE_PATH']
+                output = `df -k '#{ds_path}'`
+                lines = output.split("\n")
+                fields = lines[1].split
+                available_kb = fields[3].to_i
+                available_gb = available_kb.to_f / (1024 * 1024)
+                if total_size_kb > available_kb
+                    raise "Not enough space in the datastore. Available: #{available_gb.round(2)} Expected: #{total_size_gb.round(2)}".red
+                end
+            end
+        end
+
+        ## Precheck image name (check if it exists)
+        one_images = OpenNebula::ImagePool.new(@client)
+        one_images.info
+        one_images.each do |i|
+            if i.name =~ /^#{Regexp.escape(@options[:name])}_\d+$/ && ['OS', 'DATABLOCK'].include?(i.type_str)
+                raise "Image with name #{@options[:name]}_{id} already exists.".red
+            end
+        end
+
+        ## Precheck VM Template name (check if it exists)
+        one_templates = OpenNebula::TemplatePool.new(@client)
+        one_templates.info
+        one_templates.each do |t|
+            if t.name == @options[:name]
+                raise "VM Template with name #{@options[:name]} already exists.".red
+            end
+        end
+
+        ## Precheck OpenNebula Networks (check if exists)
+        one_networks = OpenNebula::VirtualNetworkPool.new(@client)
+        one_networks.info
+        n_exists = false
+        one_networks.each do |n|
+            next if n.id != @options[:network].to_i
+            n_exists = true
+        end
+        if !n_exists
+            raise "Network with ID #{@options[:network]} does not exist.".red
+        end
+    end
+    
     # General method to list vCenter objects
     #
     # @param options [Hash] User CLI options
@@ -2251,6 +2320,11 @@ _EOF_"
             raise "Windows is not supported in OpenNebula's Custom Conversion process".red
         end
 
+        # OpenNebula system prechecks
+        if !@options[:skip_prechecks]
+            one_prechecks(vm)
+        end
+                
         # Gather NIC backing early because it makes a call to vCenter,
         # which may not be authenticated after X hours of converting disks
         vc_nics, vc_nic_backing = get_vcenter_nic_info
