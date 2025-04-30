@@ -48,7 +48,7 @@
 # Extra Options
 #:delete: false                           # Delete the VM Disks after transfer
 #:context: '/var/lib/one/context/'        # Path to OpenNebula context packages
-#:remove_vmtools: false                   # Add context script to force remove of VMWare Tools
+#:remove-vmtools: false                   # Add context script to force remove of VMWare Tools
 #:uefi_path: '/usr/share/OVMF/OVMF_CODE.fd'                 # Path to the UEFI file to be configured in the VM template.
 #:uefi_sec_path: '/usr/share/OVMF/OVMF_CODE.secboot.fd'     # Path to the UEFI Secure file to be configured in the VM template.
 
