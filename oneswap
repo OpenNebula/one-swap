@@ -489,14 +489,18 @@ CommandParser::CmdParser.new(ARGV) do
 
     UEFI_PATH = {
         :name => 'uefi_path',
-        :large => '--uefi-path',
-        :description => 'Path to the UEFI file to be configured in the VM template.'
+        :large => '--uefi-path /path/to/uefi',
+        :description => 'Path to the UEFI file to be configured in the VM template.',
+        :format => String
+
     }
 
     UEFI_SEC_PATH = {
         :name => 'uefi_sec_path',
-        :large => '--uefi-sec-path',
-        :description => 'Path to the UEFI Secure file to be configured in the VM template.'
+        :large => '--uefi-sec-path /path/to/uefi.secboot',
+        :description => 'Path to the UEFI Secure file to be configured in the VM template.',
+        :format => String
+
     }
 
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
