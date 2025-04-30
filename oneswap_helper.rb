@@ -1939,7 +1939,7 @@ _EOF_"
                 return
             end
             cmd = "virt-customize -q -a #{disk} --firstboot '#{script_path}'"
-            _stdout, status = run_cmd_report(cmd)
+            _stdout, status = run_cmd_report(cmd, true)
             if !status.success?
                 puts 'Remove VMWare tools injection failed somehow, please remove VMWare Tools manually.'
                 return
@@ -1947,7 +1947,7 @@ _EOF_"
             puts "VMware Tools removal injection completed. The script will run on the first boot.".green
         end
     end
-    
+
     # Run a OpenNebula system prechecks:
     #
     # - Check if there is enough space in the datastore
@@ -1970,7 +1970,7 @@ _EOF_"
 
         ds_target_id = @options[:datastore].to_i
         one_datastores = OpenNebula::DatastorePool.new(@client)
-        one_datastores.info        
+        one_datastores.info
         one_datastores.each do |ds|
             if ds.id == ds_target_id
                 ds.info
@@ -2008,7 +2008,7 @@ _EOF_"
             raise "Network with ID #{@options[:network]} does not exist.".red
         end
     end
-    
+
     # General method to list vCenter objects
     #
     # @param options [Hash] User CLI options
@@ -2316,7 +2316,7 @@ _EOF_"
         if !@options[:skip_prechecks]
             one_prechecks(vm)
         end
-                
+
         # Gather NIC backing early because it makes a call to vCenter,
         # which may not be authenticated after X hours of converting disks
         vc_nics, vc_nic_backing = get_vcenter_nic_info
