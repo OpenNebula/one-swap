@@ -487,6 +487,18 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'Skip OpenNebula system prechecks before conversion.'
     }
 
+    UEFI_PATH = {
+        :name => 'uefi_path',
+        :large => '--uefi-path',
+        :description => 'Path to the UEFI file to be configured in the VM template.'
+    }
+
+    UEFI_SEC_PATH = {
+        :name => 'uefi_sec_path',
+        :large => '--uefi-sec-path',
+        :description => 'Path to the UEFI Secure file to be configured in the VM template.'
+    }
+
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
     V2V_OPTS = [V2V_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY, ROOT]
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
@@ -495,8 +507,8 @@ CommandParser::CmdParser.new(ARGV) do
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                    CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                    PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVEVMTOOLS,
-                   SKIP_PRECHEKS] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
-    IMPORT_OPTS = [OVA, VMDK, DATASTORE, NETWORK, SKIP_CONTEXT, REMOVEVMTOOLS] + V2V_OPTS
+                   SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
+    IMPORT_OPTS = [OVA, VMDK, DATASTORE, NETWORK, SKIP_CONTEXT, REMOVEVMTOOLS, UEFI_PATH, UEFI_SEC_PATH] + V2V_OPTS
 
     ############################################################################
     # list resources
@@ -603,6 +615,8 @@ CommandParser::CmdParser.new(ARGV) do
             options[:remove_vmtools] ||= false
             options[:clone]          ||= false
             options[:skip_prechecks] ||= false
+            options[:uefi_path]      ||= '/usr/share/OVMF/OVMF_CODE.fd'
+            options[:uefi_sec_path]  ||= '/usr/share/OVMF/OVMF_CODE.secboot.fd'
 
             if options[:http_transfer]
                 options[:http_host] ||= Socket.ip_address_list.detect { |addrinfo| addrinfo.ipv4? && !addrinfo.ipv4_loopback? }&.ip_address
@@ -679,6 +693,8 @@ CommandParser::CmdParser.new(ARGV) do
             options[:virt_tools]    ||= '/usr/local/share/virt-tools'
             options[:v2v_path]      ||= 'virt-v2v'
             options[:root]          ||= 'first'
+            options[:uefi_path]      ||= '/usr/share/OVMF/OVMF_CODE.fd'
+            options[:uefi_sec_path]  ||= '/usr/share/OVMF/OVMF_CODE.secboot.fd'
 
             helper.import(options)
         rescue StandardError => e

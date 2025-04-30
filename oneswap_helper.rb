@@ -739,10 +739,10 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         fw = { "OS" => { "FIRMWARE" => "BIOS" }}
         if @props['config'][:firmware] == 'efi'
             if @props['config'][:bootOptions][:efiSecureBootEnabled]
-                fw['OS']['FIRMWARE'] = '/usr/share/OVMF/OVMF_CODE.secboot.fd'
+                fw['OS']['FIRMWARE'] = @options[:uefi_sec_path]
                 fw['OS']['FIRMWARE_SECURE'] = 'YES'
             else
-                fw['OS']['FIRMWARE'] = '/usr/share/OVMF/OVMF_CODE.fd'
+                fw['OS']['FIRMWARE'] = @options[:uefi_path]
             end
             fw['OS']['MACHINE'] = 'q35'
         end
