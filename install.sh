@@ -79,10 +79,9 @@ fi
 
 LIB_DIRS="$LIB_LOCATION/ruby/cli/one_helper"
 MAN_LOCATION="/usr/share/man/man1"
-VIRTTOOLS_LOCATION="/usr/share/virt-tools"
 
 MAKE_DIRS="$BIN_LOCATION $SHARE_LOCATION $LIB_LOCATION $ETC_LOCATION
-           $VAR_LOCATION $LIB_DIRS $SCRIPTS_LOCATION $VIRTTOOLS_LOCATION"
+           $VAR_LOCATION $LIB_DIRS $SCRIPTS_LOCATION"
 
 #-------------------------------------------------------------------------------
 # FILE DEFINITION, WHAT IS GOING TO BE INSTALLED AND WHERE
@@ -92,7 +91,6 @@ INSTALL_FILES=(
 	ONE_CLI_LIB_FILES:$LIB_LOCATION/ruby/cli/one_helper
     CONF_FILES:$ETC_LOCATION
     SCRIPTS_FILES:$SCRIPTS_LOCATION
-    EXE_FILES:$VIRTTOOLS_LOCATION
 )
 
 
@@ -100,7 +98,6 @@ BIN_FILES="oneswap"
 ONE_CLI_LIB_FILES="oneswap_helper.rb"
 CONF_FILES="oneswap.yaml"
 SCRIPTS_FILES="scripts/*"
-EXE_FILES="vendor/exe/*"
 
 #-----------------------------------------------------------------------------
 # INSTALL.SH SCRIPT
