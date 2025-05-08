@@ -940,117 +940,140 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def context_command(disk, osinfo)
-        # puts "context_command"
+        base_cmd = "virt-customize -q -a #{disk}"
         cmd = nil
+        fallback_cmd = nil
+        context_fullpath = nil
+
         if osinfo['name'] == 'windows'
             context_fullpath = detect_context_package('windows')
-            return false if !context_fullpath
+            return false unless context_fullpath
             context_basename = File.basename(context_fullpath)
-            cmd = 'virt-customize -q'\
-                  " -a #{disk}"\
+            cmd = base_cmd +
                   ' --mkdir /Temp'\
                   " --copy-in #{context_fullpath}:/Temp"\
                   " --firstboot-command 'msiexec -i c:\\Temp\\#{context_basename} /quiet && del c:\\Temp\\#{context_basename}'"
-        else
-            # os gives versions, so check that instead of distro
-            if osinfo['os'] =~ /^(redhat-based|rhel|fedora|ubuntu|debian)/ # start_with any of these
-                case osinfo['os']
-                when /^fedora/
-                    context_fullpath = detect_context_package('fedora')
-                    return false if !context_fullpath
-                    context_basename = File.basename(context_fullpath)
-                    cmd = 'virt-customize -q'\
-                          " -a #{disk}"\
-                          " --copy-in #{context_fullpath}:/tmp"\
-                          " --install /tmp/#{context_basename}"\
-                          " --delete /tmp/#{context_basename}"\
-                          " --run-command 'systemctl enable systemd-networkd'"\
-                          " --run-command 'systemctl disable systemd-networkd-wait-online'"\
-                          " --run-command 'sed -i \"s/SELINUX=enforcing/SELINUX=disabled/\" /etc/selinux/config || exit 0'"
-                when /^redhat-based8/, /^rhel8/
-                    context_fullpath = detect_context_package('rhel8')
-                    return false if !context_fullpath
-                    context_basename = File.basename(context_fullpath)
-                    cmd = 'virt-customize -q'\
-                          " -a #{disk}"\
-                          " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-8-$(arch)-rpms'"\
-                          " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm'"\
-                          " --copy-in #{context_fullpath}:/tmp"\
-                          " --install /tmp/#{context_basename}"\
-                          " --delete /tmp/#{context_basename}"\
-                          " --run-command 'systemctl enable NetworkManager.service || exit 0'"
-                when /^redhat-based9/, /^rhel9/
-                    context_fullpath = detect_context_package('rhel9')
-                    return false if !context_fullpath
-                    context_basename = File.basename(context_fullpath)
-                    cmd = 'virt-customize -q'\
-                          " -a #{disk}"\
-                          " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms'"\
-                          " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm'"\
-                          " --copy-in #{context_fullpath}:/tmp"\
-                          " --install /tmp/#{context_basename}"\
-                          " --delete /tmp/#{context_basename}"\
-                          " --run-command 'systemctl enable NetworkManager.service || exit 0'"
-                when /^ubuntu/, /^debian/
-                    context_fullpath = detect_context_package('debian')
-                    return false if !context_fullpath
-                    context_basename = File.basename(context_fullpath)
-                    cmd = 'virt-customize -q'\
-                          " -a #{disk}"\
-                          " --uninstall cloud-init"\
-                          " --copy-in #{context_fullpath}:/tmp"\
-                          " --install /tmp/#{context_basename}"\
-                          " --delete /tmp/#{context_basename}"\
-                          " --run-command 'systemctl enable network.service || exit 0'"
-                end
-
-                fallback_cmd = 'virt-customize -q'\
-                               " -a #{disk}"\
-                               ' --firstboot-install epel-release'\
-                               " --copy-in #{context_fullpath}:/tmp"\
-                               " --firstboot-install /tmp/#{context_basename}"\
-                               " --run-command 'systemctl enable network.service || exit 0'"
-            end
-            if osinfo['os'].start_with?('alt') || osinfo['os'].start_with?('opensuse') || osinfo['os'].start_with?('sles')
-                if osinfo['os'].start_with?('alt')
-                    context_fullpath = detect_context_package('alt')
-                elsif osinfo['os'].start_with?('opensuse') || osinfo['os'].start_with?('sles')
-                    context_fullpath = detect_context_package('opensuse')
-                end
-                return false if !context_fullpath
-                context_basename = File.basename(context_fullpath)
-                cmd = 'virt-customize -q'\
-                      " -a #{disk}"\
-                      " --copy-in #{context_fullpath}:/tmp"\
-                      " --install /tmp/#{context_basename}"\
-                      " --delete /tmp/#{context_basename}"
-                fallback_cmd = 'virt-customize -q'\
-                               " -a #{disk}"\
-                               " --copy-in #{context_fullpath}:/tmp"\
-                               " --firstboot-install /tmp/#{context_basename}"
-            end
-            if osinfo['os'].start_with?('freebsd')
-                # may not mount properly sometimes due to internal fs
-                context_fullpath = detect_context_package('freebsd')
-                return false if !context_fullpath
-                context_basename = File.basename(context_fullpath)
-                cmd = 'virt-customize -q'\
-                      " -a #{disk}"\
-                      ' --install curl,bash,sudo,base64,ruby,open-vm-tools-nox11'\
-                      " --copy-in #{context_fullpath}:/tmp"\
-                      " --install /tmp/#{context_basename}"\
-                      " --delete /tmp/#{context_basename}"
-                fallback_cmd = 'virt-customize -q'\
-                               " -a #{disk}"\
-                               ' --firstboot-install curl,bash,sudo,base64,ruby,open-vm-tools-nox11'\
-                               " --copy-in #{context_fullpath}:/tmp"\
-                               " --firstboot-install /tmp/#{context_basename}"
-            end
-            if osinfo['os'].start_with?('alpine')
-                puts 'Alpine is not compatible with offline install, please install context manually.'.brown
-            end
-            return false if not context_fullpath
+            return cmd, nil
         end
+
+        # os gives versions, so check that instead of distro
+        if osinfo['os'] =~ /^(redhat-based|rhel|fedora|ubuntu|debian)/ # start_with any of these
+            os = nil
+            opts = []
+            fallback_opts = []
+
+            case osinfo['os']
+            when /^fedora/
+                os = 'fedora'
+                opts = [
+                    " --copy-in %{context}:/tmp",
+                    " --install /tmp/%{basename}",
+                    " --delete /tmp/%{basename}",
+                    " --run-command 'systemctl enable systemd-networkd'",
+                    " --run-command 'systemctl disable systemd-networkd-wait-online'",
+                    " --run-command 'sed -i \"s/SELINUX=enforcing/SELINUX=disabled/\" /etc/selinux/config || exit 0'"
+                ]
+                fallback_opts = [
+                    " --copy-in %{context}:/tmp",
+                    " --firstboot-install /tmp/%{basename}",
+                    " --run-command 'systemctl enable systemd-networkd'",
+                    " --run-command 'systemctl disable systemd-networkd-wait-online'",
+                    " --run-command 'sed -i \"s/SELINUX=enforcing/SELINUX=disabled/\" /etc/selinux/config || exit 0'"
+                ]
+            when /^redhat-based8/, /^rhel8/
+                os = 'rhel8'
+                opts = [
+                    " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-8-$(arch)-rpms'",
+                    " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm'",
+                    " --copy-in %{context}:/tmp",
+                    " --install /tmp/%{basename}",
+                    " --delete /tmp/%{basename}",
+                    " --run-command 'systemctl enable NetworkManager.service || exit 0'"
+                ]
+                fallback_opts = [
+                    " --firstboot-install epel-release",
+                    " --copy-in %{context}:/tmp",
+                    " --firstboot-install /tmp/%{basename}",
+                    " --run-command 'systemctl enable NetworkManager.service || exit 0'"
+                ]
+            when /^redhat-based9/, /^rhel9/
+                os = 'rhel9'
+                opts = [
+                    " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms'",
+                    " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm'",
+                    " --copy-in %{context}:/tmp",
+                    " --install /tmp/%{basename}",
+                    " --delete /tmp/%{basename}",
+                    " --run-command 'systemctl enable NetworkManager.service || exit 0'"
+                ]
+                fallback_opts = [
+                    " --firstboot-install epel-release",
+                    " --copy-in %{context}:/tmp",
+                    " --firstboot-install /tmp/%{basename}",
+                    " --run-command 'systemctl enable NetworkManager.service || exit 0'"
+                ]
+            when /^ubuntu/, /^debian/
+                os = 'debian'
+                opts = [
+                    " --uninstall cloud-init",
+                    " --copy-in %{context}:/tmp",
+                    " --install /tmp/%{basename}",
+                    " --delete /tmp/%{basename}",
+                    " --run-command 'systemctl enable network.service || exit 0'"
+                ]
+                fallback_opts = [
+                    " --uninstall cloud-init",
+                    " --copy-in %{context}:/tmp",
+                    " --firstboot-install /tmp/%{basename}",
+                    " --run-command 'systemctl enable network.service || exit 0'"
+                ]
+            end
+
+            context_fullpath = detect_context_package(os)
+            return false unless context_fullpath
+
+            context_basename = File.basename(context_fullpath)
+            vars = {
+                context: context_fullpath,
+                basename: context_basename
+            }
+
+            cmd = base_cmd + opts.map { |c| c % vars }.join
+            fallback_cmd = base_cmd + fallback_opts.map { |c| c % vars }.join
+
+        elsif osinfo['os'].start_with?('alt', 'opensuse', 'sles')
+            os = osinfo['os'].start_with?('alt') ? 'alt' : 'opensuse'
+            context_fullpath = detect_context_package(os)
+            return false unless context_fullpath
+            context_basename = File.basename(context_fullpath)
+            cmd = base_cmd +
+                    " --copy-in #{context_fullpath}:/tmp"\
+                    " --install /tmp/#{context_basename}"\
+                    " --delete /tmp/#{context_basename}"
+            fallback_cmd = base_cmd +
+                            " --copy-in #{context_fullpath}:/tmp"\
+                            " --firstboot-install /tmp/#{context_basename}"
+
+        elsif osinfo['os'].start_with?('freebsd')
+            # may not mount properly sometimes due to internal fs
+            context_fullpath = detect_context_package('freebsd')
+            return false unless context_fullpath
+            context_basename = File.basename(context_fullpath)
+            cmd = base_cmd +
+                    ' --install curl,bash,sudo,base64,ruby,open-vm-tools-nox11'\
+                    " --copy-in #{context_fullpath}:/tmp"\
+                    " --install /tmp/#{context_basename}"\
+                    " --delete /tmp/#{context_basename}"
+            fallback_cmd = base_cmd +
+                            ' --firstboot-install curl,bash,sudo,base64,ruby,open-vm-tools-nox11'\
+                            " --copy-in #{context_fullpath}:/tmp"\
+                            " --firstboot-install /tmp/#{context_basename}"
+
+        elsif osinfo['os'].start_with?('alpine')
+            puts 'Alpine is not compatible with offline install, please install context manually.'.brown
+            return false
+        end
+        return false unless context_fullpath
         return cmd, fallback_cmd
     end
 
