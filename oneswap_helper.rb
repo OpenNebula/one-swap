@@ -947,7 +947,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
         if osinfo['name'] == 'windows'
             context_fullpath = detect_context_package('windows')
-            return false if !context_fullpath
+            return false unless context_fullpath
             context_basename = File.basename(context_fullpath)
             cmd = base_cmd +
                   ' --mkdir /Temp'\
@@ -1044,7 +1044,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         elsif osinfo['os'].start_with?('alt', 'opensuse', 'sles')
             os = osinfo['os'].start_with?('alt') ? 'alt' : 'opensuse'
             context_fullpath = detect_context_package(os)
-            return false if !context_fullpath
+            return false unless context_fullpath
             context_basename = File.basename(context_fullpath)
             cmd = base_cmd +
                     " --copy-in #{context_fullpath}:/tmp"\
@@ -1057,7 +1057,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         elsif osinfo['os'].start_with?('freebsd')
             # may not mount properly sometimes due to internal fs
             context_fullpath = detect_context_package('freebsd')
-            return false if !context_fullpath
+            return false unless context_fullpath
             context_basename = File.basename(context_fullpath)
             cmd = base_cmd +
                     ' --install curl,bash,sudo,base64,ruby,open-vm-tools-nox11'\
@@ -1073,7 +1073,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             puts 'Alpine is not compatible with offline install, please install context manually.'.brown
             return false
         end
-        return false if !context_fullpath
+        return false unless context_fullpath
         return cmd, fallback_cmd
     end
 
