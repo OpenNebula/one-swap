@@ -1,0 +1,249 @@
+.\" generated with Ronn/v0.7.3
+.\" http://github.com/rtomayko/ronn/tree/0.7.3
+.
+.TH "ONESWAP" "1" "May 2025" "" "oneswap(1) -- OpenNebula OneSwap Tool"
+.
+.SH "NAME"
+\fBoneswap\fR \- OpenNebula OneSwap Tool
+.
+.SH "SYNOPSIS"
+\fBoneswap\fR \fIcommand\fR [\fIargs\fR] [\fIoptions\fR]
+.
+.SH "OPTIONS"
+.
+.nf
+
+ \-\-clone                   Trigger a VM full clone and convert that clone
+                           without requiring to poweroff the original VM
+ \-c, \-\-cluster text        Filter by Cluster name containing text
+ \-\-config\-file /path/to/custom/config\.yaml Path to custom Configuration
+                           File, default is /etc/one/oneswap\.yaml
+ \-\-context\-package /path/to/context/ Directory with the context packages for
+                           guest OS injection, will search by default in
+                           /usr/share/one/context
+ \-\-cpu cpus                The Physical CPU allowed in integer format in
+                           OpenNebula\. Default is to match CPU cores in
+                           vCenter\.
+ \-\-cpu\-model model_type    Set a Specific CPU model in OpenNebula\. Default
+                           is None
+ \-\-custom                  Forces the use of OpenNebula\'s custom conversion
+                           process\. This will skip virt\-v2v conversion
+                           attempts\.
+ \-d, \-\-datacenter text     Filter by Datacenter name containing text
+ \-\-datastore id            Create images in the Image Datastore with this
+                           ID, Default: 1
+ \-\-delete\-after            Removes the leftover conversion directory in the
+                           working directory which contains the converted
+                           VM disks and descriptor files
+ \-\-dev\-prefix sd           The Dev Prefix to use on the disks in OpenNebula\.
+                           ex: sd, hd, vd, xvd\. Default is none
+ \-\-disable\-contextualization Remove default contextualization options in
+                           OpenNebula\. Default is for Network and SSH
+                           contextualization to be enabled\.
+ \-\-endpoint endpoint       URL of OpenNebula xmlrpc frontend
+ \-\-esxi ip                 Transfer directly from ESXi host instead using
+                           provided IP, may be useful if vCenter download
+                           is slow\. Requires SSH access to ESXi host\. The
+                           vCenter credentials are required to gather other
+                           information about the virtual machine\.
+ \-\-esxi\-pass password      ESXi password for SSH login\. Required for direct
+                           ESXi transfer\.
+ \-\-esxi\-user username      ESXi username for SSH login, default: root
+ \-\-fallback                If the virt\-v2v conversion fails, attempt the
+                           OpenNebula Custom Conversion process\.
+ \-f, \-\-format type         Disk format [ qcow2 | raw ], Default: qcow2
+ \-\-graphics\-command command The Graphics Command in OpenNebula\. Graphics
+                           type required\.
+ \-\-graphics\-keymap keymap  The Graphics Keymap in OpenNebula\. Graphics type
+                           required\.
+ \-\-graphics\-listen ip      The Graphics Listen on IP in OpenNebula\. Graphics
+                           type required\.
+ \-\-graphics\-password password The Graphics Password in OpenNebula\. Graphics
+                           type required\.
+ \-\-graphics\-port port      The Graphics Server port in OpenNebula\. Graphics
+                           type required\.
+ \-\-graphics\-type type      The Graphics type to enable in OpenNebula\.
+                           Options: [vnc, sdl, spice]
+ \-h, \-\-help                Show this message
+ \-\-http\-host host          IP of this machine to transfer images over HTTP,
+                           will also try to detect it if not specified
+ \-\-http\-port port          Port to transfer images over HTTP, for use with a
+                           separate oneswap server\. Default: 29869
+ \-\-http\-transfer           Transfer images over HTTP, for use with a
+                           separate oneswap server
+ \-\-hybrid                  Download the disk using rbvmomi2, then convert
+                           the vm using virt\-v2v locally\.
+ \-\-img\-wait sec            The amount of time to wait in seconds for the
+                           image to be created in OpenNebula\. Default is
+                           120 seconds
+ \-\-memory\-max memorymb     The Max Memory allowed in MB in OpenNebula\.
+                           Memory Hot Add required in VMware\.
+ \-n, \-\-name text           Filter by name containing text
+ \-\-network id              If a VCENTER_NETWORK_MATCH attribute in an
+                           OpenNebula does not match the name of a vCenter
+                           network, assign to this OpenNebula Network ID
+                           instead\.
+ \-\-one\-cluster id          ID of the Cluster in OpenNebula the VM Template
+                           should be scheduled to
+ \-\-one\-sys\-ds id           ID of the System Datastore in OpenNebula the VM
+                           should be scheduled to
+ \-\-one\-ds\-cluster id       ID of the Cluster in OpenNebula the System
+                           Datastore should be scheduled to
+ \-\-one\-host id             ID of the Host in OpenNebula the VM Template
+                           should be scheduled to
+ \-\-ova ova\.ova             File name or path to OVA files folder in case the
+                           guest was exported as a "Folder of files" or if
+                           the OVA has been previously unpacked
+ \-\-password password       Password to authenticate with OpenNebula
+ \-\-persistent\-img          Make the image disk persistent in OpenNebula
+ \-p, \-\-port port           vCenter API port, defaults to 443 (SSL) or 80
+ \-\-qemu\-ga                 Install qemu\-guest\-agent package to a Linux
+                           guest, useful with \-\-custom or \-\-fallback
+ \-\-win\-qemu\-ga /path/to/iso Install QEMU Guest Agent to a Windows guest
+ \-\-remove\-vmtools          Add contextualization script to force remove
+                           VMware tools from the VM
+ \-\-root option             Choose the root filesystem to be converted\. Can
+                           be ask, single, first or /dev/sdX
+ \-\-skip\-context            Skips the injection of the context package
+ \-\-skip\-ip                 Do not pull IP from vCenter to be created in
+                           OpenNebula
+ \-\-skip\-mac                Do not pull MAC from vCenter to be created in
+                           OpenNebula
+ \-\-skip\-prechecks          Skip OpenNebula system prechecks before
+                           conversion\.
+ \-s, \-\-state vm_state      Filter VMs by their power state: [poweroff,
+                           running, suspended]
+ \-\-uefi\-path /path/to/uefi Path to the UEFI file to be configured in the VM
+                           template\.
+ \-\-uefi\-sec\-path /path/to/uefi\.secboot Path to the UEFI Secure file to be
+                           configured in the VM template\.
+ \-\-user name               User name used to connect to OpenNebula
+ \-\-v2v\-path /path/to/custom/v2v Path to custom virt\-v2v executable if
+                           necessary
+ \-\-vcenter vCenter         The vCenter hostname
+ \-\-vcpu vcpus              The vCPU allowed in integer format in OpenNebula\.
+                           Default is to match CPU cores in vCenter
+ \-\-vcpu\-max vcpumax        The Max vCPU allowed in integer format in
+                           OpenNebula\. CPU Hot Add required in VMware\.
+ \-\-vddk /path/to/vddk/     Full path to the VDDK library, required for VDDK
+                           based transfer
+ \-v, \-\-verbose             Verbose mode
+ \-V, \-\-version             Show version and copyright information
+ \-\-virt\-tools /path/to/virt\-tools Path to the directory containing
+                           rhsrvany\.exe, defaults to
+                           /usr/local/share/virt\-tools\. See
+                           https://github\.com/rwmjones/rhsrvany\.
+ \-\-virtio /path/to/iso     Full path of the win\-virtio ISO file\. Required to
+                           inject virtio drivers to Windows Guests
+ \-\-vmdk vmdk\.vmdk          Full VMDK file path to import\.
+ \-\-vpass password          The password for the user
+ \-\-vuser username          The username to interact with vCenter
+ \-w, \-\-work\-dir directory  Directory where disk conversion takes place, will
+                           make subdir for each VM, Default: /tmp/
+.
+.fi
+.
+.SH "COMMANDS"
+.
+.IP "\(bu" 4
+convert \fIvm_name\fR Convert a vCenter Virtual Machine
+.
+.IP "" 4
+.
+.nf
+
+Examples:
+    VOPTS=\'\-\-vcenter 12\.34\.56\.78 \-\-vuser Administrator@vsphere\.local \-\-vpass changeme123\'
+
+    \- Convert a virtual machine:
+
+    oneswap convert vm\-1234 $VOPTS [\-\-fallback|\-\-custom] [\-\-network ID] [\-\-datacenter ID]
+
+    \- Convert a virtual machine from ESXi directly:
+
+    oneswap convert vm\-1234 $VOPTS \-\-esxi 12\.34\.56\.79 \-\-esxi_pass changeme123 [\-\-esxi_user root]
+
+    \- Convert a vCenter virtual machine utilizing the proprietary VDDK library(faster transfer usually):
+
+    oneswap convert vm\-1234 $VOPTS \-\-vddk /path/to/vddk\-lib
+
+    \- Convert using OpenNebula Custom Conversion (useful for distributions which are not supported or fail to convert)
+    You can also define \-\-fallback instead of \-\-custom, which will first attempt virt\-v2v style, then fallback to custom\.
+
+    oneswap convert vm\-1234 $VOPTS \-\-custom
+valid options: clone, config_file, context, cpu, cpu_model, custom_convert, datastore, delete, dev_prefix, disable_contextualization, esxi_ip, esxi_pass, esxi_user, fallback, format, graphics_command, graphics_keymap, graphics_listen, graphics_password, graphics_port, graphics_type, http_host, http_port, http_transfer, hybrid, img_wait, memory_max, network, one_cluster, one_datastore, one_datastore_cluster, one_host, persistent_img, port, qemu_ga_linux, qemu_ga_win, remove_vmtools, root, skip_ip, skip_mac, skip_prechecks, uefi_path, uefi_sec_path, v2v_path, v2v_path, vcenter, vcpu, vcpu_max, vddk_path, virt_tools, virtio_path, vpass, vuser, work_dir
+.
+.fi
+.
+.IP "" 0
+
+.
+.IP "\(bu" 4
+import Import an OVA as VM or VMDK as Image file exported from VMware
+.
+.IP "" 4
+.
+.nf
+
+Examples:
+   \- import VM from an OVA file:
+
+     oneswap import \-\-ova OVA\.ova
+
+   \- import VM from an OVF file:
+
+     oneswap import \-\-ova /path/to/files
+
+   \- import Image from an VMDK file:
+
+     oneswap import \-\-vmdk disk\.vmdk
+valid options: datastore, delete, format, network, ova, qemu_ga_linux, qemu_ga_win, remove_vmtools, root, skip_context, uefi_path, uefi_sec_path, v2v_path, vddk_path, virt_tools, virtio_path, vmdk, work_dir
+.
+.fi
+.
+.IP "" 0
+
+.
+.IP "\(bu" 4
+list
+.
+.IP "" 4
+.
+.nf
+
+Examples:
+   \- listing all VMs:
+
+     oneswap list vms
+
+   \- listing available Clusters:
+
+     oneswap list clusters
+
+   \- listing available vms in a Datacenter and Cluster:
+
+     oneswap list vms \-\-datacenter DCName \-\-cluster Cluster2
+valid options: cluster, datacenter, name, port, state, vcenter, vpass, vuser
+.
+.fi
+.
+.IP "" 0
+
+.
+.IP "" 0
+.
+.SH "ARGUMENT FORMATS"
+.
+.IP "\(bu" 4
+file Path to a file
+.
+.IP "\(bu" 4
+range List of id\'s in the form 1,8\.\.15
+.
+.IP "\(bu" 4
+text String
+.
+.IP "" 0
+.
+.SH "VERSION"
+OpenNebula 6\.99\.85 Copyright 2002\-2025, OpenNebula Project, OpenNebula Systems
