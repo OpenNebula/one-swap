@@ -604,31 +604,28 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         # Create @props variable here to call template_firmware function
 
         # Check for EFI configuration
-        if xml_template.xpath("//os/@firmware").text == 'efi'
+        if xml_template.xpath("//os/@firmware").text == 'efi' || \
+                xml_template.xpath("//os/loader/@type").text == 'pflash'
+
+            @props = {
+                'config' => {
+                    :firmware => 'efi',
+                    :bootOptions => {}
+                }
+            }
+
             if xml_template.xpath("//os//loader/@secure").text == 'yes'
-                @props = {
-                    'config' => {
-                        :firmware => 'efi',
-                        :bootOptions => {
-                            :efiSecureBootEnabled => 'yes'
-                        }
-                    }
-                }
-            else
-                @props = {
-                    'config' => {
-                        :firmware => 'efi',
-                        :bootOptions => {
-                        }
-                    }
-                }
+                @props['config'][:bootOptions][:efiSecureBootEnabled] = 'yes'
+            end
+
+            if xml_template.xpath("//os/loader/@type").text == 'pflash'
+                @props['config'][:bootOptions][:loader] = xml_template.xpath("//os//loader").text
             end
         else
             @props = {
                 'config' => {
                     :firmware => 'bios',
-                    :bootOptions => {
-                    }
+                    :bootOptions => {}
                 }
             }
         end
@@ -739,11 +736,9 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         fw = { "OS" => { "FIRMWARE" => "BIOS" }}
         if @props['config'][:firmware] == 'efi'
             if @props['config'][:bootOptions][:efiSecureBootEnabled]
-                fw['OS']['FIRMWARE'] = @options[:uefi_sec_path]
                 fw['OS']['FIRMWARE_SECURE'] = 'YES'
-            else
-                fw['OS']['FIRMWARE'] = @options[:uefi_path]
             end
+            fw['OS']['FIRMWARE'] = @options[:uefi_path] || @props['config'][:bootOptions][:loader]
             fw['OS']['MACHINE'] = 'q35'
         end
 
