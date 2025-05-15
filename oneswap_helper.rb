@@ -608,6 +608,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
         boot_options = {}
         boot_options[:efiSecureBootEnabled] = 'yes' if local_firmware == 'efi' && local_secure_boot
+        boot_options[:loader] = xml_template.xpath("//os//loader").text if xml_template.xpath("//os/loader/@type").text == 'pflash'
 
         @props = {
             config: {
@@ -727,7 +728,9 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         os_release = File.exist?('/etc/fos-release') ? File.read('/etc/os-release') : ''
         is_ubuntu = os_release.include?('ID=ubuntu')
 
-        local_uefi_path = if secure_boot
+        local_uefi_path =
+          @props[:config][:bootOptions][:loader] ||
+          if secure_boot
             @options[:uefi_sec_path] || (is_ubuntu ? '/usr/share/OVMF/OVMF_CODE_4M.secboot.fd' : '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd')
           else
             @options[:uefi_path] || (is_ubuntu ? '/usr/share/OVMF/OVMF_CODE_4M.fd' : '/usr/share/edk2/ovmf/OVMF_CODE.fd')
