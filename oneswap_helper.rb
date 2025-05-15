@@ -603,35 +603,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         # Add UEFI configuration
         # Create @props variable here to call template_firmware function
 
-        # Check for EFI configuration
-        if xml_template.xpath("//os/@firmware").text == 'efi'
-            if xml_template.xpath("//os//loader/@secure").text == 'yes'
-                @props = {
-                    'config' => {
-                        :firmware => 'efi',
-                        :bootOptions => {
-                            :efiSecureBootEnabled => 'yes'
-                        }
-                    }
-                }
-            else
-                @props = {
-                    'config' => {
-                        :firmware => 'efi',
-                        :bootOptions => {
-                        }
-                    }
-                }
-            end
-        else
-            @props = {
-                'config' => {
-                    :firmware => 'bios',
-                    :bootOptions => {
-                    }
-                }
+        local_firmware = xml_template.at_xpath("//os/@firmware")&.text == 'efi' ? 'efi' : 'bios'
+        local_secure_boot = xml_template.at_xpath("//os//loader/@secure")&.text == 'yes'
+
+        boot_options = {}
+        boot_options[:efiSecureBootEnabled] = 'yes' if local_firmware == 'efi' && local_secure_boot
+
+        @props = {
+            config: {
+                firmware: local_firmware,
+                bootOptions: boot_options
             }
-        end
+        }
         vmt.add_element('//VMTEMPLATE', template_firmware)
 
         vmt
@@ -737,15 +720,26 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
     def template_firmware
         fw = { "OS" => { "FIRMWARE" => "BIOS" }}
-        if @props['config'][:firmware] == 'efi'
-            if @props['config'][:bootOptions][:efiSecureBootEnabled]
-                fw['OS']['FIRMWARE'] = @options[:uefi_sec_path]
-                fw['OS']['FIRMWARE_SECURE'] = 'YES'
-            else
-                fw['OS']['FIRMWARE'] = @options[:uefi_path]
-            end
-            fw['OS']['MACHINE'] = 'q35'
+
+        return fw unless @props.dig('config', :firmware) == 'efi'
+
+        secure_boot = @props.dig('config', :bootOptions, :efiSecureBootEnabled)
+        os_release = File.exist?('/etc/fos-release') ? File.read('/etc/os-release') : ''
+        is_ubuntu = os_release.include?('ID=ubuntu')
+
+        local_uefi_path = if secure_boot
+            @options[:uefi_sec_path] || (is_ubuntu ? '/usr/share/OVMF/OVMF_CODE_4M.secboot.fd' : '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd')
+          else
+            @options[:uefi_path] || (is_ubuntu ? '/usr/share/OVMF/OVMF_CODE_4M.fd' : '/usr/share/edk2/ovmf/OVMF_CODE.fd')
         end
+
+        unless local_uefi_path && !local_uefi_path.empty?
+            raise "Unable to determine UEFI firmware path, --uefi_path should be used"
+        end
+
+        fw['OS']['FIRMWARE'] = local_uefi_path
+        fw['OS']['FIRMWARE_SECURE'] = 'YES' if secure_boot
+        fw['OS']['MACHINE'] = 'q35'
 
         fw
     end
