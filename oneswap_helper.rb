@@ -721,9 +721,9 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     def template_firmware
         fw = { "OS" => { "FIRMWARE" => "BIOS" }}
 
-        return fw unless @props.dig('config', :firmware) == 'efi'
+        return fw unless @props[:config][:firmware] == 'efi'
 
-        secure_boot = @props.dig('config', :bootOptions, :efiSecureBootEnabled)
+        secure_boot = @props[:config][:bootOptions][:efiSecureBootEnabled]
         os_release = File.exist?('/etc/fos-release') ? File.read('/etc/os-release') : ''
         is_ubuntu = os_release.include?('ID=ubuntu')
 
