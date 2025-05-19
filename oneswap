@@ -619,8 +619,6 @@ CommandParser::CmdParser.new(ARGV) do
             options[:remove_vmtools] ||= false
             options[:clone]          ||= false
             options[:skip_prechecks] ||= false
-            options[:uefi_path]      ||= '/usr/share/OVMF/OVMF_CODE.fd'
-            options[:uefi_sec_path]  ||= '/usr/share/OVMF/OVMF_CODE.secboot.fd'
 
             if options[:http_transfer]
                 options[:http_host] ||= Socket.ip_address_list.detect { |addrinfo| addrinfo.ipv4? && !addrinfo.ipv4_loopback? }&.ip_address
@@ -698,8 +696,6 @@ CommandParser::CmdParser.new(ARGV) do
             options[:v2v_path]      ||= 'virt-v2v'
             options[:root]          ||= 'first'
             options[:remove_vmtools] ||= false
-            options[:uefi_path]      ||= '/usr/share/OVMF/OVMF_CODE.fd'
-            options[:uefi_sec_path]  ||= '/usr/share/OVMF/OVMF_CODE.secboot.fd'
 
             helper.import(options)
         rescue StandardError => e
