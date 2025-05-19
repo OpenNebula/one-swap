@@ -449,7 +449,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
         # Configure features for Windows VM (Hyper-V and local time)
         features_hash = { 'HYPERV' => 'YES', 'LOCALTIME' => 'YES' }
-        if vm_template.element_xml('FEATURES').nil?
+        if vm_template.element_xml('FEATURES').nil? || vm_template.element_xml('FEATURES').empty?
             puts 'Create features element and add hyperv'
             vm_template.add_element('//VMTEMPLATE', {"FEATURES" => features_hash})
         else
