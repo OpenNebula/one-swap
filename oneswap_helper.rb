@@ -603,7 +603,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         # Add UEFI configuration
         # Create @props variable here to call template_firmware function
 
-        local_firmware = xml_template.at_xpath("//os/@firmware")&.text == 'efi' ? 'efi' : 'bios'
+        local_firmware = xml_template.at_xpath("//os/@firmware")&.text == 'efi' || xml_template.xpath("//os/loader/@type").text == 'pflash' ? 'efi' : 'bios'
         local_secure_boot = xml_template.at_xpath("//os//loader/@secure")&.text == 'yes'
 
         boot_options = {}
