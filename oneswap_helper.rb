@@ -122,8 +122,26 @@ end
 ##############################################################################
 class OneSwapHelper < OpenNebulaHelper::OneHelper
 
-    # true to log to /var/log/one/oneswap.*
-    DEBUG = false
+    LOGS = '/var/log/one'
+
+    def initialize
+        super
+
+        @debug = !ENV['ONE_SWAP_DEBUG'].nil?
+
+        return unless @debug
+
+        Dir.mkdir(LOGS) unless Dir.exist?(LOGS)
+
+        @logger = {}
+
+        [:stdout, :stderr].each do |o|
+            log = "#{LOGS}/oneswap.#{o.to_sym}"
+            @logger[o] = File.open(log, 'a')
+            @logger[o].sync = true
+            puts "Writing debug output to #{log}"
+        end
+    end
 
     @props, @options = []
     @dotskip = false # temporarily skip dots, for progress dots.
@@ -181,16 +199,6 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             :dialgoue => ->(arg) {}
         }
     }
-
-    if DEBUG
-        LOGGER = {
-            :stdout => File.open('/var/log/one/oneswap.stdout', 'a'),
-            :stderr => File.open('/var/log/one/oneswap.stderr', 'a')
-        }
-
-        LOGGER[:stdout].sync = true
-        LOGGER[:stderr].sync = true
-    end
 
     ########################
     # In list command you can use this method to print a header
@@ -938,10 +946,10 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         end
         t1 = (Time.now - t0).round(2)
         puts !status.success? ? "Failed (#{t1}s)".red : "Success (#{t1}s)".green
-        if !status.success? and DEBUG
-            LOGGER[:stderr].puts('     STDERR:')
-            LOGGER[:stderr].puts(stderr)
-            LOGGER[:stderr].puts('------------')
+        if !status.success? && @debug
+            @logger[:stderr].puts('     STDERR:')
+            @logger[:stderr].puts(stderr)
+            @logger[:stderr].puts('------------')
         end
         return stdout, status if out
     end
@@ -1590,7 +1598,7 @@ _EOF_"
     end
 
     def handle_v2v_error(line)
-        LOGGER[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
+        @logger[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if @debug
         pass_list = [
             'unable to rebuild initrd',
             'unable to find any valid modprobe configuration file',
@@ -1647,7 +1655,7 @@ _EOF_"
     end
 
     def handle_stdout(line)
-        LOGGER[:stdout].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
+        @logger[:stdout].puts("#{Time.now.to_s[0...-6]} - #{line}") if @debug
         begin
             line = JSON.parse(line)
         rescue JSON::ParserError
@@ -1710,7 +1718,7 @@ _EOF_"
                     @last_dot_time = Time.now
                 end
             end
-            LOGGER[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
+            @logger[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if @debug
         end
     end
 
