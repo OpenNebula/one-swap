@@ -803,14 +803,14 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     def template_firmware
         fw = { 'OS' => { 'FIRMWARE' => 'BIOS' } }
 
-        return fw unless @props[:config][:firmware] == 'efi'
+        return fw unless @props['config'][:firmware] == 'efi'
 
-        secure_boot = @props[:config][:bootOptions][:efiSecureBootEnabled]
-        os_release = File.exist?('/etc/fos-release') ? File.read('/etc/os-release') : ''
+        secure_boot = @props['config'][:bootOptions][:efiSecureBootEnabled]
+        os_release = File.exist?('/etc/os-release') ? File.read('/etc/os-release') : ''
         is_ubuntu = os_release.include?('ID=ubuntu')
 
         local_uefi_path =
-            @props[:config][:bootOptions][:loader] ||
+            @props['config'][:bootOptions][:loader] ||
             if secure_boot
                 @options[:uefi_sec_path] || (is_ubuntu ? '/usr/share/OVMF/OVMF_CODE_4M.secboot.fd' : '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd')
             else
