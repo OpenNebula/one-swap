@@ -15,6 +15,7 @@
 #--------------------------------------------------------------------------- #
 
 require 'one_helper'
+require_relative 'vsphere_client'
 
 class String
 
@@ -2478,6 +2479,13 @@ _EOF_"
             puts 'Failed'.red
             puts "\nVM Template:\n#{vm_template.to_xml}\n"
         end
+    end
+
+    def new_vsphere_client
+        args = [@options[:vcenter], @options[:vuser], @options[:vpass]]
+        args << :debug if @debug
+
+        @vsphere_client = VSphereClient.new(*args)
     end
 
 end
