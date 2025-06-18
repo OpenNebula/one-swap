@@ -2468,6 +2468,20 @@ _EOF_"
             vm_template = tune_windows_tmpl(vm_template)
         end
 
+        new_vsphere_client
+
+        vms = @vsphere_client.get_vms(@options[:name])
+
+        if !vms.nil?
+            vms.each do |v|
+                vm_id = v['vm']
+                tags = @vsphere_client.get_vm_tags(vm_id)
+
+                tag_template = { 'VCENTER_TAGS' => tags.join(',') }
+                vm_template.add_element('//VMTEMPLATE', tag_template)
+            end
+        end
+
         print 'Allocating the VM template...'
 
         rc = vm_template.allocate(vm_template.to_xml)
@@ -2482,7 +2496,8 @@ _EOF_"
     end
 
     def new_vsphere_client
-        args = [@options[:vcenter], @options[:vuser], @options[:vpass]]
+        log_path = "#{LOGS}/oneswap_vshphere_client.log"
+        args = [@options[:vcenter], @options[:vuser], @options[:vpass], log_path]
         args << :debug if @debug
 
         @vsphere_client = VSphereClient.new(*args)

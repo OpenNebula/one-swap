@@ -10,10 +10,10 @@ class VSphereClient
 
     attr_reader :vcenter
 
-    def initialize(vcenter, user, password, log_level = :info)
+    def initialize(vcenter, user, password, log_output = $stderr, log_level = :info)
         @vcenter = vcenter
 
-        @logger = Logger.new($stderr)
+        @logger = Logger.new(log_output)
         @logger.level = Logger.const_get(log_level.to_s.upcase)
 
         @session_id = open_session(vcenter, user, password)
