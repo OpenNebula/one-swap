@@ -1,7 +1,6 @@
 require 'net/http'
 require 'uri'
 require 'json'
-require 'logger'
 
 #
 # Client for the vCenter REST API
@@ -10,11 +9,9 @@ class VSphereClient
 
     attr_reader :vcenter
 
-    def initialize(vcenter, user, password, log_output = $stderr, log_level = :info)
+    def initialize(vcenter, user, password, logger)
         @vcenter = vcenter
-
-        @logger = Logger.new(log_output)
-        @logger.level = Logger.const_get(log_level.to_s.upcase)
+        @logger = logger
 
         @session_id = open_session(vcenter, user, password)
     end

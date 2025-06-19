@@ -15,6 +15,7 @@
 #--------------------------------------------------------------------------- #
 
 require 'one_helper'
+require 'logger'
 require_relative 'vsphere_client'
 
 class String
@@ -123,25 +124,18 @@ end
 ##############################################################################
 class OneSwapHelper < OpenNebulaHelper::OneHelper
 
-    LOGS = '/var/log/one'
+    ONE_LOGS = '/var/log/one'
+    LOG = "#{ONE_LOGS}/oneswap.log"
 
     def initialize
         super
 
-        @debug = !ENV['ONE_SWAP_DEBUG'].nil?
+        Dir.mkdir(ONE_LOGS) unless Dir.exist?(ONE_LOGS)
 
-        return unless @debug
+        log_level = ENV['ONE_SWAP_DEBUG'].nil? ? 'INFO' : 'DEBUG'
 
-        Dir.mkdir(LOGS) unless Dir.exist?(LOGS)
-
-        @logger = {}
-
-        [:stdout, :stderr].each do |o|
-            log = "#{LOGS}/oneswap.#{o.to_sym}"
-            @logger[o] = File.open(log, 'a')
-            @logger[o].sync = true
-            puts "Writing debug output to #{log}"
-        end
+        @logger = Logger.new(LOG)
+        @logger.level = Logger.const_get(log_level)
     end
 
     @props, @options = []
@@ -947,11 +941,9 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         end
         t1 = (Time.now - t0).round(2)
         puts !status.success? ? "Failed (#{t1}s)".red : "Success (#{t1}s)".green
-        if !status.success? && @debug
-            @logger[:stderr].puts('     STDERR:')
-            @logger[:stderr].puts(stderr)
-            @logger[:stderr].puts('------------')
-        end
+
+        @logger.debug(stderr) unless status.success?
+
         return stdout, status if out
     end
 
@@ -1599,7 +1591,7 @@ _EOF_"
     end
 
     def handle_v2v_error(line)
-        @logger[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if @debug
+        @logger.debug("#{Time.now.to_s[0...-6]} - #{line}")
         pass_list = [
             'unable to rebuild initrd',
             'unable to find any valid modprobe configuration file',
@@ -1656,7 +1648,7 @@ _EOF_"
     end
 
     def handle_stdout(line)
-        @logger[:stdout].puts("#{Time.now.to_s[0...-6]} - #{line}") if @debug
+        @logger.debug("#{Time.now.to_s[0...-6]} - #{line}")
         begin
             line = JSON.parse(line)
         rescue JSON::ParserError
@@ -1719,7 +1711,7 @@ _EOF_"
                     @last_dot_time = Time.now
                 end
             end
-            @logger[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if @debug
+            @logger.debug("#{Time.now.to_s[0...-6]} - #{line}")
         end
     end
 
@@ -2496,9 +2488,7 @@ _EOF_"
     end
 
     def new_vsphere_client
-        log_path = "#{LOGS}/oneswap_vshphere_client.log"
-        args = [@options[:vcenter], @options[:vuser], @options[:vpass], log_path]
-        args << :debug if @debug
+        args = [@options[:vcenter], @options[:vuser], @options[:vpass], @logger]
 
         @vsphere_client = VSphereClient.new(*args)
     end
