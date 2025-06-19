@@ -687,7 +687,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             xml_template.xpath('//os//loader').text if xml_template.xpath('//os/loader/@type').text == 'pflash'
 
         @props = {
-            :config => {
+            'config' => {
                 :firmware => local_firmware,
                 :bootOptions => boot_options
             }
