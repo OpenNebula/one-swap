@@ -1591,7 +1591,7 @@ _EOF_"
     end
 
     def handle_v2v_error(line)
-        @logger.debug("#{Time.now.to_s[0...-6]} - #{line}")
+        @logger.debug(line)
         pass_list = [
             'unable to rebuild initrd',
             'unable to find any valid modprobe configuration file',
@@ -1648,7 +1648,7 @@ _EOF_"
     end
 
     def handle_stdout(line)
-        @logger.debug("#{Time.now.to_s[0...-6]} - #{line}")
+        @logger.debug(line)
         begin
             line = JSON.parse(line)
         rescue JSON::ParserError
@@ -1711,7 +1711,7 @@ _EOF_"
                     @last_dot_time = Time.now
                 end
             end
-            @logger.debug("#{Time.now.to_s[0...-6]} - #{line}")
+            @logger.debug(line)
         end
     end
 
