@@ -2463,15 +2463,13 @@ _EOF_"
         new_vsphere_client
 
         vms = @vsphere_client.get_vms(@options[:name])
+        vm = vms.first
+        vm_id = vm['vm']
+        tags = @vsphere_client.get_vm_tags(vm_id)
 
-        if !vms.nil?
-            vms.each do |v|
-                vm_id = v['vm']
-                tags = @vsphere_client.get_vm_tags(vm_id)
-
-                tag_template = { 'VCENTER_TAGS' => tags.join(',') }
-                vm_template.add_element('//VMTEMPLATE', tag_template)
-            end
+        if !tags.empty?
+            tag_template = { 'VCENTER_TAGS' => tags.join(',') }
+            vm_template.add_element('//VMTEMPLATE', tag_template)
         end
 
         print 'Allocating the VM template...'
@@ -2485,12 +2483,52 @@ _EOF_"
             puts 'Failed'.red
             puts "\nVM Template:\n#{vm_template.to_xml}\n"
         end
+
+        return if tags.empty?
+
+        set_sunstone_labels(tags, vm_template.id)
     end
 
     def new_vsphere_client
         args = [@options[:vcenter], @options[:vuser], @options[:vpass], @logger]
 
         @vsphere_client = VSphereClient.new(*args)
+    end
+
+    #
+    # Applies FireEdge Sunstone labels to a given VM Template ID. The labels
+    # will be created if they don't exist. Nested under VCENTER_TAGS label.
+    #
+    # @param [Array] vcenter_tags list of label names to apply
+    # @param [Int] one_vm_template_id ID of the VM Tempalte to assign the label to
+    #
+    # @return [nil/OpenNebula::Error] Nil if success or error
+    #
+    def set_sunstone_labels(vcenter_tags, one_vm_template_id)
+        # Labels exist as part of the User Template with a vm_template reference
+        user = OpenNebula::User.new_with_id(OpenNebula::User::SELF, @client)
+        user.info
+
+        labels = user['TEMPLATE/LABELS']
+        labels = if labels
+                     JSON.parse(JSON.parse(labels))
+                 else
+                     {}
+                 end
+
+        id = one_vm_template_id.to_s
+
+        vcenter_tags.each do |tag|
+            labels['VCENTER_TAGS'] = {} unless labels.key?('VCENTER_TAGS')
+            labels['VCENTER_TAGS'][tag] = {} unless labels['VCENTER_TAGS'].key?(tag)
+            labels['VCENTER_TAGS'][tag]['vm-template'] =
+                [] unless labels['VCENTER_TAGS'][tag].key?('vm-template')
+
+            labels['VCENTER_TAGS'][tag]['vm-template'] << id unless labels['VCENTER_TAGS'][tag]['vm-template'].include? id
+        end
+
+        update_str = "<ROOT><LABELS>#{labels.to_json.to_json}</LABELS></ROOT>"
+        user.update(update_str, true)
     end
 
 end
