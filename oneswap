@@ -168,7 +168,7 @@ CommandParser::CmdParser.new(ARGV) do
     PERSISTENT_IMG = {
         :name => 'persistent_img',
         :large => '--persistent-img',
-        :description => 'Make the image disk persistent in OpenNebula',
+        :description => 'Make the image disk persistent in OpenNebula'
     }
 
     GRAPHICS_TYPE = {
@@ -314,23 +314,23 @@ CommandParser::CmdParser.new(ARGV) do
     ESXI = {
         :name => 'esxi_ip',
         :large => '--esxi ip',
-        :description => "Transfer directly from ESXi host instead using provided IP, may be useful if vCenter download is slow. "\
-                        "Requires SSH access to ESXi host. The vCenter credentials are required to gather other information abou"\
-                        "t the virtual machine.",
+        :description => 'Transfer directly from ESXi host instead using provided IP, may be useful if vCenter download is slow. '\
+                        'Requires SSH access to ESXi host. The vCenter credentials are required to gather other information abou'\
+                        't the virtual machine.',
         :format => String
     }
 
     ESXI_USER = {
         :name => 'esxi_user',
         :large => '--esxi-user username',
-        :description => "ESXi username for SSH login, default: root",
+        :description => 'ESXi username for SSH login, default: root',
         :format => String
     }
 
     ESXI_PASS = {
         :name => 'esxi_pass',
         :large => '--esxi-pass password',
-        :description => "ESXi password for SSH login. Required for direct ESXi transfer.",
+        :description => 'ESXi password for SSH login. Required for direct ESXi transfer.',
         :format => String
     }
 
@@ -472,7 +472,7 @@ CommandParser::CmdParser.new(ARGV) do
     CLONE = {
         :name => 'clone',
         :large => '--clone',
-        :description => 'Trigger a VM full clone and convert that clone without requiring to poweroff the original VM',
+        :description => 'Trigger a VM full clone and convert that clone without requiring to poweroff the original VM'
     }
 
     REMOVE_VMTOOLS = {
@@ -509,10 +509,11 @@ CommandParser::CmdParser.new(ARGV) do
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
-                   CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
-                   PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
-                   SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
-    IMPORT_OPTS = [OVA, VMDK, DATASTORE, NETWORK, SKIP_CONTEXT, REMOVE_VMTOOLS, UEFI_PATH, UEFI_SEC_PATH] + V2V_OPTS
+                    CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
+                    PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
+                    SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
+    IMPORT_OPTS = [OVA, VMDK, DATASTORE, NETWORK, SKIP_CONTEXT, REMOVE_VMTOOLS, UEFI_PATH,
+                   UEFI_SEC_PATH] + V2V_OPTS
 
     ############################################################################
     # list resources
@@ -541,10 +542,11 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:config_file] && !File.exist?(options[:config_file])
                 raise "Unable to find the config file at #{options[:config_file]}"
             end
+
             cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
             options[:object] = args[0]
-            args = helper.parse_opts(options)
+            helper.parse_opts(options)
             helper.list(options)
         rescue StandardError => e
             STDERR.puts e.message
@@ -584,13 +586,13 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:config_file] && !File.exist?(options[:config_file])
                 puts "Unable to find the config file at #{options[:config_file]}"
             end
-            options[:config_file]   ||= '/etc/one/oneswap.yaml'
+            options[:config_file] ||= '/etc/one/oneswap.yaml'
             cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
 
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
             raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk]
-            if options[:hybrid] && ( options[:custom] || options[:esxi_ip] || options[:vddk] )
+            if options[:hybrid] && (options[:custom] || options[:esxi_ip] || options[:vddk])
                 raise 'Cannot use Hybrid option with Custom, ESXi, or VDDK options.'
             end
             if options[:virtio_path] && !File.exist?(options[:virtio_path])
@@ -599,6 +601,7 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:qemu_ga_win] && !File.exist?(options[:qemu_ga_win])
                 raise "Windows QEMU Guest Agent ISO cannot be found at #{options[:qemu_ga_win]}"
             end
+
             if (options[:virtio_path] || options[:qemu_ga_win]) && options[:custom_convert]
                 vcv = `virt-customize --version`.split(' ')[1]
                 if Gem::Version.new(vcv) <= Gem::Version.new('1.49.9')
@@ -607,8 +610,9 @@ CommandParser::CmdParser.new(ARGV) do
                 end
             end
             if options[:fallback] && options[:custom_convert]
-                raise "Cannot define both --fallback and --custom."
+                raise 'Cannot define both --fallback and --custom.'
             end
+
             options[:work_dir]       ||= '/tmp'
             options[:format]         ||= 'qcow2'
             options[:context]        ||= '/usr/share/one/context'
@@ -621,10 +625,13 @@ CommandParser::CmdParser.new(ARGV) do
             options[:skip_prechecks] ||= false
 
             if options[:http_transfer]
-                options[:http_host] ||= Socket.ip_address_list.detect { |addrinfo| addrinfo.ipv4? && !addrinfo.ipv4_loopback? }&.ip_address
+                options[:http_host] ||= Socket.ip_address_list.detect do |addrinfo|
+                    addrinfo.ipv4? && !addrinfo.ipv4_loopback?
+                end&.ip_address
                 if options[:http_host].nil?
-                    raise "Unable to find an IP address for the host"
+                    raise 'Unable to find an IP address for the host'
                 end
+
                 options[:http_port] ||= 29869
             else
                 if options[:endpoint]
@@ -659,7 +666,6 @@ CommandParser::CmdParser.new(ARGV) do
     EOT
 
     command :import, import_desc, :options => IMPORT_OPTS do
-
         begin
             if options[:config_file] && !File.exist?(options[:config_file])
                 puts "Unable to find the config file at #{options[:config_file]}"
@@ -671,7 +677,7 @@ CommandParser::CmdParser.new(ARGV) do
 
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
             raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk]
-            if options[:hybrid] && ( options[:custom] || options[:esxi_ip] || options[:vddk] )
+            if options[:hybrid] && (options[:custom] || options[:esxi_ip] || options[:vddk])
                 raise 'Cannot use Hybrid option with Custom, ESXi, or VDDK options.'
             end
             if options[:virtio_path] && !File.exist?(options[:virtio_path])
@@ -680,6 +686,7 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:qemu_ga_win] && !File.exist?(options[:qemu_ga_win])
                 raise "Windows QEMU Guest Agent ISO cannot be found at #{options[:qemu_ga_win]}"
             end
+
             if (options[:virtio_path] || options[:qemu_ga_win]) && options[:custom_convert]
                 vcv = `virt-customize --version`.split(' ')[1]
                 if Gem::Version.new(vcv) <= Gem::Version.new('1.49.9')

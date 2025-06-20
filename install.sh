@@ -95,7 +95,7 @@ INSTALL_FILES=(
 
 
 BIN_FILES="oneswap"
-ONE_CLI_LIB_FILES="oneswap_helper.rb"
+ONE_CLI_LIB_FILES="oneswap_helper.rb vsphere_client.rb"
 CONF_FILES="oneswap.yaml"
 SCRIPTS_FILES="scripts/*"
 

@@ -1,4 +1,3 @@
-# coding: utf-8
 # -------------------------------------------------------------------------- #
 # Copyright 2002-2024, OpenNebula Project, OpenNebula Systems                #
 #                                                                            #
@@ -16,31 +15,95 @@
 #--------------------------------------------------------------------------- #
 
 require 'one_helper'
+require 'logger'
+require_relative 'vsphere_client'
 
 class String
-    def black;          "\e[30m#{self}\e[0m" end
-    def red;            "\e[31m#{self}\e[0m" end
-    def green;          "\e[32m#{self}\e[0m" end
-    def brown;          "\e[33m#{self}\e[0m" end
-    def blue;           "\e[34m#{self}\e[0m" end
-    def magenta;        "\e[35m#{self}\e[0m" end
-    def cyan;           "\e[36m#{self}\e[0m" end
-    def gray;           "\e[37m#{self}\e[0m" end
 
-    def bg_black;       "\e[40m#{self}\e[0m" end
-    def bg_red;         "\e[41m#{self}\e[0m" end
-    def bg_green;       "\e[42m#{self}\e[0m" end
-    def bg_brown;       "\e[43m#{self}\e[0m" end
-    def bg_blue;        "\e[44m#{self}\e[0m" end
-    def bg_magenta;     "\e[45m#{self}\e[0m" end
-    def bg_cyan;        "\e[46m#{self}\e[0m" end
-    def bg_gray;        "\e[47m#{self}\e[0m" end
+    def black
+        "\e[30m#{self}\e[0m"
+    end
 
-    def bold;           "\e[1m#{self}\e[22m" end
-    def italic;         "\e[3m#{self}\e[23m" end
-    def underline;      "\e[4m#{self}\e[24m" end
-    def blink;          "\e[5m#{self}\e[25m" end
-    def reverse_color;  "\e[7m#{self}\e[27m" end
+    def red
+        "\e[31m#{self}\e[0m"
+    end
+
+    def green
+        "\e[32m#{self}\e[0m"
+    end
+
+    def brown
+        "\e[33m#{self}\e[0m"
+    end
+
+    def blue
+        "\e[34m#{self}\e[0m"
+    end
+
+    def magenta
+        "\e[35m#{self}\e[0m"
+    end
+
+    def cyan
+        "\e[36m#{self}\e[0m"
+    end
+
+    def gray
+        "\e[37m#{self}\e[0m"
+    end
+
+    def bg_black
+        "\e[40m#{self}\e[0m"
+    end
+
+    def bg_red
+        "\e[41m#{self}\e[0m"
+    end
+
+    def bg_green
+        "\e[42m#{self}\e[0m"
+    end
+
+    def bg_brown
+        "\e[43m#{self}\e[0m"
+    end
+
+    def bg_blue
+        "\e[44m#{self}\e[0m"
+    end
+
+    def bg_magenta
+        "\e[45m#{self}\e[0m"
+    end
+
+    def bg_cyan
+        "\e[46m#{self}\e[0m"
+    end
+
+    def bg_gray
+        "\e[47m#{self}\e[0m"
+    end
+
+    def bold
+        "\e[1m#{self}\e[22m"
+    end
+
+    def italic
+        "\e[3m#{self}\e[23m"
+    end
+
+    def underline
+        "\e[4m#{self}\e[24m"
+    end
+
+    def blink
+        "\e[5m#{self}\e[25m"
+    end
+
+    def reverse_color
+        "\e[7m#{self}\e[27m"
+    end
+
 end
 
 # Ruby 3.x+ deprecated URI.escape, however rbvmomi still relies on it
@@ -60,8 +123,20 @@ end
 # Module OneVcenterHelper
 ##############################################################################
 class OneSwapHelper < OpenNebulaHelper::OneHelper
-    # true to log to /var/log/one/oneswap.*
-    DEBUG = false
+
+    ONE_LOGS = '/var/log/one'
+    LOG = "#{ONE_LOGS}/oneswap.log"
+
+    def initialize
+        super
+
+        Dir.mkdir(ONE_LOGS) unless Dir.exist?(ONE_LOGS)
+
+        log_level = ENV['ONE_SWAP_DEBUG'].nil? ? 'INFO' : 'DEBUG'
+
+        @logger = Logger.new(LOG)
+        @logger.level = Logger.const_get(log_level)
+    end
 
     @props, @options = []
     @dotskip = false # temporarily skip dots, for progress dots.
@@ -69,9 +144,11 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     # vCenter importer will divide rbvmomi resources
     # in this group, makes parsing easier.
     module VOBJECT
+
         VM         = 1
         DATACENTER = 2
         CLUSTER    = 3
+
     end
 
     #
@@ -99,7 +176,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     TABLE = {
         VOBJECT::VM => {
             :struct  => ['VM_LIST', 'VM'],
-            :columns => { :IMID => 8, :NAME => 20, :STATE => 10, :HOST => 10, :CPU => 3, :MEM => 7, :REF => 35 },
+            :columns => { :IMID => 8, :NAME => 20, :STATE => 10, :HOST => 10, :CPU => 3, :MEM => 7,
+:REF => 35 },
             :cli     => [],
             :dialogue => ->(arg) {}
         },
@@ -116,16 +194,6 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             :dialgoue => ->(arg) {}
         }
     }
-
-    if DEBUG
-        LOGGER = {
-            :stdout => File.open('/var/log/one/oneswap.stdout', 'a'),
-            :stderr => File.open('/var/log/one/oneswap.stderr', 'a')
-        }
-
-        LOGGER[:stdout].sync = true
-        LOGGER[:stderr].sync = true
-    end
 
     ########################
     # In list command you can use this method to print a header
@@ -172,7 +240,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     # @param options [Hash] options for the connection
     #
     def connection_options(object_name, options)
-        if  options[:host].nil? && ( options[:vcenter].nil? && options[:vuser].nil? )
+        if  options[:host].nil? && options[:vcenter].nil? && options[:vuser].nil?
             raise 'vCenter connection parameters are mandatory'\
                   " #{object_name}:\n"\
                   "\t --vcenter vCenter hostname\n"\
@@ -315,13 +383,13 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     def check_one_connectivity
         user = OpenNebula::User.new_with_id(OpenNebula::User::SELF, @client)
         rc = user.info
-        if rc.class == OpenNebula::Error
-            raise 'Failed to get User info, indicating authentication failed'
-        end
+        return unless rc.class == OpenNebula::Error
+
+        raise 'Failed to get User info, indicating authentication failed'
     end
 
     def cleanup_passwords
-        puts "Deleting password files."
+        puts 'Deleting password files.'
         File.delete("#{@options[:work_dir]}/vpassfile")
         File.delete("#{@options[:work_dir]}/esxpassfile")
     end
@@ -355,7 +423,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
     def mem_to_mb(value, unit)
         units = {
-          'b' => 1.0 / (1024 * 1024),      # bytes to MB
+            'b' => 1.0 / (1024 * 1024), # bytes to MB
           'bytes' => 1.0 / (1024 * 1024),  # bytes to MB
           'kb' => 1.0 / 1024,              # KB to MB
           'k' => 1.0 / 1024,               # kB (kibibytes) to MB
@@ -375,10 +443,11 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
         # Check if unit is within the hash keys
         if units.key?(unit)
-          value_mb = value.to_f * units[unit]
-          return value_mb.to_i
+            value_mb = value.to_f * units[unit]
+            return value_mb.to_i
         else
-          raise ArgumentError, "unit not valid: '#{unit}'. Valid units: 'b', 'bytes', 'KB', 'k', 'KiB', 'MB', 'M', 'MiB', 'GB', 'G', 'GiB', 'TB', 'T', 'TiB'."
+            raise ArgumentError,
+                  "unit not valid: '#{unit}'. Valid units: 'b', 'bytes', 'KB', 'k', 'KiB', 'MB', 'M', 'MiB', 'GB', 'G', 'GiB', 'TB', 'T', 'TiB'."
         end
     end
 
@@ -400,28 +469,28 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         relocate_spec = RbVmomi::VIM.VirtualMachineRelocateSpec
 
         clone_spec = RbVmomi::VIM.VirtualMachineCloneSpec(
-          location: relocate_spec,
-          powerOn: false,
-          template: false
+            :location => relocate_spec,
+            :powerOn => false,
+            :template => false
         )
 
         clone_task = vm.CloneVM_Task(
-          folder: vm.parent,
-          name: target_name,
-          spec: clone_spec
+            :folder => vm.parent,
+            :name => target_name,
+            :spec => clone_spec
         )
 
         clone_task.wait_for_completion
 
         vm_pool = get_objects(vi_client, 'VirtualMachine', properties)
-        cloned_vm = vm_pool.find { |r| r['name'] == "#{target_name}" }
+        cloned_vm = vm_pool.find {|r| r['name'] == "#{target_name}" }
         if cloned_vm.nil?
             raise "Unable to find Cloned VM by name '#{target_name}'"
         end
+
         puts "VM #{attr['name']} cloned successfully."
         cloned_vm
     end
-
 
     # This method deletes a VM in vCenter
     #
@@ -441,17 +510,17 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         vm_template = template
         # Add USB tablet input device
         input_hash = { 'BUS' => 'usb', 'TYPE' => 'tablet' }
-        vm_template.add_element('//VMTEMPLATE', {"INPUT" => input_hash})
+        vm_template.add_element('//VMTEMPLATE', { 'INPUT' => input_hash })
 
         # Configure video settings
         video_hash = { 'RESOLUTION' => '1440x900', 'TYPE' => 'virtio', 'VRAM' => '16384' }
-        vm_template.add_element('//VMTEMPLATE', {"VIDEO" => video_hash})
+        vm_template.add_element('//VMTEMPLATE', { 'VIDEO' => video_hash })
 
         # Configure features for Windows VM (Hyper-V and local time)
         features_hash = { 'HYPERV' => 'YES', 'LOCALTIME' => 'YES' }
         if vm_template.element_xml('FEATURES').nil? || vm_template.element_xml('FEATURES').empty?
             puts 'Create features element and add hyperv'
-            vm_template.add_element('//VMTEMPLATE', {"FEATURES" => features_hash})
+            vm_template.add_element('//VMTEMPLATE', { 'FEATURES' => features_hash })
         else
             puts 'Add hyperv to features element'
             vm_template.add_element('//VMTEMPLATE/FEATURES', features_hash)
@@ -464,7 +533,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         # Open XML domain file generated from conversion
         xml_file = Dir.glob("#{@options[:work_dir]}/conversions/*.xml")
         if xml_file.empty?
-            puts "No XML domain file found"
+            puts 'No XML domain file found'
             exit 0
         end
 
@@ -472,129 +541,135 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         xml_template = Nokogiri::XML(domain_xml)
 
         vm_template_config = {
-            "NAME" => xml_template.xpath("//name").text,
-            "CPU"  => xml_template.xpath("//vcpu").text,
-            "vCPU" => xml_template.xpath("//vcpu").text,
-            "MEMORY" => mem_to_mb(xml_template.xpath("//memory").text, xml_template.xpath("//memory/@unit").text),
-            "HYPERVISOR" => "kvm",
-            "CONTEXT" => {
-                "NETWORK" => "YES",
-                "SSH_PUBLIC_KEY" => "$USER[SSH_PUBLIC_KEY]"
+            'NAME' => xml_template.xpath('//name').text,
+            'CPU'  => xml_template.xpath('//vcpu').text,
+            'vCPU' => xml_template.xpath('//vcpu').text,
+            'MEMORY' => mem_to_mb(xml_template.xpath('//memory').text,
+                                  xml_template.xpath('//memory/@unit').text),
+            'HYPERVISOR' => 'kvm',
+            'CONTEXT' => {
+                'NETWORK' => 'YES',
+                'SSH_PUBLIC_KEY' => '$USER[SSH_PUBLIC_KEY]'
             }
         }
 
-        local_cpu = xml_template.xpath("//cpu")
+        local_cpu = xml_template.xpath('//cpu')
         if !local_cpu.empty?
-            local_cpu_model = local_cpu.xpath("@mode").text
-            if local_cpu_model.eql?("custom")
-                vm_template_config["CPU_MODEL"] = {"MODEL" => "#{local_cpu.xpath("/model").text}"}
+            local_cpu_model = local_cpu.xpath('@mode').text
+            if local_cpu_model.eql?('custom')
+                vm_template_config['CPU_MODEL'] = { 'MODEL' => "#{local_cpu.xpath('/model').text}" }
             else
-                vm_template_config["CPU_MODEL"] = {"MODEL" => "host-passthrough"}
+                vm_template_config['CPU_MODEL'] = { 'MODEL' => 'host-passthrough' }
             end
         end
 
         # CPU Features from <features>
-        local_features = xml_template.xpath("//features//*")
+        local_features = xml_template.xpath('//features//*')
         if !local_features.empty?
-            vm_template_config["FEATURES"] = {}
+            vm_template_config['FEATURES'] = {}
             local_features.each do |feature|
-                vm_template_config["FEATURES"]["#{feature.name.upcase}"] = 'YES'
+                vm_template_config['FEATURES']["#{feature.name.upcase}"] = 'YES'
             end
         end
 
         # If the currentMemory attribute is present, it means memory hotplug is enabled
         # memory indicates maximum allocation of memory at boot time,
         # while currentMemory is the actual allocation of memory
-        if !xml_template.xpath("//currentMemory").empty?
-            vm_template_config["MEMORY_RESIZE_MODE"] = "HOTPLUG"
-            vm_template_config["MEMORY_MAX"] = mem_to_mb(xml_template.xpath("//memory").text, xml_template.xpath("//memory/@unit").text)
-            if !xml_template.xpath("//maxMemory").empty?
-                vm_template_config["MEMORY_MAX"] = mem_to_mb(xml_template.xpath("//maxMemory").text, xml_template.xpath("//maxMemory/@unit").text)
+        if !xml_template.xpath('//currentMemory').empty?
+            vm_template_config['MEMORY_RESIZE_MODE'] = 'HOTPLUG'
+            vm_template_config['MEMORY_MAX'] =
+                mem_to_mb(xml_template.xpath('//memory').text,
+                          xml_template.xpath('//memory/@unit').text)
+            if !xml_template.xpath('//maxMemory').empty?
+                vm_template_config['MEMORY_MAX'] =
+                    mem_to_mb(xml_template.xpath('//maxMemory').text,
+                              xml_template.xpath('//maxMemory/@unit').text)
             end
 
-            if vm_template_config.include?("HOT_RESIZE")
-                vm_template_config["HOT_RESIZE"]["MEMORY_HOT_ADD_ENABLED"] = "YES"
+            if vm_template_config.include?('HOT_RESIZE')
+                vm_template_config['HOT_RESIZE']['MEMORY_HOT_ADD_ENABLED'] = 'YES'
             else
-                vm_template_config["HOT_RESIZE"] = { "MEMORY_HOT_ADD_ENABLED" => "YES" }
+                vm_template_config['HOT_RESIZE'] = { 'MEMORY_HOT_ADD_ENABLED' => 'YES' }
             end
         end
 
-        if xml_template.xpath("//vcpus//vcpu/@hotpluggable")=='yes'
-            # TODO Search max vCPU parameter in libvirt domain
+        if xml_template.xpath('//vcpus//vcpu/@hotpluggable')=='yes'
+            # TODO: Search max vCPU parameter in libvirt domain
             # vm_template_config["VCPU_MAX"] = "#{@props['config'][:hardware][:numCPU]}"
             # if @options[:vcpu_max]
             #     vm_template_config["VCPU_MAX"] = "#{@options[:vcpu_max]}"
             # end
 
-            if vm_template_config.include?("HOT_RESIZE")
-                vm_template_config["HOT_RESIZE"]["CPU_HOT_ADD_ENABLED"] = "YES"
+            if vm_template_config.include?('HOT_RESIZE')
+                vm_template_config['HOT_RESIZE']['CPU_HOT_ADD_ENABLED'] = 'YES'
             else
-                vm_template_config["HOT_RESIZE"] = { "CPU_HOT_ADD_ENABLED" => "YES" }
+                vm_template_config['HOT_RESIZE'] = { 'CPU_HOT_ADD_ENABLED' => 'YES' }
             end
         end
 
-        if !xml_template.xpath("//devices//graphics").empty?
+        if !xml_template.xpath('//devices//graphics').empty?
             possible_options = ['spice', 'vnc', 'sdl']
 
-            local_graphics = xml_template.xpath("//devices//graphics")
-            if possible_options.include?(local_graphics.xpath("@type").text.downcase)
-                vm_template_config["GRAPHICS"] = {}
-                vm_template_config["GRAPHICS"]["TYPE"] = local_graphics.xpath("@type").text.upcase
+            local_graphics = xml_template.xpath('//devices//graphics')
+            if possible_options.include?(local_graphics.xpath('@type').text.downcase)
+                vm_template_config['GRAPHICS'] = {}
+                vm_template_config['GRAPHICS']['TYPE'] = local_graphics.xpath('@type').text.upcase
 
-                if !local_graphics.xpath("@port").empty?
-                    vm_template_config["GRAPHICS"]["PORT"] = local_graphics.xpath("@port").text
+                if !local_graphics.xpath('@port').empty?
+                    vm_template_config['GRAPHICS']['PORT'] = local_graphics.xpath('@port').text
                 end
 
-                if !local_graphics.xpath("@passwd").empty?
-                    vm_template_config["GRAPHICS"]["PASSWD"] = local_graphics.xpath("@passwd").text
+                if !local_graphics.xpath('@passwd').empty?
+                    vm_template_config['GRAPHICS']['PASSWD'] = local_graphics.xpath('@passwd').text
                 end
 
-                if !local_graphics.xpath("@keymap").empty?
-                    vm_template_config["GRAPHICS"]["KEYMAP"] = local_graphics.xpath("@passwd").text
+                if !local_graphics.xpath('@keymap').empty?
+                    vm_template_config['GRAPHICS']['KEYMAP'] = local_graphics.xpath('@passwd').text
                 end
 
-                if !local_graphics.xpath("//listen/@address").empty?
-                    vm_template_config["GRAPHICS"]["LISTEN"] = local_graphics.xpath("//listen/@address").text
+                if !local_graphics.xpath('//listen/@address').empty?
+                    vm_template_config['GRAPHICS']['LISTEN'] =
+                        local_graphics.xpath('//listen/@address').text
                 else
-                    vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
+                    vm_template_config['GRAPHICS']['LISTEN'] = '0.0.0.0'
                 end
 
-                # TODO command not an atribute of graphics in libvirt domain
-                #if @options[:graphics_command]
+                # TODO: command not an atribute of graphics in libvirt domain
+                # if @options[:graphics_command]
                 #    vm_template_config["GRAPHICS"]["COMMAND"] = @options[:graphics_command]
-                #end
+                # end
             else
                 puts "Invalid graphics type. Please use one of the following: #{possible_options.join(', ')}"
             end
         else
-            vm_template_config["GRAPHICS"] = {}
-            vm_template_config["GRAPHICS"]["TYPE"] = 'VNC'
-            vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
+            vm_template_config['GRAPHICS'] = {}
+            vm_template_config['GRAPHICS']['TYPE'] = 'VNC'
+            vm_template_config['GRAPHICS']['LISTEN'] = '0.0.0.0'
         end
 
         vmt = OpenNebula::Template.new(OpenNebula::Template.build_xml, @client)
         vmt.add_element('//VMTEMPLATE', vm_template_config)
 
         # Get network interfaces
-        local_interfaces = xml_template.xpath("//devices//interface")
+        local_interfaces = xml_template.xpath('//devices//interface')
         if !local_interfaces.empty?
             network_ids = @options[:network].to_s.split(',').map(&:strip)
 
             puts "Adding #{local_interfaces} NICs using Network ID(s) #{network_ids.join(', ')}"
 
             nic_number = 0
-            local_interfaces.each do |interface|
-                network_id = network_ids[nic_number] || network_ids.last  # Reuse last ID if not enough
+            local_interfaces.each do |_interface|
+                network_id = network_ids[nic_number] || network_ids.last # Reuse last ID if not enough
 
                 net_hash = { 'NETWORK_ID' => "#{network_id}" }
 
                 # Check for MAC Address
-                if !local_interfaces.xpath("//mac/@address").empty?
+                if !local_interfaces.xpath('//mac/@address').empty?
                     puts "Adding MAC address to NIC##{nic_number}"
-                    net_hash['MAC'] = local_interfaces.xpath("//mac/@address").text
+                    net_hash['MAC'] = local_interfaces.xpath('//mac/@address').text
                 end
 
-                vmt.add_element('//VMTEMPLATE', {"NIC" => net_hash})
+                vmt.add_element('//VMTEMPLATE', { 'NIC' => net_hash })
 
                 nic_number += 1
             end
@@ -603,17 +678,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         # Add UEFI configuration
         # Create @props variable here to call template_firmware function
 
-        local_firmware = xml_template.at_xpath("//os/@firmware")&.text == 'efi' || xml_template.xpath("//os/loader/@type").text == 'pflash' ? 'efi' : 'bios'
-        local_secure_boot = xml_template.at_xpath("//os//loader/@secure")&.text == 'yes'
+        local_firmware = xml_template.at_xpath('//os/@firmware')&.text == 'efi' || xml_template.xpath('//os/loader/@type').text == 'pflash' ? 'efi' : 'bios'
+        local_secure_boot = xml_template.at_xpath('//os//loader/@secure')&.text == 'yes'
 
         boot_options = {}
         boot_options[:efiSecureBootEnabled] = 'yes' if local_firmware == 'efi' && local_secure_boot
-        boot_options[:loader] = xml_template.xpath("//os//loader").text if xml_template.xpath("//os/loader/@type").text == 'pflash'
+        boot_options[:loader] =
+            xml_template.xpath('//os//loader').text if xml_template.xpath('//os/loader/@type').text == 'pflash'
 
         @props = {
-            config: {
-                firmware: local_firmware,
-                bootOptions: boot_options
+            'config' => {
+                :firmware => local_firmware,
+                :bootOptions => boot_options
             }
         }
         vmt.add_element('//VMTEMPLATE', template_firmware)
@@ -623,56 +699,56 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
     def create_base_template
         vm_template_config = {
-            "NAME" => "#{@options[:name]}",
-            "CPU"  => "#{@props['config'][:hardware][:numCPU]}",
-            "vCPU" => "#{@props['config'][:hardware][:numCPU]}",
-            "MEMORY" => "#{@props['config'][:hardware][:memoryMB]}",
-            "HYPERVISOR" => "kvm"
+            'NAME' => "#{@options[:name]}",
+            'CPU'  => "#{@props['config'][:hardware][:numCPU]}",
+            'vCPU' => "#{@props['config'][:hardware][:numCPU]}",
+            'MEMORY' => "#{@props['config'][:hardware][:memoryMB]}",
+            'HYPERVISOR' => 'kvm'
         }
 
         if @options[:cpu_model]
-            vm_template_config["CPU_MODEL"] = {"MODEL" => "#{@options[:cpu_model]}"}
+            vm_template_config['CPU_MODEL'] = { 'MODEL' => "#{@options[:cpu_model]}" }
         end
 
         if !@options[:disable_contextualization]
-            vm_template_config["CONTEXT"] = {
-                "NETWORK" => "YES",
-                "SSH_PUBLIC_KEY" => "$USER[SSH_PUBLIC_KEY]"
+            vm_template_config['CONTEXT'] = {
+                'NETWORK' => 'YES',
+                'SSH_PUBLIC_KEY' => '$USER[SSH_PUBLIC_KEY]'
             }
         end
 
         if @options[:cpu]
-            vm_template_config["CPU"] = "#{@options[:cpu]}"
+            vm_template_config['CPU'] = "#{@options[:cpu]}"
         end
 
         if @options[:vcpu]
-            vm_template_config["vCPU"] = "#{@options[:vcpu]}"
+            vm_template_config['vCPU'] = "#{@options[:vcpu]}"
         end
 
         if @props['config'][:memoryHotAddEnabled]
-            vm_template_config["MEMORY_RESIZE_MODE"] = "HOTPLUG"
-            vm_template_config["MEMORY_MAX"] = "#{@props['config'][:hardware][:memoryMB]}"
+            vm_template_config['MEMORY_RESIZE_MODE'] = 'HOTPLUG'
+            vm_template_config['MEMORY_MAX'] = "#{@props['config'][:hardware][:memoryMB]}"
             if @options[:memory_max]
-                vm_template_config["MEMORY_MAX"] = "#{@options[:memory_max]}"
+                vm_template_config['MEMORY_MAX'] = "#{@options[:memory_max]}"
             end
 
-            if vm_template_config.include?("HOT_RESIZE")
-                vm_template_config["HOT_RESIZE"]["MEMORY_HOT_ADD_ENABLED"] = "YES"
+            if vm_template_config.include?('HOT_RESIZE')
+                vm_template_config['HOT_RESIZE']['MEMORY_HOT_ADD_ENABLED'] = 'YES'
             else
-                vm_template_config["HOT_RESIZE"] = { "MEMORY_HOT_ADD_ENABLED" => "YES" }
+                vm_template_config['HOT_RESIZE'] = { 'MEMORY_HOT_ADD_ENABLED' => 'YES' }
             end
         end
 
         if @props['config'][:cpuHotAddEnabled]
-            vm_template_config["VCPU_MAX"] = "#{@props['config'][:hardware][:numCPU]}"
+            vm_template_config['VCPU_MAX'] = "#{@props['config'][:hardware][:numCPU]}"
             if @options[:vcpu_max]
-                vm_template_config["VCPU_MAX"] = "#{@options[:vcpu_max]}"
+                vm_template_config['VCPU_MAX'] = "#{@options[:vcpu_max]}"
             end
 
-            if vm_template_config.include?("HOT_RESIZE")
-                vm_template_config["HOT_RESIZE"]["CPU_HOT_ADD_ENABLED"] = "YES"
+            if vm_template_config.include?('HOT_RESIZE')
+                vm_template_config['HOT_RESIZE']['CPU_HOT_ADD_ENABLED'] = 'YES'
             else
-                vm_template_config["HOT_RESIZE"] = { "CPU_HOT_ADD_ENABLED" => "YES" }
+                vm_template_config['HOT_RESIZE'] = { 'CPU_HOT_ADD_ENABLED' => 'YES' }
             end
         end
 
@@ -680,37 +756,37 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             possible_options = ['spice', 'vnc', 'sdl']
 
             if possible_options.include?(@options[:graphics_type].downcase)
-                vm_template_config["GRAPHICS"] = {}
-                vm_template_config["GRAPHICS"]["TYPE"] = @options[:graphics_type].upcase
+                vm_template_config['GRAPHICS'] = {}
+                vm_template_config['GRAPHICS']['TYPE'] = @options[:graphics_type].upcase
 
                 if @options[:graphics_port]
-                    vm_template_config["GRAPHICS"]["PORT"] = @options[:graphics_port]
+                    vm_template_config['GRAPHICS']['PORT'] = @options[:graphics_port]
                 end
 
                 if @options[:graphics_password]
-                    vm_template_config["GRAPHICS"]["PASSWD"] = @options[:graphics_password]
+                    vm_template_config['GRAPHICS']['PASSWD'] = @options[:graphics_password]
                 end
 
                 if @options[:graphics_keymap]
-                    vm_template_config["GRAPHICS"]["KEYMAP"] = @options[:graphics_keymap]
+                    vm_template_config['GRAPHICS']['KEYMAP'] = @options[:graphics_keymap]
                 end
 
                 if @options[:graphics_listen]
-                    vm_template_config["GRAPHICS"]["LISTEN"] = @options[:graphics_listen]
+                    vm_template_config['GRAPHICS']['LISTEN'] = @options[:graphics_listen]
                 else
-                    vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
+                    vm_template_config['GRAPHICS']['LISTEN'] = '0.0.0.0'
                 end
 
                 if @options[:graphics_command]
-                    vm_template_config["GRAPHICS"]["COMMAND"] = @options[:graphics_command]
+                    vm_template_config['GRAPHICS']['COMMAND'] = @options[:graphics_command]
                 end
             else
                 puts "Invalid graphics type. Please use one of the following: #{possible_options.join(', ')}"
             end
         else
-            vm_template_config["GRAPHICS"] = {}
-            vm_template_config["GRAPHICS"]["TYPE"] = 'VNC'
-            vm_template_config["GRAPHICS"]["LISTEN"] = '0.0.0.0'
+            vm_template_config['GRAPHICS'] = {}
+            vm_template_config['GRAPHICS']['TYPE'] = 'VNC'
+            vm_template_config['GRAPHICS']['LISTEN'] = '0.0.0.0'
         end
 
         vmt = OpenNebula::Template.new(OpenNebula::Template.build_xml, @client)
@@ -720,24 +796,24 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def template_firmware
-        fw = { "OS" => { "FIRMWARE" => "BIOS" }}
+        fw = { 'OS' => { 'FIRMWARE' => 'BIOS' } }
 
-        return fw unless @props[:config][:firmware] == 'efi'
+        return fw unless @props['config'][:firmware] == 'efi'
 
-        secure_boot = @props[:config][:bootOptions][:efiSecureBootEnabled]
-        os_release = File.exist?('/etc/fos-release') ? File.read('/etc/os-release') : ''
+        secure_boot = @props['config'][:bootOptions][:efiSecureBootEnabled]
+        os_release = File.exist?('/etc/os-release') ? File.read('/etc/os-release') : ''
         is_ubuntu = os_release.include?('ID=ubuntu')
 
         local_uefi_path =
-          @props[:config][:bootOptions][:loader] ||
-          if secure_boot
-            @options[:uefi_sec_path] || (is_ubuntu ? '/usr/share/OVMF/OVMF_CODE_4M.secboot.fd' : '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd')
-          else
-            @options[:uefi_path] || (is_ubuntu ? '/usr/share/OVMF/OVMF_CODE_4M.fd' : '/usr/share/edk2/ovmf/OVMF_CODE.fd')
-        end
+            @props['config'][:bootOptions][:loader] ||
+            if secure_boot
+                @options[:uefi_sec_path] || (is_ubuntu ? '/usr/share/OVMF/OVMF_CODE_4M.secboot.fd' : '/usr/share/edk2/ovmf/OVMF_CODE.secboot.fd')
+            else
+                @options[:uefi_path] || (is_ubuntu ? '/usr/share/OVMF/OVMF_CODE_4M.fd' : '/usr/share/edk2/ovmf/OVMF_CODE.fd')
+            end
 
         unless local_uefi_path && !local_uefi_path.empty?
-            raise "Unable to determine UEFI firmware path, --uefi_path should be used"
+            raise 'Unable to determine UEFI firmware path, --uefi_path should be used'
         end
 
         fw['OS']['FIRMWARE'] = local_uefi_path
@@ -747,8 +823,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         fw
     end
 
-    #SCHED_DS_REQUIREMENTS = "ID=\"110\""
-    #SCHED_REQUIREMENTS = "ID=\"0\" | CLUSTER_ID=\"0\""
+    # SCHED_DS_REQUIREMENTS = "ID=\"110\""
+    # SCHED_REQUIREMENTS = "ID=\"0\" | CLUSTER_ID=\"0\""
     def template_scheduling(vmt)
         sched = {}
         if @options[:one_cluster] or @options[:one_host]
@@ -791,7 +867,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             notes = @props['config'][:annotation]
                     .gsub('\\', '\\\\')
                     .gsub('"', '\\"')
-            vmt.add_element('//VMTEMPLATE', { "DESCRIPTION" => "#{notes}" })
+            vmt.add_element('//VMTEMPLATE', { 'DESCRIPTION' => "#{notes}" })
         end
 
         vmt = template_scheduling(vmt)
@@ -799,46 +875,48 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         # detect icon
         logo = nil
         case @props['guest.guestFullName']
-        when /CentOS/i;     logo = 'images/logos/centos.png'
-        when /Debian/i;     logo = 'images/logos/debian.png'
-        when /Red Hat/i;    logo = 'images/logos/redhat.png'
-        when /Ubuntu/i;     logo = 'images/logos/ubuntu.png'
-        when /Windows XP/i; logo = 'images/logos/windowsxp.png'
-        when /Windows/i;    logo = 'images/logos/windows8.png'
-        when /Linux/i;      logo = 'images/logos/linux.png'
+        when /CentOS/i then     logo = 'images/logos/centos.png'
+        when /Debian/i then     logo = 'images/logos/debian.png'
+        when /Red Hat/i then    logo = 'images/logos/redhat.png'
+        when /Ubuntu/i then     logo = 'images/logos/ubuntu.png'
+        when /Windows XP/i then logo = 'images/logos/windowsxp.png'
+        when /Windows/i then    logo = 'images/logos/windows8.png'
+        when /Linux/i then      logo = 'images/logos/linux.png'
         end
-        vmt.add_element('//VMTEMPLATE', {'LOGO' => logo}) if logo
+        vmt.add_element('//VMTEMPLATE', { 'LOGO' => logo }) if logo
 
         vmt
     end
 
     def ip_version(ip_address)
         ip = IPAddr.new(ip_address) rescue nil
-        return nil if !ip
+        return unless ip
         return 'IP4' if ip.ipv4?
         return 'IP6' if ip.ipv6?
     end
 
     # Yoinked from StackOverflow question 10262235
-    def show_wait_spinner(fps=10)
-        chars = %w[| / - \\]
+    def show_wait_spinner(fps = 10)
+        chars = ['|', '/', '-', '\\']
         delay = 1.0/fps
         iter = 0
         spinner = Thread.new do
-            while iter do   # Keep spinning until told otherwise
+            while iter # Keep spinning until told otherwise
                 print chars[(iter+=1) % chars.length]
                 sleep delay
                 print "\b"
             end
         end
-        yield.tap{          # After yielding to the block, save the return value
-            iter = false    # Tell the thread to exit, cleaning up after itself…
-            spinner.join    # …and wait for it to do so.
-        }                   # Use the block's return value as the method's
+        # Use the block's return value as the method's
+        yield.tap do # After yielding to the block, save the return value
+            iter = false # Tell the thread to exit, cleaning up after itself…
+            spinner.join # …and wait for it to do so.
+        end
     end
 
     def next_suffix(suffix)
         return 'a' if suffix.empty?
+
         chars = suffix.chars
         if chars.last == 'z'
             chars.pop
@@ -854,20 +932,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     # @param cmd [String] The command to be executed.
     # @param out [Boolean] (optional) Whether to return the output or not.
     # @return [Array] Returns an array containing the stdout and status if out is true.
-    def run_cmd_report(cmd, out=false)
+    def run_cmd_report(cmd, out = false)
         t0 = Time.now
         stdout, stderr, status = nil
         puts "Running: #{cmd}"
-        show_wait_spinner {
+        show_wait_spinner do
             stdout, stderr, status = Open3.capture3(cmd)
-        }
+        end
         t1 = (Time.now - t0).round(2)
         puts !status.success? ? "Failed (#{t1}s)".red : "Success (#{t1}s)".green
-        if !status.success? and DEBUG
-            LOGGER[:stderr].puts("     STDERR:")
-            LOGGER[:stderr].puts(stderr)
-            LOGGER[:stderr].puts("------------")
-        end
+
+        @logger.debug(stderr) unless status.success?
+
         return stdout, status if out
     end
 
@@ -879,22 +955,23 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             "#{disk} "\
             '--no-applications --no-icon'
         disk_xml = nil
-        show_wait_spinner {
+        show_wait_spinner do
             stdout, _status = Open3.capture2(inspector_cmd)
             disk_xml = REXML::Document.new(stdout).root.elements
-        }
+        end
         xprefix = '//operatingsystems/operatingsystem'
         if !disk_xml[xprefix]
-            return nil
+            return
         end
+
         distro_info['distro']  = disk_xml["#{xprefix}/distro"].text
         distro_info['name']    = disk_xml["#{xprefix}/name"].text
         distro_info['os']      = disk_xml["#{xprefix}/osinfo"].text
         if distro_info['distro'] != 'windows'
             distro_info['pkg'] = disk_xml["#{xprefix}/package_format"].text
         end
-        distro_info['mounts']  = {}
-        mounts = disk_xml["#{xprefix}/mountpoints"].select { |d| d.is_a?(REXML::Element) }
+        distro_info['mounts'] = {}
+        mounts = disk_xml["#{xprefix}/mountpoints"].select {|d| d.is_a?(REXML::Element) }
         mounts.each do |mp|
             distro_info['mounts'][mp.text] = mp['dev'] # mountpath is the key, dev is value
         end
@@ -928,8 +1005,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         if c_files.length == 1
             c_files[0]
         elsif c_files.length > 1
-            latest = c_files.max_by { |f| Gem::Version.new(f.match(/(\d+\.\d+\.\d+(?:-\d+)?)/)[1])}
-            latest
+            c_files.max_by {|f| Gem::Version.new(f.match(/(\d+\.\d+\.\d+(?:-\d+)?)/)[1]) }
+
         else
             # download the correct one
             return false
@@ -945,6 +1022,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         if osinfo['name'] == 'windows'
             context_fullpath = detect_context_package('windows')
             return false unless context_fullpath
+
             context_basename = File.basename(context_fullpath)
             cmd = base_cmd +
                   ' --mkdir /Temp'\
@@ -963,16 +1041,16 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             when /^fedora/
                 os = 'fedora'
                 opts = [
-                    " --copy-in %{context}:/tmp",
-                    " --install /tmp/%{basename}",
-                    " --delete /tmp/%{basename}",
+                    ' --copy-in %<context>s:/tmp',
+                    ' --install /tmp/%<basename>s',
+                    ' --delete /tmp/%<basename>s',
                     " --run-command 'systemctl enable systemd-networkd'",
                     " --run-command 'systemctl disable systemd-networkd-wait-online'",
                     " --run-command 'sed -i \"s/SELINUX=enforcing/SELINUX=disabled/\" /etc/selinux/config || exit 0'"
                 ]
                 fallback_opts = [
-                    " --copy-in %{context}:/tmp",
-                    " --firstboot-install /tmp/%{basename}",
+                    ' --copy-in %<context>s:/tmp',
+                    ' --firstboot-install /tmp/%<basename>s',
                     " --run-command 'systemctl enable systemd-networkd'",
                     " --run-command 'systemctl disable systemd-networkd-wait-online'",
                     " --run-command 'sed -i \"s/SELINUX=enforcing/SELINUX=disabled/\" /etc/selinux/config || exit 0'"
@@ -982,15 +1060,15 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 opts = [
                     " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-8-$(arch)-rpms'",
                     " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm'",
-                    " --copy-in %{context}:/tmp",
-                    " --install /tmp/%{basename}",
-                    " --delete /tmp/%{basename}",
+                    ' --copy-in %<context>s:/tmp',
+                    ' --install /tmp/%<basename>s',
+                    ' --delete /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
                 ]
                 fallback_opts = [
-                    " --firstboot-install epel-release",
-                    " --copy-in %{context}:/tmp",
-                    " --firstboot-install /tmp/%{basename}",
+                    ' --firstboot-install epel-release',
+                    ' --copy-in %<context>s:/tmp',
+                    ' --firstboot-install /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
                 ]
             when /^redhat-based9/, /^rhel9/
@@ -998,30 +1076,30 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 opts = [
                     " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms'",
                     " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm'",
-                    " --copy-in %{context}:/tmp",
-                    " --install /tmp/%{basename}",
-                    " --delete /tmp/%{basename}",
+                    ' --copy-in %<context>s:/tmp',
+                    ' --install /tmp/%<basename>s',
+                    ' --delete /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
                 ]
                 fallback_opts = [
-                    " --firstboot-install epel-release",
-                    " --copy-in %{context}:/tmp",
-                    " --firstboot-install /tmp/%{basename}",
+                    ' --firstboot-install epel-release',
+                    ' --copy-in %<context>s:/tmp',
+                    ' --firstboot-install /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
                 ]
             when /^ubuntu/, /^debian/
                 os = 'debian'
                 opts = [
-                    " --uninstall cloud-init",
-                    " --copy-in %{context}:/tmp",
-                    " --install /tmp/%{basename}",
-                    " --delete /tmp/%{basename}",
+                    ' --uninstall cloud-init',
+                    ' --copy-in %<context>s:/tmp',
+                    ' --install /tmp/%<basename>s',
+                    ' --delete /tmp/%<basename>s',
                     " --run-command 'systemctl enable network.service || exit 0'"
                 ]
                 fallback_opts = [
-                    " --uninstall cloud-init",
-                    " --copy-in %{context}:/tmp",
-                    " --firstboot-install /tmp/%{basename}",
+                    ' --uninstall cloud-init',
+                    ' --copy-in %<context>s:/tmp',
+                    ' --firstboot-install /tmp/%<basename>s',
                     " --run-command 'systemctl enable network.service || exit 0'"
                 ]
             end
@@ -1031,17 +1109,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
             context_basename = File.basename(context_fullpath)
             vars = {
-                context: context_fullpath,
-                basename: context_basename
+                :context => context_fullpath,
+                :basename => context_basename
             }
 
-            cmd = base_cmd + opts.map { |c| c % vars }.join
-            fallback_cmd = base_cmd + fallback_opts.map { |c| c % vars }.join
+            cmd = base_cmd + opts.map {|c| c % vars }.join
+            fallback_cmd = base_cmd + fallback_opts.map {|c| c % vars }.join
 
         elsif osinfo['os'].start_with?('alt', 'opensuse', 'sles')
             os = osinfo['os'].start_with?('alt') ? 'alt' : 'opensuse'
             context_fullpath = detect_context_package(os)
             return false unless context_fullpath
+
             context_basename = File.basename(context_fullpath)
             cmd = base_cmd +
                     " --copy-in #{context_fullpath}:/tmp"\
@@ -1055,6 +1134,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             # may not mount properly sometimes due to internal fs
             context_fullpath = detect_context_package('freebsd')
             return false unless context_fullpath
+
             context_basename = File.basename(context_fullpath)
             cmd = base_cmd +
                     ' --install curl,bash,sudo,base64,ruby,open-vm-tools-nox11'\
@@ -1071,6 +1151,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             return false
         end
         return false unless context_fullpath
+
         return cmd, fallback_cmd
     end
 
@@ -1080,12 +1161,11 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
               " 'HKLM\\SYSTEM\\Select'"
         print 'Checking Windows ControlSet...'
         stdout, _status = run_cmd_report(cmd, true)
-        ccs = stdout.split("\n").find { |s| s.start_with?('"Current"') }.split(':')[1].to_i
-        ccs
+        stdout.split("\n").find {|s| s.start_with?('"Current"') }.split(':')[1].to_i
     end
 
     def win_context_inject(disk, osinfo)
-        puts "win_context_inject"
+        puts 'win_context_inject'
         cmd = "guestfish <<_EOF_
 add #{disk}
 run
@@ -1093,13 +1173,13 @@ mount #{osinfo['mounts']['/']} /
 upload #{@options[:virt_tools]}/rhsrvany.exe /rhsrvany.exe
 upload #{detect_context_package('windows')} /one-context.msi
 _EOF_"
-        print "Uploading context files to Windows disk..."
+        print 'Uploading context files to Windows disk...'
         puts 'win_context_inject cmd: ' + cmd
         run_cmd_report(cmd)
 
         ccs = get_win_controlset(disk)
         regfile = File.open("#{@options[:work_dir]}/service.reg", 'w')
-        regfile.puts("[HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet#{"%03d" % ccs}\\services\\RHSrvAnyContext]")
+        regfile.puts("[HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet#{'%03d' % ccs}\\services\\RHSrvAnyContext]")
         regfile.puts('"Type"=dword:00000010')
         regfile.puts('"Start"=dword:00000002')
         regfile.puts('"ErrorControl"=dword:00000001')
@@ -1107,7 +1187,7 @@ _EOF_"
         regfile.puts('"DisplayName"="RHSrvAnyContext"')
         regfile.puts('"ObjectName"="LocalSystem"')
         regfile.puts
-        regfile.puts("[HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet#{"%03d" % ccs}\\services\\RHSrvAnyContext\\Parameters]")
+        regfile.puts("[HKEY_LOCAL_MACHINE\\SYSTEM\\ControlSet#{'%03d' % ccs}\\services\\RHSrvAnyContext\\Parameters]")
         regfile.puts('"CommandLine"="msiexec -i c:\\one-context.msi"')
         regfile.puts('"PWD"="c:\\Temp"')
         regfile.flush
@@ -1118,7 +1198,7 @@ _EOF_"
               " #{disk}"\
               " #{@options[:work_dir]}/service.reg"
 
-        print "Merging service registry entry to install on boot..."
+        print 'Merging service registry entry to install on boot...'
         run_cmd_report(cmd)
     end
 
@@ -1140,10 +1220,9 @@ _EOF_"
     end
 
     def pkg_install_command(disk, pkg)
-        cmd = 'virt-customize'\
+        'virt-customize'\
               " -a #{disk}"\
               " --install #{pkg}"
-        cmd
     end
 
     def install_pkg(disk, pkg)
@@ -1198,9 +1277,9 @@ _EOF_"
             run_cmd_report(injector_cmd)
         end
 
-        if @options[:qemu_ga_linux] && osinfo['name'] != 'windows'
-            install_pkg(disk, 'qemu-guest-agent')
-        end
+        return unless @options[:qemu_ga_linux] && osinfo['name'] != 'windows'
+
+        install_pkg(disk, 'qemu-guest-agent')
     end
 
     def get_objects(vim, type, properties, folder = nil)
@@ -1210,14 +1289,14 @@ _EOF_"
         if folder
             if folder.key?(:datacenter)
                 rootFolder = vim.serviceInstance.find_datacenter(folder[:datacenter])
-                if not rootFolder
+                if !rootFolder
                     raise 'Unable to find Datacenter with name '\
                         "'#{folder[:datacenter]}'."
                 end
                 if folder.key?(:cluster)
                     clusterFolder = rootFolder.find_compute_resource(folder[:cluster])
 
-                    if not clusterFolder
+                    if !clusterFolder
                         raise 'Unable to find Cluster with name '\
                             "'#{folder[:cluster]}' in Datacenter "\
                             "'#{folder[:datacenter]}'."
@@ -1230,26 +1309,27 @@ _EOF_"
         end
 
         view = viewmgr.CreateContainerView({
-                :container => rootFolder,
+                                               :container => rootFolder,
                 :type => [type],
                 :recursive => true
-            });
+                                           })
         filterSpec = RbVmomi::VIM.PropertyFilterSpec(
-                    :objectSet => [
-                        :obj => view,
-                        :skip => true,
-                        :selectSet => [
-                            RbVmomi::VIM.TraversalSpec(
-                                :name => "traverseEntities",
-                                :type => "ContainerView",
-                                :path => "view",
-                                :skip => false
-                            )]
-                    ],
-                    :propSet => [
-                        { :type => type, :pathSet => properties }
-                    ]
-                );
+            :objectSet => [
+                :obj => view,
+                :skip => true,
+                :selectSet => [
+                    RbVmomi::VIM.TraversalSpec(
+                        :name => 'traverseEntities',
+                        :type => 'ContainerView',
+                        :path => 'view',
+                        :skip => false
+                    )
+                ]
+            ],
+            :propSet => [
+                { :type => type, :pathSet => properties }
+            ]
+        )
         pc.RetrieveProperties(:specSet => [filterSpec])
     end
 
@@ -1260,14 +1340,13 @@ _EOF_"
         #   -o local
         #   -os /path/to/working/folder
         #   -of [qcow2|raw]
-        command = "#{@options[:v2v_path]} -v --machine-readable"\
+        "#{@options[:v2v_path]} -v --machine-readable"\
                   ' -i libvirtxml'\
                   " #{xml_file}"\
                   ' -o local'\
                   ' --root first'\
                   " -os #{@options[:work_dir]}/conversions/"\
                   " -of #{@options[:format]}"
-        command
     end
 
     def build_v2v_vc_cmd
@@ -1279,7 +1358,7 @@ _EOF_"
         #   -o local
         #   -os /path/to/working/folder
         #   -of [qcow2|raw]
-        dc,cluster,host = nil
+        dc, cluster, host = nil
         pobj = @props['runtime.host']
         while dc.nil? || cluster.nil? || host.nil?
             host    = pobj  if pobj.class == RbVmomi::VIM::HostSystem
@@ -1288,26 +1367,25 @@ _EOF_"
             dc      = pobj  if pobj.class == RbVmomi::VIM::Datacenter
             pobj = pobj[:parent]
             if pobj.nil?
-                raise "Unable to find Host, Cluster, and Datacenter of VM"
+                raise 'Unable to find Host, Cluster, and Datacenter of VM'
             end
         end
 
         if cluster == false
-            url = "vpx://#{CGI::escape(@options[:vuser])}@#{@options[:vcenter]}"\
+            url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
                   "/#{dc[:name]}/#{host[:name]}?no_verify=1"
         else
-            url = "vpx://#{CGI::escape(@options[:vuser])}@#{@options[:vcenter]}"\
+            url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
                   "/#{dc[:name]}/#{cluster[:name]}/#{host[:name]}?no_verify=1"
         end
 
-        command = "#{@options[:v2v_path]} -v --machine-readable"\
+        "#{@options[:v2v_path]} -v --machine-readable"\
                   " -ic #{url}"\
                   " -ip #{@options[:work_dir]}/vpassfile"\
                   ' -o local'\
                   " -os #{@options[:work_dir]}/conversions/"\
                   " -of #{@options[:format]}"\
                   " '#{@props['name']}'"
-        command
     end
 
     def build_v2v_esx_cmd
@@ -1324,12 +1402,12 @@ _EOF_"
         ds_name, vmx_relpath = @props['config'][:files][:vmPathName].split('] ', 2)
         ds_name.delete!('[')
         # /vmfs/volumes/65de2b62-8488ae37-d55b-3cecefcef5a6
-        ds_path = @props['config'][:datastoreUrl].find { |ds| ds[:name] == ds_name }
+        ds_path = @props['config'][:datastoreUrl].find {|ds| ds[:name] == ds_name }
         vmx_fullpath = "#{ds_path[:url]}/#{vmx_relpath}"
 
-        url = "ssh://#{CGI::escape(@options[:esxi_user])}@#{@options[:esxi_ip]}"\
+        url = "ssh://#{CGI.escape(@options[:esxi_user])}@#{@options[:esxi_ip]}"\
               "/#{vmx_fullpath}"
-        command = "#{@options[:v2v_path]} -v --machine-readable"\
+        "#{@options[:v2v_path]} -v --machine-readable"\
                   ' -i vmx'\
                   ' -it ssh'\
                   " #{url}"\
@@ -1337,7 +1415,6 @@ _EOF_"
                   ' -o local'\
                   " -os #{@options[:work_dir]}/conversions/"\
                   " -of #{@options[:format]}"
-        command
     end
 
     def build_v2v_vddk_cmd
@@ -1354,7 +1431,7 @@ _EOF_"
         #   -o local
         #   -os /path/to/working/folder
         #   -of [qcow2|raw]
-        dc,cluster,host = nil
+        dc, cluster, host = nil
         pobj = @props['runtime.host']
         while dc.nil? || cluster.nil? || host.nil?
             host    = pobj if pobj.class == RbVmomi::VIM::HostSystem
@@ -1362,7 +1439,7 @@ _EOF_"
             dc      = pobj if pobj.class == RbVmomi::VIM::Datacenter
             pobj = pobj[:parent]
             if pobj.nil?
-                raise "Unable to find Host, Cluster, and Datacenter of VM"
+                raise 'Unable to find Host, Cluster, and Datacenter of VM'
             end
         end
 
@@ -1382,9 +1459,9 @@ _EOF_"
 
         puts "Certificate thumbprint: #{@options[:vddk_thumb]}"
 
-        url = "vpx://#{CGI::escape(@options[:vuser])}@#{@options[:vcenter]}"\
+        url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
               "/#{dc[:name]}/#{cluster[:name]}/#{host[:name]}?no_verify=1"
-        command = "#{@options[:v2v_path]} -v --machine-readable"\
+        "#{@options[:v2v_path]} -v --machine-readable"\
                   " -ic #{url}"\
                   " -ip #{@options[:work_dir]}/vpassfile"\
                   ' -it vddk'\
@@ -1394,7 +1471,6 @@ _EOF_"
                   " -os #{@options[:work_dir]}/conversions/"\
                   " -of #{@options[:format]}"\
                   " '#{@props['name']}'"
-        command
     end
 
     def build_v2v_ova
@@ -1405,13 +1481,12 @@ _EOF_"
         #   -of [qcow2|raw]
         #   --root=[ask|single|first|/dev/sdX]
 
-        command = "#{@options[:v2v_path]} -v --machine-readable"\
+        "#{@options[:v2v_path]} -v --machine-readable"\
                   " -i ova #{@options[:ova]}"\
                   ' -o local'\
                   " -os #{@options[:work_dir]}/conversions/"\
                   " -of #{@options[:format]}"\
                   " --root=#{@options[:root]}"
-        command
     end
 
     # Create and run the virt-v2v conversion
@@ -1424,7 +1499,7 @@ _EOF_"
             local_disks = hybrid_downloader(vc_disks)
             local_xml = build_hybrid_xml(local_disks)
             local_xml_file = @options[:work_dir] + '/local.xml'
-            File.open(local_xml_file, 'w') { |f| f.write(local_xml) }
+            File.open(local_xml_file, 'w') {|f| f.write(local_xml) }
             command = build_v2v_hybrid_cmd(local_xml_file)
         elsif @options[:esxi_ip]
             command = build_v2v_esx_cmd
@@ -1445,14 +1520,14 @@ _EOF_"
             # Handle each std pipe as a separate thread
             stdout_thread = Thread.new do
                 begin
-                    stdout.each_line { |line| handle_stdout(line) }
+                    stdout.each_line {|line| handle_stdout(line) }
                 rescue StandardError => e
                     error_check = e
                 end
             end
 
             stderr_thread = Thread.new do
-                stderr.each_line { |line| handle_stderr(line) }
+                stderr.each_line {|line| handle_stderr(line) }
             end
 
             stdout_thread.join
@@ -1467,14 +1542,15 @@ _EOF_"
                 raise "virt-v2v exited in error code #{exit_status} but did not provide an error"
             end
 
-            disks_on_file = Dir.glob("#{@options[:work_dir]}/conversions/#{@options[:name]}*").reject {|f| f.end_with?('.xml')}.sort
+            disks_on_file = Dir.glob("#{@options[:work_dir]}/conversions/#{@options[:name]}*").reject do |f|
+                f.end_with?('.xml')
+            end.sort
             puts "#{disks_on_file.length} disks on the local disk for this VM: #{disks_on_file}"
             if disks_on_file.length == 0
-                raise "There are no disks on the local filesystem due to previous failures."
+                raise 'There are no disks on the local filesystem due to previous failures.'
             end
 
-            img_ids = create_one_images(disks_on_file)
-            img_ids
+            create_one_images(disks_on_file)
         rescue StandardError => e
             # puts "Error raised: #{e.message}"
             if @props['config'][:guestFullName].include?('Windows')
@@ -1482,14 +1558,14 @@ _EOF_"
                 raise e
             end
             if @options[:fallback]
-                puts "Error encountered, fallback enabled. Attempting Custom Conversion now."
+                puts 'Error encountered, fallback enabled. Attempting Custom Conversion now.'
                 cleanup_disks
                 run_custom_conversion
             elsif @options[:hybrid]
-                puts "Hybrid conversion failed, attempting manual conversion."
+                puts 'Hybrid conversion failed, attempting manual conversion.'
                 run_custom_conversion
             else
-                puts "Failed. Fallback is not enabled. Raising error.".red
+                puts 'Failed. Fallback is not enabled. Raising error.'.red
                 raise e
             end
         end
@@ -1500,6 +1576,7 @@ _EOF_"
     # Outputs a converted image location if success
     def convert_vmdk(vmdk_path, output_format: 'qcow2')
         raise "Input file not found: #{vmdk_path}" unless File.exist?(vmdk_path)
+
         puts "Converting disk #{vmdk_path} to #{output_format}..."
         base_name = File.basename(vmdk_path, '.vmdk')
         output_path = File.join(@options[:work_dir], 'conversions', "#{base_name}.#{output_format}")
@@ -1507,17 +1584,15 @@ _EOF_"
         t0 = Time.now
         success = system(command)
         duration = (Time.now - t0).round(2)
-        if success
-          puts "Disk converted successfully in #{duration} seconds."
-          return output_path
-        else
-          raise "Failed to convert #{vmdk_path} to #{output_format}"
-        end
+        raise "Failed to convert #{vmdk_path} to #{output_format}" unless success
+
+        puts "Disk converted successfully in #{duration} seconds."
+        return output_path
     end
 
     def handle_v2v_error(line)
-        LOGGER[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
-        pass_list  = [
+        @logger.debug(line)
+        pass_list = [
             'unable to rebuild initrd',
             'unable to find any valid modprobe configuration file',
             'only Xen kernels are installed in this guest.',
@@ -1564,20 +1639,20 @@ _EOF_"
             }
         ]
 
-        err = pass_list.detect  { |e| line['message'].start_with?(e) }
+        err = pass_list.detect {|e| line['message'].start_with?(e) }
         raise(err.red) if err
 
-        err = error_list.detect { |e| line['message'].start_with?(e[:text]) }
+        err = error_list.detect {|e| line['message'].start_with?(e[:text]) }
         puts "DEBUG INFO: #{line['message']}".red
-        err ? raise(err[:error].red)  : raise("Unknown error occurred: #{line['message']}".bg_red)
+        err ? raise(err[:error].red) : raise("Unknown error occurred: #{line['message']}".bg_red)
     end
 
     def handle_stdout(line)
-        LOGGER[:stdout].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
+        @logger.debug(line)
         begin
             line = JSON.parse(line)
         rescue JSON::ParserError
-            if line.start_with?(/^[0-9]+\/[0-9]+$/)
+            if line.start_with?(%r{^[0-9]+/[0-9]+$})
                 print line
                 return
             end
@@ -1594,9 +1669,9 @@ _EOF_"
         when 'message'
             print "#{line['message']}".green
             if line['message'].start_with?('Converting')
-                print ", this may take a long time".green
+                print ', this may take a long time'.green
             elsif line['message'].start_with?('Copying disk')
-                print ", this may take a long time".green
+                print ', this may take a long time'.green
                 print "\n"
                 @dotskip = true
             end
@@ -1613,30 +1688,31 @@ _EOF_"
     def handle_stderr(line)
         return if line.start_with?('nbdkit: debug:')
         return if line.start_with?('nbdkit: curl[4]: debug:')
+
         prefixes = {
-            'guestfsd: <= list_filesystems' => "Inspecting filesystems, this can take several minutes".green,
-            'guestfsd: <= inspect_os' => "Inspecting guest OS".green,
-            'mpstats:' => "Gathering mountpoint stats and converting guest".green,
-            'commandrvg: /usr/sbin/update-initramfs' => "Generating initramfs, this can take several minutes(20+) on many systems. Please be patient and do not interrupt the process.".brown,
-            'chroot: /sysroot: running \'librpm\'' => "Querying RPMs with librpm, this can take a while".green,
-            'dracut: *** Creating image file' => "Creating boot image with dracut".green
-          }
+            'guestfsd: <= list_filesystems' => 'Inspecting filesystems, this can take several minutes'.green,
+            'guestfsd: <= inspect_os' => 'Inspecting guest OS'.green,
+            'mpstats:' => 'Gathering mountpoint stats and converting guest'.green,
+            'commandrvg: /usr/sbin/update-initramfs' => 'Generating initramfs, this can take several minutes(20+) on many systems. Please be patient and do not interrupt the process.'.brown,
+            'chroot: /sysroot: running \'librpm\'' => 'Querying RPMs with librpm, this can take a while'.green,
+            'dracut: *** Creating image file' => 'Creating boot image with dracut'.green
+        }
 
-          line_prefix = prefixes.keys.detect { |e| line.start_with?(e) }
+        line_prefix = prefixes.keys.detect {|e| line.start_with?(e) }
 
-          if line_prefix
+        if line_prefix
             print "\n#{prefixes[line_prefix]}"
             STDOUT.flush
-          else
+        else
             if !@dotskip
                 @last_dot_time ||= Time.now
-                if Time.now - @last_dot_time >= 0.1  # Check if 100ms have elapsed since the last dot
+                if Time.now - @last_dot_time >= 0.1 # Check if 100ms have elapsed since the last dot
                     print '.'
                     @last_dot_time = Time.now
                 end
             end
-            LOGGER[:stderr].puts("#{Time.now.to_s[0...-6]} - #{line}") if DEBUG
-          end
+            @logger.debug(line)
+        end
     end
 
     def create_one_images(disks)
@@ -1659,10 +1735,10 @@ _EOF_"
                 end
             rescue Exception => e
                 if osinfo['name'] == 'windows'
-                    puts "Error with package injection. Conversion failed. Check that you have virtio and context packages in place.".red
-                    exit -1
+                    puts 'Error with package injection. Conversion failed. Check that you have virtio and context packages in place.'.red
+                    exit(-1)
                 else
-                    puts "Error with package injection, converted VM may fail to boot".red
+                    puts 'Error with package injection, converted VM may fail to boot'.red
                     puts "#{e.message}"
                 end
             end
@@ -1671,13 +1747,13 @@ _EOF_"
                 path = "http://#{@options[:http_host]}:#{@options[:http_port]}/#{File.basename(d)}"
                 server_thread = Thread.new do
                     server = WEBrick::HTTPServer.new({
-                        Port: @options[:http_port],
-                        DocumentRoot: File.dirname(d),
-                        RequestCallback: ->(req, res) {
+                                                         :Port => @options[:http_port],
+                        :DocumentRoot => File.dirname(d),
+                        :RequestCallback => lambda {|_req, res|
                             res['Cache-Control'] = 'public, max-age=3600'
                         },
-                        MaxThreads: 8,
-                    })
+                        :MaxThreads => 8
+                                                     })
 
                     trap('INT') { server.shutdown }
 
@@ -1688,11 +1764,11 @@ _EOF_"
             end
 
             img.add_element('//IMAGE', {
-                'NAME' => "#{@options[:name]}_#{i}",
+                                'NAME' => "#{@options[:name]}_#{i}",
                 'TYPE' => guest_info ? 'OS' : 'DATABLOCK',
                 'PATH' => path,
-                'PERSISTENT' => persistent_image,
-            })
+                'PERSISTENT' => persistent_image
+                            })
 
             puts "Allocating image #{i} in OpenNebula"
 
@@ -1743,7 +1819,7 @@ _EOF_"
         end
 
         if local_disks.empty?
-            raise "Unable to download any disks from vCenter storage.".red
+            raise 'Unable to download any disks from vCenter storage.'.red
         end
 
         local_disks
@@ -1767,7 +1843,7 @@ _EOF_"
             <devices>
         XML
         suffix = 'a'
-        disks.each_with_index do |d, i|
+        disks.each_with_index do |d, _i|
             disk_xml = <<-XML
               <disk type='file' device='disk'>
                 <source file='#{d}'/>
@@ -1788,14 +1864,15 @@ _EOF_"
             puts 'Downloading disks from vCenter storage to local disk'
             vc_disks.each_with_index do |d, i|
                 # download each disk to the work dir
-                remote_file = d[:backing][:fileName].sub(/^\[.+?\] /, '').sub(/\.vmdk$/, '-flat.vmdk')
+                remote_file = d[:backing][:fileName].sub(/^\[.+?\] /, '').sub(/\.vmdk$/,
+                                                                              '-flat.vmdk')
                 local_file = @options[:work_dir] + '/conversions/' + @props['name'] + "-disk#{i}"
                 d[:backing][:datastore].download(remote_file, local_file + '.vmdk')
                 vmdks.append(local_file)
                 puts "Downloaded disk ##{i}."
             end
         else
-            vmdks = Dir.glob("#{@options[:work_dir]}/transfers/*.vmdk").map { |f| f.chomp('.vmdk') }
+            vmdks = Dir.glob("#{@options[:work_dir]}/transfers/*.vmdk").map {|f| f.chomp('.vmdk') }
         end
 
         puts 'Converting disks locally'
@@ -1809,7 +1886,7 @@ _EOF_"
                       " #{d}.vmdk #{d}.#{@options[:format]}"
             system(command) # don't need to interact or anything, just display the output straight.
             puts "Disk #{i} converted in #{(Time.now - t0).round(2)} seconds. Deleting vmdk file".green
-            #puts "that's a lie, not deleting the vmdk".bg_blue
+            # puts "that's a lie, not deleting the vmdk".bg_blue
             command = "rm -f #{d}.vmdk"
             system(command)
             local_disks.append("#{d}.#{@options[:format]}")
@@ -1833,13 +1910,15 @@ _EOF_"
             RbVmomi::VIM::VirtualVmxnet3
         ]
         # Get and sort the network interfaces
-        vc_nics = @props['config'][:hardware][:device].select { |d|
-            network_types.any? { |nt| d.is_a?(nt) }
-        }.sort_by(&:key)
+        vc_nics = @props['config'][:hardware][:device].select do |d|
+            network_types.any? {|nt| d.is_a?(nt) }
+        end.sort_by(&:key)
 
         nic_backing = vc_nics.map do |n|
             if n[:backing].is_a? RbVmomi::VIM::VirtualEthernetCardDistributedVirtualPortBackingInfo
-                ds_network = distributed_networks.find { |dn| dn.to_hash['key'] == n[:backing][:port][:portgroupKey] }
+                ds_network = distributed_networks.find do |dn|
+                    dn.to_hash['key'] == n[:backing][:port][:portgroupKey]
+                end
                 [n[:key], ds_network.to_hash['name']]
             else
                 [n[:key], n[:backing][:network][:name]]
@@ -1855,7 +1934,8 @@ _EOF_"
         one_networks.info
         one_networks.each do |n|
             n.info
-            next if !n['//VNET/TEMPLATE/VCENTER_NETWORK_MATCH']
+            next unless n['//VNET/TEMPLATE/VCENTER_NETWORK_MATCH']
+
             netmap[n['//VNET/TEMPLATE/VCENTER_NETWORK_MATCH']] = n['//VNET/ID']
         end
 
@@ -1870,9 +1950,9 @@ _EOF_"
             puts "Adding #{vc_nics.length} NICs, assigning networks from #{@options[:network]}"
             nic_number = 0
             vc_nics.each_with_index do |n, index|
-                guest_network = @props['guest.net'].find { |gn| gn[:deviceConfigId] == n[:key] }
+                guest_network = @props['guest.net'].find {|gn| gn[:deviceConfigId] == n[:key] }
                 assigned_network = networks[index]
-                net_templ = {'NIC' => { 'NETWORK_ID' => "#{assigned_network}" }}
+                net_templ = { 'NIC' => { 'NETWORK_ID' => "#{assigned_network}" } }
 
                 if !@options[:skip_mac]
                     puts "Adding MAC address to NIC##{nic_number}"
@@ -1885,12 +1965,12 @@ _EOF_"
                     network_info_found = false
                     one_networks.each do |on_network|
                         network_info = on_network.to_hash
-                        if network_info.include?('VNET') && network_info['VNET']['NAME'] == vc_nic_backing[n[:key]]
-                            network_info_found = true
-                            net_templ['NIC']['NETWORK_ID'] = network_info['VNET']['ID']
-                            net_templ['NIC']['NETWORK'] = vc_nic_backing[n[:key]]
-                            break
-                        end
+                        next unless network_info.include?('VNET') && network_info['VNET']['NAME'] == vc_nic_backing[n[:key]]
+
+                        network_info_found = true
+                        net_templ['NIC']['NETWORK_ID'] = network_info['VNET']['ID']
+                        net_templ['NIC']['NETWORK'] = vc_nic_backing[n[:key]]
+                        break
                     end
                     unless network_info_found
                         puts "Could not find OpenNebula network matching the provided name. Setting to assigned network: #{assigned_network}"
@@ -1910,23 +1990,25 @@ _EOF_"
                 else
                     netkey = 'NIC_ALIAS'
                     guest_network[:ipConfig][:ipAddress].each do |ip|
-                        net_templ = {netkey => @options[:skip_mac] ? {} : {'MAC' => n[:macAddress] }}
-                        net_templ[netkey]['NETWORK_ID'] = netmap[guest_network[:network]] || "#{assigned_network}"
+                        net_templ = { netkey => @options[:skip_mac] ? {} : { 'MAC' => n[:macAddress] } }
+                        net_templ[netkey]['NETWORK_ID'] =
+                            netmap[guest_network[:network]] || "#{assigned_network}"
 
                         if ip[:ipAddress]
                             ipv = "#{ip_version(ip[:ipAddress])}"
                         else
-                            puts "Skipping address range creation"
+                            puts 'Skipping address range creation'
                             next
                         end
-                        net_templ[netkey]['PARENT'] = "NIC#{nic_number}" if netkey == 'NETWORK_ALIAS'
+                        net_templ[netkey]['PARENT'] =
+                            "NIC#{nic_number}" if netkey == 'NETWORK_ALIAS'
                         ar_template = "AR=[TYPE=#{ipv},SIZE=1,IP=#{ip[:ipAddress]}]"
                         print "Creating AR for IP #{ip[:ipAddress]}..."
                         xml = OpenNebula::VirtualNetwork.build_xml(net_templ[netkey]['NETWORK_ID'])
                         vn  = OpenNebula::VirtualNetwork.new(xml, @client)
                         rc = vn.add_ar(ar_template)
                         if rc.nil?
-                            puts "Success".green
+                            puts 'Success'.green
                             net_templ[netkey]['IP'] = ip[:ipAddress]
                             vm_template.add_element('//VMTEMPLATE', net_templ)
                             puts "Added NIC##{nic_number} to network #{net_templ['NIC']['NETWORK_ID']}"
@@ -1939,33 +2021,33 @@ _EOF_"
                 nic_number += 1
             end
         elsif vc_nics.length > 0
-            puts "You will need to create NICs and assign networks in the VM Template in OpenNebula manually."
+            puts 'You will need to create NICs and assign networks in the VM Template in OpenNebula manually.'
         end
         vm_template
     end
 
     # Remove VMWare Tools injection from the VM
     def remove_vmtools_injection(disk, osinfo)
-        if @options[:remove_vmtools]
-            puts 'Starting VMWare Tools Removal script injection...'
-            if osinfo['name'] == 'windows'
-                default_path = "#{SCRIPTS_LOCATION}/vmware_tools_removal.ps1"
-            else
-                default_path = "#{SCRIPTS_LOCATION}/vmware_tools_removal.sh"
-            end
-            script_path = File.exist?(default_path) ? default_path : nil
-            unless script_path && File.exist?(script_path)
-                puts 'Unable to find vmware_tools_removal script, please remove VMWare Tools manually.'
-                return
-            end
-            cmd = "virt-customize -q -a #{disk} --firstboot '#{script_path}'"
-            _stdout, status = run_cmd_report(cmd, true)
-            if !status.success?
-                puts 'Remove VMWare tools injection failed somehow, please remove VMWare Tools manually.'
-                return
-            end
-            puts "VMware Tools removal injection completed. The script will run on the first boot.".green
+        return unless @options[:remove_vmtools]
+
+        puts 'Starting VMWare Tools Removal script injection...'
+        if osinfo['name'] == 'windows'
+            default_path = "#{SCRIPTS_LOCATION}/vmware_tools_removal.ps1"
+        else
+            default_path = "#{SCRIPTS_LOCATION}/vmware_tools_removal.sh"
         end
+        script_path = File.exist?(default_path) ? default_path : nil
+        unless script_path && File.exist?(script_path)
+            puts 'Unable to find vmware_tools_removal script, please remove VMWare Tools manually.'
+            return
+        end
+        cmd = "virt-customize -q -a #{disk} --firstboot '#{script_path}'"
+        _stdout, status = run_cmd_report(cmd, true)
+        if !status.success?
+            puts 'Remove VMWare tools injection failed somehow, please remove VMWare Tools manually.'
+            return
+        end
+        puts 'VMware Tools removal injection completed. The script will run on the first boot.'.green
     end
 
     # Run a OpenNebula system prechecks:
@@ -1992,14 +2074,14 @@ _EOF_"
         one_datastores = OpenNebula::DatastorePool.new(@client)
         one_datastores.info
         one_datastores.each do |ds|
-            if ds.id == ds_target_id
-                ds.info
-                available_mb = ds['FREE_MB'].to_i
-                available_kb = available_mb * 1024
-                available_gb = available_mb.to_f / 1024
-                if vm_size_kb > available_kb
-                    raise "Not enough space in the datastore. Available: #{available_gb.round(2)} GB, VM Size: #{vm_size_gb.round(2)} GB".red
-                end
+            next unless ds.id == ds_target_id
+
+            ds.info
+            available_mb = ds['FREE_MB'].to_i
+            available_kb = available_mb * 1024
+            available_gb = available_mb.to_f / 1024
+            if vm_size_kb > available_kb
+                raise "Not enough space in the datastore. Available: #{available_gb.round(2)} GB, VM Size: #{vm_size_gb.round(2)} GB".red
             end
         end
 
@@ -2007,7 +2089,8 @@ _EOF_"
         one_images = OpenNebula::ImagePool.new(@client)
         one_images.info
         one_images.each do |i|
-            if i.name =~ /^#{Regexp.escape(@options[:name])}_\d+$/ && ['OS', 'DATABLOCK'].include?(i.type_str)
+            if i.name =~ /^#{Regexp.escape(@options[:name])}_\d+$/ && ['OS',
+                                                                       'DATABLOCK'].include?(i.type_str)
                 raise "Image with name #{@options[:name]}_{id} already exists.".red
             end
         end
@@ -2024,9 +2107,9 @@ _EOF_"
         ## Precheck OpenNebula Networks (check if exists)
         one_networks = OpenNebula::VirtualNetworkPool.new(@client)
         one_networks.info
-        unless one_networks.any? { |n| n.id == @options[:network].to_i }
-            raise "Network with ID #{@options[:network]} does not exist.".red
-        end
+        return if one_networks.any? {|n| n.id == @options[:network].to_i }
+
+        raise "Network with ID #{@options[:network]} does not exist.".red
     end
 
     # General method to list vCenter objects
@@ -2062,18 +2145,18 @@ _EOF_"
         conv_path = "#{@options[:work_dir]}/conversions/"
         tran_path = "#{@options[:work_dir]}/transfers/"
         begin
-            Dir.mkdir(@options[:work_dir]) if !Dir.exist?(@options[:work_dir])
-            Dir.mkdir(conv_path) if !Dir.exist?(conv_path)
-            Dir.mkdir(tran_path) if !Dir.exist?(tran_path)
+            Dir.mkdir(@options[:work_dir]) unless Dir.exist?(@options[:work_dir])
+            Dir.mkdir(conv_path) unless Dir.exist?(conv_path)
+            Dir.mkdir(tran_path) unless Dir.exist?(tran_path)
 
             password_file = File.open("#{@options[:work_dir]}/vpassfile", 'w')
             password_file.print @options[:vpass]
-            password_file.chmod(0600)
+            password_file.chmod(0o600)
             password_file.close
 
             password_file = File.open("#{@options[:work_dir]}/esxpassfile", 'w')
             password_file.print @options[:esxi_pass]
-            password_file.chmod(0600)
+            password_file.chmod(0o600)
             password_file.close
 
             convert_vm
@@ -2101,9 +2184,9 @@ _EOF_"
         conv_path = "#{@options[:work_dir]}/conversions/"
         tran_path = "#{@options[:work_dir]}/transfers/"
         begin
-            Dir.mkdir(@options[:work_dir]) if !Dir.exist?(@options[:work_dir])
-            Dir.mkdir(conv_path) if !Dir.exist?(conv_path)
-            Dir.mkdir(tran_path) if !Dir.exist?(tran_path)
+            Dir.mkdir(@options[:work_dir]) unless Dir.exist?(@options[:work_dir])
+            Dir.mkdir(conv_path) unless Dir.exist?(conv_path)
+            Dir.mkdir(tran_path) unless Dir.exist?(tran_path)
 
             if options[:vmdk]
                 import_image
@@ -2150,17 +2233,18 @@ _EOF_"
         available_filters = [:name, :state]
         filters = nil
         if (available_filters & options.keys).any?
-            filters = options.select { |key,_| available_filters.include?(key) }
+            filters = options.select {|key, _| available_filters.include?(key) }
         end
         vms.each do |vm|
             props = vm.to_hash
-            next unless !props['config.template']
+            next if props['config.template']
+
             if filters
-                if filters[:name]
-                    next if !props['name'].include?(filters[:name])
+                if filters[:name] && !props['name'].include?(filters[:name])
+                    next
                 end
-                if filters[:state]
-                    next if !props['summary.runtime.powerState'].include?(filters[:state])
+                if filters[:state] && !props['summary.runtime.powerState'].include?(filters[:state])
+                    next
                 end
             end
             v = {}
@@ -2203,7 +2287,7 @@ _EOF_"
         con_ops = connection_options('clusters', options)
         vi_client = RbVmomi::VIM.connect(con_ops)
 
-        list  = []
+        list = []
         properties = [
             'summary.usageSummary.totalVmCount',
             'name'
@@ -2241,13 +2325,13 @@ _EOF_"
         img_ids.each do |i|
             img_hash = { 'IMAGE_ID' => "#{i[:id]}" }
             if @options[:dev_prefix]
-                img_hash["DEV_PREFIX"] = "#{@options[:dev_prefix]}"
+                img_hash['DEV_PREFIX'] = "#{@options[:dev_prefix]}"
             elsif i[:os]
                 if i[:os] == 'windows'
-                    img_hash["DEV_PREFIX"] = "vd"
+                    img_hash['DEV_PREFIX'] = 'vd'
                 end
             end
-            vm_template.add_element('//VMTEMPLATE', {"DISK" => img_hash})
+            vm_template.add_element('//VMTEMPLATE', { 'DISK' => img_hash })
         end
 
         # Optimize template for Windows VMs
@@ -2255,7 +2339,7 @@ _EOF_"
             vm_template = tune_windows_tmpl(vm_template)
         end
 
-        print "Allocating the VM template..."
+        print 'Allocating the VM template...'
 
         rc = vm_template.allocate(vm_template.to_xml)
 
@@ -2274,14 +2358,14 @@ _EOF_"
     #
     def import_image
         # Convert VMDK to QCOW2 compatible
-        print "Converting the Image => "
+        print 'Converting the Image => '
         img_loc = convert_vmdk(@options[:vmdk])
-        puts img_loc.nil? ? "No Image reported being converted".red : "Converted image: #{img_loc}".green
+        puts img_loc.nil? ? 'No Image reported being converted'.red : "Converted image: #{img_loc}".green
 
         # Import Image to OpenNebula
-        print "Allocating the Image => "
+        print 'Allocating the Image => '
         img_ids = create_one_images([img_loc])
-        puts img_ids.nil? || img_ids.first[:id].nil? ? "No Image reported being created".red : "Created image: #{img_ids.first[:id]}".green
+        puts img_ids.nil? || img_ids.first[:id].nil? ? 'No Image reported being created'.red : "Created image: #{img_ids.first[:id]}".green
     end
 
     # Convert VM
@@ -2304,7 +2388,7 @@ _EOF_"
         ]
 
         vm_pool = get_objects(vi_client, 'VirtualMachine', properties)
-        vm = vm_pool.find { |r| r['name'] == @options[:name] }
+        vm = vm_pool.find {|r| r['name'] == @options[:name] }
         if vm.nil?
             raise "Unable to find Virtual Machine by name '#{@options[:name]}'"
         end
@@ -2350,18 +2434,18 @@ _EOF_"
         img_ids.each do |i|
             img_hash = { 'IMAGE_ID' => "#{i[:id]}" }
             if @options[:dev_prefix]
-                img_hash["DEV_PREFIX"] = "#{@options[:dev_prefix]}"
+                img_hash['DEV_PREFIX'] = "#{@options[:dev_prefix]}"
             elsif i[:os]
                 if i[:os] == 'windows'
-                    img_hash["DEV_PREFIX"] = "vd"
+                    img_hash['DEV_PREFIX'] = 'vd'
                 end
             end
-            vm_template.add_element('//VMTEMPLATE', {"DISK" => img_hash})
+            vm_template.add_element('//VMTEMPLATE', { 'DISK' => img_hash })
         end
 
         # If clone option is set, delete clean up the cloned VM
         if @options[:clone]
-            puts "Cleaning up cloned VM..."
+            puts 'Cleaning up cloned VM...'
             begin
                 delete_vm(cloned_vm)
             rescue RbVmomi::Fault => e
@@ -2376,7 +2460,18 @@ _EOF_"
             vm_template = tune_windows_tmpl(vm_template)
         end
 
-        print "Allocating the VM template..."
+        new_vsphere_client
+
+        vm = @vsphere_client.get_vm(@options[:name])
+        vm_id = vm['vm']
+        tags = @vsphere_client.get_vm_tags(vm_id)
+
+        if !tags.empty?
+            tag_template = { 'VCENTER_TAGS' => tags.join(',') }
+            vm_template.add_element('//VMTEMPLATE', tag_template)
+        end
+
+        print 'Allocating the VM template...'
 
         rc = vm_template.allocate(vm_template.to_xml)
 
@@ -2387,5 +2482,47 @@ _EOF_"
             puts 'Failed'.red
             puts "\nVM Template:\n#{vm_template.to_xml}\n"
         end
+
+        set_sunstone_labels(tags, vm_template.id) unless tags.empty?
     end
+
+    def new_vsphere_client
+        args = [@options[:vcenter], @options[:vuser], @options[:vpass], @logger]
+
+        @vsphere_client = VSphereClient.new(*args)
+    end
+
+    #
+    # Applies FireEdge Sunstone labels to a given VM Template ID. The labels
+    # will be created if they don't exist. Nested under VCENTER_TAGS label.
+    #
+    # @param [Array] vcenter_tags list of label names to apply
+    # @param [Int] one_vm_template_id ID of the VM Tempalte to assign the label to
+    #
+    # @return [nil/OpenNebula::Error] Nil if success or error
+    #
+    def set_sunstone_labels(vcenter_tags, one_vm_template_id)
+        # Labels exist as part of the User Template with a vm_template reference
+        user = OpenNebula::User.new_with_id(OpenNebula::User::SELF, @client)
+        user.info
+
+        labels = user['TEMPLATE/LABELS']
+        labels = if labels
+                     JSON.parse(JSON.parse(labels))
+                 else
+                     {}
+                 end
+
+        id = one_vm_template_id.to_s
+
+        vcenter_tags.each do |tag|
+            labels[tag] = {} unless labels.key?(tag)
+            labels[tag]['vm-template'] = [] unless labels[tag].key?('vm-template')
+            labels[tag]['vm-template'] << id unless labels[tag]['vm-template'].include? id
+        end
+
+        update_str = "<ROOT><LABELS>#{labels.to_json.to_json}</LABELS></ROOT>"
+        user.update(update_str, true)
+    end
+
 end
