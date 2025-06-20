@@ -2483,9 +2483,7 @@ _EOF_"
             puts "\nVM Template:\n#{vm_template.to_xml}\n"
         end
 
-        return if tags.empty?
-
-        set_sunstone_labels(tags, vm_template.id)
+        set_sunstone_labels(tags, vm_template.id) unless tags.empty?
     end
 
     def new_vsphere_client
@@ -2518,12 +2516,9 @@ _EOF_"
         id = one_vm_template_id.to_s
 
         vcenter_tags.each do |tag|
-            labels['VCENTER_TAGS'] = {} unless labels.key?('VCENTER_TAGS')
-            labels['VCENTER_TAGS'][tag] = {} unless labels['VCENTER_TAGS'].key?(tag)
-            labels['VCENTER_TAGS'][tag]['vm-template'] =
-                [] unless labels['VCENTER_TAGS'][tag].key?('vm-template')
-
-            labels['VCENTER_TAGS'][tag]['vm-template'] << id unless labels['VCENTER_TAGS'][tag]['vm-template'].include? id
+            labels[tag] = {} unless labels.key?(tag)
+            labels[tag]['vm-template'] = [] unless labels[tag].key?('vm-template')
+            labels[tag]['vm-template'] << id unless labels[tag]['vm-template'].include? id
         end
 
         update_str = "<ROOT><LABELS>#{labels.to_json.to_json}</LABELS></ROOT>"
