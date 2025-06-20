@@ -2462,8 +2462,7 @@ _EOF_"
 
         new_vsphere_client
 
-        vms = @vsphere_client.get_vms(@options[:name])
-        vm = vms.first
+        vm = @vsphere_client.get_vm(@options[:name])
         vm_id = vm['vm']
         tags = @vsphere_client.get_vm_tags(vm_id)
 

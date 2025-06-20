@@ -23,7 +23,7 @@ class VSphereClient
     #
     # @return [Array] list of matching VMs
     #
-    def get_vms(name)
+    def get_vm(name)
         uri = URI("https://#{vcenter}/rest/vcenter/vm?filter.names=#{name}")
         request = Net::HTTP::Get.new(uri)
         request['vmware-api-session-id'] = @session_id
@@ -40,7 +40,7 @@ class VSphereClient
         @logger.info("Found VMs matching name '#{name}'")
         @logger.debug(vms)
 
-        return vms
+        return vms.first
     end
 
     #
