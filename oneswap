@@ -64,6 +64,8 @@ require 'rexml'
 require 'yaml'
 require 'cgi'
 
+WORK_PATH = '/var/tmp'
+
 CommandParser::CmdParser.new(ARGV) do
     usage '`oneswap` <command> [<args>] [<options>]'
     version OpenNebulaHelper::ONE_VERSION
@@ -279,7 +281,7 @@ CommandParser::CmdParser.new(ARGV) do
         :name => 'work_dir',
         :short => '-w directory',
         :large => '--work-dir directory',
-        :description => 'Directory where disk conversion takes place, will make subdir for each VM, Default: /tmp/',
+        :description => "Directory where disk conversion takes place, will make subdir for each VM, Default: #{WORK_PATH}",
         :format => String
     }
 
@@ -613,7 +615,7 @@ CommandParser::CmdParser.new(ARGV) do
                 raise 'Cannot define both --fallback and --custom.'
             end
 
-            options[:work_dir]       ||= '/tmp'
+            options[:work_dir]       ||= WORK_PATH
             options[:format]         ||= 'qcow2'
             options[:context]        ||= '/usr/share/one/context'
             options[:esxi_user]      ||= 'root'
@@ -695,7 +697,7 @@ CommandParser::CmdParser.new(ARGV) do
                 end
             end
 
-            options[:work_dir]      ||= '/tmp'
+            options[:work_dir]      ||= WORK_PATH
             options[:format]        ||= 'qcow2'
             options[:context]       ||= '/usr/share/one/context/'
             options[:datastore]     ||= 1
