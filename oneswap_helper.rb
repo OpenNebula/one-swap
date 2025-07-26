@@ -385,7 +385,12 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         rc = user.info
         return unless rc.class == OpenNebula::Error
 
-        raise 'Failed to get User info, indicating authentication failed'
+        STDERR.puts rc.message
+
+        user_info = 'Setup the OpenNebula client configuration accordingly'
+        user_info << ' https://docs.opennebula.io/7.0/product/operation_references/configuration_references/cli/#shell-environment'
+
+        raise user_info
     end
 
     def cleanup_passwords
