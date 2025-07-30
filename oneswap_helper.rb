@@ -1494,6 +1494,22 @@ _EOF_"
                   " --root=#{@options[:root]}"
     end
 
+    def build_v2v_in_place(disk_path)
+        @logger.info "Converting disk #{disk_path}"
+
+        cmd = "virt-v2v-in-place -v --machine-readable -i disk #{disk_path} --root=#{@options[:root]}"
+        _o, _e, s = execute_command(cmd)
+        s
+    end
+
+    def sesparse(snapshot_vmdk, raw_disk)
+        @logger.info "Applying snapshot #{snapshot_vmdk} to converted disk #{raw_disk}"
+
+        cmd = "sesparse #{snapshot_vmdk} #{raw_vmdk}"
+        _o, _e, s = execute_command(cmd)
+        s
+    end
+
     # Create and run the virt-v2v conversion
     # This uses virt-v2v to connect to vCenter/ESXi, create an overlay on the remote disk,
     #   and convert it before using qemu-img convert over nbdkit connection.  Outputs a
@@ -1576,6 +1592,19 @@ _EOF_"
         end
     end
 
+    # TODO: Only 1 disk VMs
+    def run_delta_conversion
+        esxi_client = ESXiClient.new(get_vm_esxi, @logger)
+        vm_id =
+
+
+        esxi_client.snapshot_vm()
+
+
+        build_v2v_in_place(disks_on_file)
+        create_one_images(disks_on_file)
+    end
+
     # Create and run the qemu-img vmdk conversion
     # This uses qemu-img to convert an vmdk image to desired format (Default: qcow2).
     # Outputs a converted image location if success
@@ -1593,6 +1622,26 @@ _EOF_"
 
         puts "Disk converted successfully in #{duration} seconds."
         return output_path
+    end
+
+    #
+    # Return the ESXi hostname where the VM is placed based
+    #
+    # @return [String] ESXi hostname
+    #
+    def get_vm_esxi
+        key = 'runtime.host'
+        if !@props.key?(key)
+            @logger.error("Missing key #{key} on VM properties")
+            return
+        end
+
+        host_obj = @props[key]
+
+        host = host_obj._connection.searchIndex.FindByUuid(:uuid => host_obj._ref,
+                                                           :vmSearch => false)
+
+        host.name
     end
 
     def handle_v2v_error(line)
@@ -2410,13 +2459,16 @@ _EOF_"
             end
         end
 
-        # Some basic preliminary checks
-        if @props['summary.runtime.powerState'] != 'poweredOff'
-            raise "Virtual Machine #{@options[:name]} is not Powered Off.".red
+        if !@options[:delta]
+            # Some basic preliminary checks
+            if @props['summary.runtime.powerState'] != 'poweredOff'
+                raise "Virtual Machine #{@options[:name]} is not Powered Off.".red
+            end
+            if !@props['snapshot'].nil?
+                raise "Virtual Machine #{@options[:name]} cannot have existing snapshots.".red
+            end
         end
-        if !@props['snapshot'].nil?
-            raise "Virtual Machine #{@options[:name]} cannot have existing snapshots.".red
-        end
+
         if @props['config'][:guestFullName].include?('Windows') && @options[:custom_convert]
             raise "Windows is not supported in OpenNebula's Custom Conversion process".red
         end
@@ -2432,7 +2484,13 @@ _EOF_"
 
         vm_template = create_vm_template
 
-        img_ids = @options[:custom_convert] ? run_custom_conversion : run_v2v_conversion
+        if @options[:custom_convert]
+            run_custom_conversion
+        elsif @options[:delta]
+            run_delta_conversion
+        else
+            run_v2v_conversion
+        end
 
         puts img_ids.nil? ? "No Images ID's reported being created".red : "Created images: #{img_ids}".green
 
@@ -2528,6 +2586,21 @@ _EOF_"
 
         update_str = "<ROOT><LABELS>#{labels.to_json.to_json}</LABELS></ROOT>"
         user.update(update_str, true)
+    end
+
+    private
+
+    def execute_command(cmd)
+        @logger.info "Running command #{cmd}"
+
+        o, e, s = Open3.capture3(cmd)
+
+        if !s.success?
+            @logger.info "Failed to run command\n#{o}"
+            @logger.error e
+        end
+
+        [o, e, s.success?]
     end
 
 end

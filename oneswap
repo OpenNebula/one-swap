@@ -343,6 +343,12 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
+    DELTA = {
+        :name => 'delta_transfer',
+        :large => '--delta',
+        :description => 'Convert the VM with minimal downtime using snapshots. Requires ESXi SSH access.'
+    }
+
     CUSTOM = { # not sure what to call this actually
         :name => 'custom_convert',
         :large => '--custom',
