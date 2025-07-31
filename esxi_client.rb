@@ -1,35 +1,52 @@
 require 'open3'
 require 'logger'
 
-#
+module ESXi; end
+
 # SSH ESXI Client to perform CLI operations on a given ESXi host
 #
-class ESXiClient
+class ESXi::Client
 
     CTRL_CMD = 'vim-cmd'
     USER = 'root'
 
+    attr_reader :logger
+
     def initialize(host, logger)
         @host = host
         @logger = logger
+
+        @vm_list = []
     end
 
-    # TODO: Parse ESXi output to hash
     def list_vms
         actions = 'getallvms'
-        o, e, s = vm_cmd(actions)
-        o
+        o, _e, s = vm_cmd(actions)
+
+        @logger.debug o
+
+        return [] unless s
+
+        @vm_list = self.class.vmsvc_getallvms_to_array(o)
     end
 
-    def vm_id(vm_name)
-        # vms =
+    def get_vm_by_name(name)
+        list_vms if @vm_list.empty?
+
+        @vm_list.each do |vm|
+            next unless vm[:name] == name
+
+            @logger.debug vm
+
+            return ESXi::VirtualMachine.new(self, vm)
+        end
     end
 
     def snapshot_vm(vm_id, snapshot_name = self.class.default_snapshot_name)
         @logger.info "Creating snapshot #{snapshot_name} for VM #{vm_id}"
 
-        actions = "snapshot.create #{vm_id} #{snapshot_name}"
-        o, e, s = vm_cmd(actions)
+        actions = "snapshot.create #{vm_id} \"#{snapshot_name}\""
+        _, _, s = vm_cmd(actions)
         s
     end
 
@@ -43,7 +60,7 @@ class ESXiClient
                  end
 
         actions = "#{action} #{vm_id}"
-        o, e, s = vm_cmd(actions)
+        _, _, s = vm_cmd(actions)
         s
     end
 
@@ -83,6 +100,36 @@ class ESXiClient
 
     private
 
+    def self.vmsvc_getallvms_to_array(getallvms_output)
+        lines = getallvms_output.lines.map(&:strip)
+
+        return [] if lines.empty?
+
+        lines.shift # remove header
+        # Skip the first line if it contains column names
+        lines.reject! do |line|
+            line =~ /^Vmid\s+/
+        end
+        vms = []
+        lines.each do |line|
+            # Split line into at most 6 parts (to handle annotations with spaces)
+            parts = line.split(/\s{2,}/, 6)
+
+            vm = {
+                :vmid => parts[0].to_i,
+                :name => parts[1],
+                :file => parts[2],
+                :guest_os => parts[3],
+                :version => parts[4],
+                :annotation => parts[5] || nil
+            }
+
+            vms << vm
+        end
+
+        vms
+    end
+
     def vm_cmd(actions)
         cmd = "#{CTRL_CMD} vmsvc/#{actions}"
         ssh(cmd)
@@ -117,14 +164,14 @@ class ESXiClient
     # @return [Array] stdout, stderr, exitstatus
     #
     def ssh(cmd)
-        ssh_cmd = "ssh #{USER}@#{@host} #{cmd}"
+        ssh_cmd = "ssh #{USER}@#{@host} '#{cmd}'"
         execute(ssh_cmd)
     end
 
     def execute(cmd)
         stdout, stderr, status = Open3.capture3(cmd)
 
-        @logger.info "Running command #{cmd}"
+        @logger.debug "Running command #{cmd}"
 
         if !status.success?
             @logger.error stderr
@@ -134,4 +181,43 @@ class ESXiClient
         [stdout, stderr, status.success?]
     end
 
+end
+
+class ESXi::VirtualMachine
+
+    def initialize(esxi_client, getallvms_info)
+        @client = esxi_client
+
+        @name = getallvms_info[:name]
+        @id = getallvms_info[:vmid]
+        @os = getallvms_info[:guest_os]
+        @version = getallvms_info[:version]
+        @annotation = getallvms_info[:annotation]
+
+        file = getallvms_info[:file]
+        @datastore = file.split(' ').first.slice(1..-2)
+    end
+
+    def shutdown
+        @client.shutdown_vm(@id)
+    end
+
+    def start
+        @client.start_vm(@id)
+    end
+
+    def snapshot(snapshot_name = nil)
+        args = [@id]
+        args << snapshot_name if snapshot_name
+
+        @client.snapshot_vm(*args)
+    end
+
+    def disable_autostart
+        @client.disable_vm_autostart(@id)
+    end
+
+    def get_active_vmdk
+
+    end
 end

@@ -1594,12 +1594,13 @@ _EOF_"
 
     # TODO: Only 1 disk VMs
     def run_delta_conversion
-        esxi_client = ESXiClient.new(get_vm_esxi, @logger)
-        vm_id =
+        esxi_client = Client.new(get_vm_esxi, @logger)
 
+        vm_name = @options[:name]
+        vm = esxi_client.get_vm_by_name(vm_name)
+        vm_id = vm[:vmid]
 
-        esxi_client.snapshot_vm()
-
+        esxi_client.snapshot_vm(vm_id)
 
         build_v2v_in_place(disks_on_file)
         create_one_images(disks_on_file)

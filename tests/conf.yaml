@@ -1,0 +1,5 @@
+:vm: alma9
+:esxi_host: esxi.iguane
+:log:
+  :output: $stdout
+  :level: DEBUG
