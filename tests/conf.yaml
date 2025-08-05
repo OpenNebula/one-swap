@@ -1,5 +1,6 @@
-:vm: alma9
+:vm: alma9-clone
 :esxi_host: esxi.iguane
+:vmx: alma9-clone.vmx
 :log:
   :output: $stdout
   :level: DEBUG

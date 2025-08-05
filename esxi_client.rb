@@ -4,7 +4,6 @@ require 'logger'
 module ESXi; end
 
 # SSH ESXI Client to perform CLI operations on a given ESXi host
-#
 class ESXi::Client
 
     CTRL_CMD = 'vim-cmd'
@@ -78,6 +77,22 @@ class ESXi::Client
         host_cmd(actions)
     end
 
+    def vm_state(vm_id)
+        actions = "power.getstate #{vm_id}"
+        o, _, s = vm_cmd(actions)
+
+        if !s
+            @logger.error 'Could not read VM state'
+            return
+        end
+
+        state = o.lines.last.chomp
+
+        @logger.info "VM #{vm_id} state is #{state}"
+
+        state
+    end
+
     def clone_virtual_disk(source, target)
         @logger.info "Cloning disk #{source} to #{target}"
 
@@ -98,7 +113,19 @@ class ESXi::Client
         ssh(cmd)
     end
 
-    private
+    def vm_cmd(actions)
+        cmd = "#{CTRL_CMD} vmsvc/#{actions}"
+        ssh(cmd)
+    end
+
+    def host_cmd(actions)
+        cmd = "#{CTRL_CMD} hostsvc/#{actions}"
+        ssh(cmd)
+    end
+
+    def pull_files(source, target)
+        scp("#{USER}@#{@host}:#{source}", target)
+    end
 
     def self.vmsvc_getallvms_to_array(getallvms_output)
         lines = getallvms_output.lines.map(&:strip)
@@ -130,14 +157,32 @@ class ESXi::Client
         vms
     end
 
-    def vm_cmd(actions)
-        cmd = "#{CTRL_CMD} vmsvc/#{actions}"
-        ssh(cmd)
-    end
+    #
+    # Maps vmware files to a hash. Works with VMX and VMDK file descriptors
+    #
+    # @param [String] path file path on the filesystem
+    #
+    # @return [Hash] mapped vmx/vmdk
+    #
+    def self.parse_vmware_file(path)
+        config = {}
 
-    def host_cmd
-        cmd = "#{CTRL_CMD} hostsvc/#{actions}"
-        ssh(cmd)
+        File.foreach(path, :chomp => true) do |line|
+            next if line.strip.empty? || line.strip.start_with?('#', '//')
+
+            if line =~ /^(.+?)\s*=\s*"(.*)"$/
+                key   = Regexp.last_match(1).strip
+                value = Regexp.last_match(2)
+
+                if config.key?(key)
+                    config[key] = Array(config[key]) << value
+                else
+                    config[key] = value
+                end
+            end
+        end
+
+        config
     end
 
     #
@@ -149,29 +194,24 @@ class ESXi::Client
         Time.now.strftime('VM Snapshot %-m/%-d/%Y, %-I:%M:%S %p')
     end
 
-    # Command helpers
+    private
 
-    def scp(source, target)
-        cmd = "scp #{USER}@#{@host}:#{source} #{target}"
-        execute(cmd)
-    end
-
-    #
-    # Execute a command remotely via SSH
-    #
-    # @param [String] cmd Command to be executed
-    #
-    # @return [Array] stdout, stderr, exitstatus
-    #
     def ssh(cmd)
         ssh_cmd = "ssh #{USER}@#{@host} '#{cmd}'"
         execute(ssh_cmd)
     end
 
-    def execute(cmd)
-        stdout, stderr, status = Open3.capture3(cmd)
+    def scp(source, target)
+        cmd = "scp -r #{source} #{target}"
+        execute(cmd)
+    end
 
+    def execute(cmd)
         @logger.debug "Running command #{cmd}"
+
+        t0 = Time.now
+        stdout, stderr, status = Open3.capture3(cmd)
+        @logger.debug "Execution time #{Time.now - t0}"
 
         if !status.success?
             @logger.error stderr
@@ -181,43 +221,4 @@ class ESXi::Client
         [stdout, stderr, status.success?]
     end
 
-end
-
-class ESXi::VirtualMachine
-
-    def initialize(esxi_client, getallvms_info)
-        @client = esxi_client
-
-        @name = getallvms_info[:name]
-        @id = getallvms_info[:vmid]
-        @os = getallvms_info[:guest_os]
-        @version = getallvms_info[:version]
-        @annotation = getallvms_info[:annotation]
-
-        file = getallvms_info[:file]
-        @datastore = file.split(' ').first.slice(1..-2)
-    end
-
-    def shutdown
-        @client.shutdown_vm(@id)
-    end
-
-    def start
-        @client.start_vm(@id)
-    end
-
-    def snapshot(snapshot_name = nil)
-        args = [@id]
-        args << snapshot_name if snapshot_name
-
-        @client.snapshot_vm(*args)
-    end
-
-    def disable_autostart
-        @client.disable_vm_autostart(@id)
-    end
-
-    def get_active_vmdk
-
-    end
 end
