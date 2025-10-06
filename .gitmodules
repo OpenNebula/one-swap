@@ -1,0 +1,3 @@
+[submodule "any2kvm"]
+	path = any2kvm
+	url = https://github.com/storpool/any2kvm

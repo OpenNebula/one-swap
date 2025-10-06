@@ -138,7 +138,7 @@ class ESXi::Client
         t0 = Time.now
         return false unless simple_ssh_execution(cmd, message)
 
-        @logger.debug("Disk #{Time.now - t0}")
+        @logger.info("Clone time #{Time.now - t0}")
 
         true
     end
@@ -184,11 +184,15 @@ class ESXi::Client
         @logger.info "Converting #{source_vmdk} to format #{format} at #{target}"
 
         cmd = "qemu-img convert -p -f vmdk #{source_vmdk} -O #{format} #{target}"
-        _, _, s = execute(cmd)
 
-        if !s
-            message = "Failed to convert #{source_vmdk} to #{format} #{target}"
-            @logger.error message
+        t0 = Time.now
+        message = "Failed to convert #{source_vmdk} to #{format} #{target}"
+
+        s = live_execution(cmd, message)
+
+        if s
+            @logger.info("Conversion time #{Time.now - t0}")
+        else
             FileUtils.rm
         end
 
@@ -198,13 +202,16 @@ class ESXi::Client
     def apply_vmdk_snapshot_to_raw(snapshot_vmdk, converted_parent_raw)
         cmd = "sesparse #{snapshot_vmdk} #{converted_parent_raw}"
         message = "Failed to apply snapshot #{snapshot_vmdk} to #{converted_parent_raw}"
-        simple_execution(cmd, message)
+        live_execution(cmd, message)
     end
 
     def os_morph(root_image, options = '')
+        @logger.info "Converting disk #{root_image} to KVM"
+
         cmd = "virt-v2v-in-place -i disk #{root_image} #{options}"
         message = "Failed to convert Guest OS at #{root_image}"
-        simple_execution(cmd, message)
+
+        live_execution(cmd, message)
     end
 
     private
@@ -323,8 +330,8 @@ class ESXi::Client
 
     def scp(source, target)
         cmd = "scp -r #{source} #{target}"
-        message = "Faild to perform remote copy from #{source} to #{target}"
-        simple_execution(cmd, message)
+        message = "Failed to perform remote copy from #{source} to #{target}"
+        live_execution(cmd, message)
     end
 
     def simple_execution(cmd, error_message = nil)
@@ -335,6 +342,23 @@ class ESXi::Client
         s
     end
 
+    def live_execution(cmd, error_message = nil)
+        status = nil
+        Open3.popen3(cmd) do |stdin, stdout, stderr, wait_thr|
+            stdin.close
+
+            threads = []
+            threads << Thread.new { stdout.each_line {|line| puts line } }
+            threads << Thread.new { stderr.each_line {|line| STDERR.puts line } }
+
+            threads.each(&:join)
+            status = wait_thr.value.success?
+        end
+
+        @logger.error(error_message) if !status && error_message
+
+        status
+    end
 
     def execute(cmd)
         @logger.debug "Running command #{cmd}"

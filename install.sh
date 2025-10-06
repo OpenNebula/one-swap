@@ -94,14 +94,17 @@ INSTALL_FILES=(
 )
 
 
-BIN_FILES="oneswap"
-ONE_CLI_LIB_FILES="oneswap_helper.rb vsphere_client.rb"
+BIN_FILES="oneswap sesparse"
+ONE_CLI_LIB_FILES="oneswap_helper.rb vsphere_client.rb esxi_client.rb esxi_vm.rb"
 CONF_FILES="oneswap.yaml"
 SCRIPTS_FILES="scripts/*"
 
 #-----------------------------------------------------------------------------
 # INSTALL.SH SCRIPT
 #-----------------------------------------------------------------------------
+
+# Build sesparse binary for delta transfer feature
+git submodule init && gcc -w -std=c99 -o sesparse any2kvm/sesparse.c
 
 if [ "$MANPAGE" = "yes" ]; then
     # base document

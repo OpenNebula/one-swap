@@ -4,4 +4,4 @@
 :work_dir: /var/tmp
 :log:
   :output: $stdout
-  :level: INFO
+  :level: DEBUG

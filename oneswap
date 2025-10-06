@@ -344,9 +344,9 @@ CommandParser::CmdParser.new(ARGV) do
     }
 
     DELTA = {
-        :name => 'delta_transfer',
+        :name => 'delta',
         :large => '--delta',
-        :description => 'Convert the VM with minimal downtime using snapshots. Requires ESXi SSH access.'
+        :description => 'Convert the VM with reduced downtime using snapshots. Requires ESXi host paswordless root SSH access.'
     }
 
     CUSTOM = { # not sure what to call this actually
@@ -516,7 +516,7 @@ CommandParser::CmdParser.new(ARGV) do
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE] + AUTH_OPTS
-    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DELTA, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                     CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                     PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
                     SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS

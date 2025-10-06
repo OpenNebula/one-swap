@@ -15,4 +15,4 @@ logger.level = Logger.const_get(conf[:log][:level])
 
 client = ESXi::Client.new(conf[:esxi_host], logger)
 vm = client.get_vm_by_name(conf[:vm])
-vm.live_storage_transfer(conf[:work_dir])
+vm.live2kvm(conf[:work_dir])

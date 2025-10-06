@@ -17,6 +17,7 @@
 require 'one_helper'
 require 'logger'
 require_relative 'vsphere_client'
+require_relative 'esxi_vm'
 
 class String
 
@@ -1494,22 +1495,6 @@ _EOF_"
                   " --root=#{@options[:root]}"
     end
 
-    def build_v2v_in_place(disk_path)
-        @logger.info "Converting disk #{disk_path}"
-
-        cmd = "virt-v2v-in-place -v --machine-readable -i disk #{disk_path} --root=#{@options[:root]}"
-        _o, _e, s = execute_command(cmd)
-        s
-    end
-
-    def sesparse(snapshot_vmdk, raw_disk)
-        @logger.info "Applying snapshot #{snapshot_vmdk} to converted disk #{raw_disk}"
-
-        cmd = "sesparse #{snapshot_vmdk} #{raw_vmdk}"
-        _o, _e, s = execute_command(cmd)
-        s
-    end
-
     # Create and run the virt-v2v conversion
     # This uses virt-v2v to connect to vCenter/ESXi, create an overlay on the remote disk,
     #   and convert it before using qemu-img convert over nbdkit connection.  Outputs a
@@ -1592,17 +1577,19 @@ _EOF_"
         end
     end
 
-    # TODO: Only 1 disk VMs
+    # Passworldess root access to ESXi host IP required
     def run_delta_conversion
-        esxi_client = Client.new(get_vm_esxi, @logger)
+        client = ESXi::Client.new(get_esxi_host, @logger)
 
         vm_name = @options[:name]
-        vm = esxi_client.get_vm_by_name(vm_name)
-        vm_id = vm[:vmid]
+        vm = client.get_vm_by_name(vm_name)
 
-        esxi_client.snapshot_vm(vm_id)
+        conversion_dir = vm.live2kvm(@options[:work_dir])
 
-        build_v2v_in_place(disks_on_file)
+        raise 'Failed to perform delta migration' unless conversion_dir
+
+        disks_on_file = Dir.children(conversion_dir).map {|disk| File.join(conversion_dir, disk) }
+
         create_one_images(disks_on_file)
     end
 
@@ -1630,19 +1617,16 @@ _EOF_"
     #
     # @return [String] ESXi hostname
     #
-    def get_vm_esxi
+    def get_esxi_host
         key = 'runtime.host'
         if !@props.key?(key)
             @logger.error("Missing key #{key} on VM properties")
-            return
+            return false
         end
 
         host_obj = @props[key]
-
-        host = host_obj._connection.searchIndex.FindByUuid(:uuid => host_obj._ref,
-                                                           :vmSearch => false)
-
-        host.name
+        host_obj.name
+        # ip = host_obj.config.network.vnic.map { |vnic| vnic.spec.ip.ipAddress }
     end
 
     def handle_v2v_error(line)
