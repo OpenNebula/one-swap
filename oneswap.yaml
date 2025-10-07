@@ -35,7 +35,7 @@
 #:datastore: 1                            # ID of the OpenNebula Image datastore
 
 # virt-v2v Options
-#:work_dir: '/tmp'                        # Directory where disk conversion takes place, will make subdir for each VM
+#:work_dir: '/var/tmp'                        # Directory where disk conversion takes place, will make subdir for each VM
 #:format: 'qcow2'                         # Disk format [ qcow2 | raw ]
 #:vddk_path:                              # Path to VDDK library
 #:qemu_ga_win:                            # Path to QEMU Guest Agent ISO for Windows
