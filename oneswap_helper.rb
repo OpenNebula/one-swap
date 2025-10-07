@@ -17,6 +17,7 @@
 require 'one_helper'
 require 'logger'
 require_relative 'vsphere_client'
+require_relative 'esxi_vm'
 
 class String
 
@@ -385,7 +386,12 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         rc = user.info
         return unless rc.class == OpenNebula::Error
 
-        raise 'Failed to get User info, indicating authentication failed'
+        STDERR.puts rc.message
+
+        user_info = 'Setup the OpenNebula client configuration accordingly'
+        user_info << ' https://docs.opennebula.io/7.0/product/operation_references/configuration_references/cli/#shell-environment'
+
+        raise user_info
     end
 
     def cleanup_passwords
@@ -1571,6 +1577,22 @@ _EOF_"
         end
     end
 
+    # Passworldess root access to ESXi host IP required
+    def run_delta_conversion
+        client = ESXi::Client.new(get_esxi_host, @logger)
+
+        vm_name = @options[:name]
+        vm = client.get_vm_by_name(vm_name)
+
+        conversion_dir = vm.live2kvm(@options[:work_dir])
+
+        raise 'Failed to perform delta migration' unless conversion_dir
+
+        disks_on_file = Dir.children(conversion_dir).map {|disk| File.join(conversion_dir, disk) }
+
+        create_one_images(disks_on_file)
+    end
+
     # Create and run the qemu-img vmdk conversion
     # This uses qemu-img to convert an vmdk image to desired format (Default: qcow2).
     # Outputs a converted image location if success
@@ -1588,6 +1610,23 @@ _EOF_"
 
         puts "Disk converted successfully in #{duration} seconds."
         return output_path
+    end
+
+    #
+    # Return the ESXi hostname where the VM is placed based
+    #
+    # @return [String] ESXi hostname
+    #
+    def get_esxi_host
+        key = 'runtime.host'
+        if !@props.key?(key)
+            @logger.error("Missing key #{key} on VM properties")
+            return false
+        end
+
+        host_obj = @props[key]
+        host_obj.name
+        # ip = host_obj.config.network.vnic.map { |vnic| vnic.spec.ip.ipAddress }
     end
 
     def handle_v2v_error(line)
@@ -2405,13 +2444,16 @@ _EOF_"
             end
         end
 
-        # Some basic preliminary checks
-        if @props['summary.runtime.powerState'] != 'poweredOff'
-            raise "Virtual Machine #{@options[:name]} is not Powered Off.".red
+        if !@options[:delta]
+            # Some basic preliminary checks
+            if @props['summary.runtime.powerState'] != 'poweredOff'
+                raise "Virtual Machine #{@options[:name]} is not Powered Off.".red
+            end
+            if !@props['snapshot'].nil?
+                raise "Virtual Machine #{@options[:name]} cannot have existing snapshots.".red
+            end
         end
-        if !@props['snapshot'].nil?
-            raise "Virtual Machine #{@options[:name]} cannot have existing snapshots.".red
-        end
+
         if @props['config'][:guestFullName].include?('Windows') && @options[:custom_convert]
             raise "Windows is not supported in OpenNebula's Custom Conversion process".red
         end
@@ -2427,7 +2469,13 @@ _EOF_"
 
         vm_template = create_vm_template
 
-        img_ids = @options[:custom_convert] ? run_custom_conversion : run_v2v_conversion
+        if @options[:custom_convert]
+            run_custom_conversion
+        elsif @options[:delta]
+            run_delta_conversion
+        else
+            run_v2v_conversion
+        end
 
         puts img_ids.nil? ? "No Images ID's reported being created".red : "Created images: #{img_ids}".green
 
@@ -2523,6 +2571,21 @@ _EOF_"
 
         update_str = "<ROOT><LABELS>#{labels.to_json.to_json}</LABELS></ROOT>"
         user.update(update_str, true)
+    end
+
+    private
+
+    def execute_command(cmd)
+        @logger.info "Running command #{cmd}"
+
+        o, e, s = Open3.capture3(cmd)
+
+        if !s.success?
+            @logger.info "Failed to run command\n#{o}"
+            @logger.error e
+        end
+
+        [o, e, s.success?]
     end
 
 end

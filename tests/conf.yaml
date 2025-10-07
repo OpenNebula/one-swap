@@ -1,0 +1,7 @@
+:vm: alma9-clone
+:esxi_host: esxi.iguane
+:vmx: alma9-clone.vmx
+:work_dir: /var/tmp
+:log:
+  :output: $stdout
+  :level: DEBUG

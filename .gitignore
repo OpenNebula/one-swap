@@ -5,3 +5,6 @@
 .DS_Store
 
 vendor/exe
+.rubocop.yml
+# ignore sesparse binary build
+sesparse
