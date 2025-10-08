@@ -103,9 +103,6 @@ SCRIPTS_FILES="scripts/*"
 # INSTALL.SH SCRIPT
 #-----------------------------------------------------------------------------
 
-# Build sesparse binary for delta transfer feature
-git submodule init && gcc -w -std=c99 -o sesparse any2kvm/sesparse.c
-
 if [ "$MANPAGE" = "yes" ]; then
     # base document
     echo "# oneswap(1) -- OpenNebula OneSwap Tool" > oneswap.1.ronn
