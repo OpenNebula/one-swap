@@ -1366,15 +1366,23 @@ _EOF_"
         #   -of [qcow2|raw]
         dc, cluster, host = nil
         pobj = @props['runtime.host']
+
         while dc.nil? || cluster.nil? || host.nil?
             host    = pobj  if pobj.class == RbVmomi::VIM::HostSystem
             cluster = pobj  if pobj.class == RbVmomi::VIM::ClusterComputeResource
             cluster = false if pobj.class == RbVmomi::VIM::ComputeResource
             dc      = pobj  if pobj.class == RbVmomi::VIM::Datacenter
-            pobj = pobj[:parent]
-            if pobj.nil?
-                raise 'Unable to find Host, Cluster, and Datacenter of VM'
+
+            begin
+                pobj = pobj[:parent]
+            rescue StandardError => e
+                puts e.message
+                @logger.error(e.message)
+                raise err_msg
             end
+
+            err_msg = 'Unable to find Host, Cluster, and Datacenter of VM'
+            raise err_msg if pobj.nil?
         end
 
         if cluster == false
@@ -1942,6 +1950,11 @@ _EOF_"
             'key'
         ]
         distributed_networks = get_objects(vi_client, 'DistributedVirtualPortgroup', properties)
+
+        if distributed_networks.empty?
+            @logger.warn 'Could not find DistributedVirtualPortgroup objects in vCenter.'
+            return [], {}
+        end
 
         network_types = [
             RbVmomi::VIM::VirtualVmxnet,
