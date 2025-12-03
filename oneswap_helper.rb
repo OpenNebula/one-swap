@@ -1971,7 +1971,7 @@ _EOF_"
                 ds_network = distributed_networks.find do |dn|
                     dn.to_hash['key'] == n[:backing][:port][:portgroupKey]
                 end
-                [n[:key], ds_network.to_hash['name']]
+                [n[:key], ds_network ? ds_network.to_hash['name'] : nil]
             else
                 [n[:key], n[:backing][:network][:name]]
             end
@@ -2482,13 +2482,13 @@ _EOF_"
 
         vm_template = create_vm_template
 
-        if @options[:custom_convert]
-            run_custom_conversion
-        elsif @options[:delta]
-            run_delta_conversion
-        else
-            run_v2v_conversion
-        end
+        img_ids = if @options[:custom_convert]
+                      run_custom_conversion
+                  elsif @options[:delta]
+                      run_delta_conversion
+                  else
+                      run_v2v_conversion
+                  end
 
         puts img_ids.nil? ? "No Images ID's reported being created".red : "Created images: #{img_ids}".green
 
