@@ -1766,6 +1766,7 @@ _EOF_"
         puts 'Creating Images in OpenNebula'
         img_ids = []
         persistent_image = @options[:persistent_img] ? 'YES' : 'NO'
+        t0 = Time.now
 
         # Normalize datastore input to an array of integers
         datastores = @options[:datastore].to_s.split(',').map(&:strip).map(&:to_i)
@@ -1845,12 +1846,15 @@ _EOF_"
             img_ids.append({ :id => img.id, :os => os_name })
         end
 
+        puts "Allocated images in OpenNebula in (#{(Time.now - t0).round(2)}s)".green
+
         img_ids
     end
 
     def hybrid_downloader(vc_disks)
         local_disks = []
         puts 'Downloading disks from vCenter storage to local disk'
+        t0 = Time.now
         vc_disks.each_with_index do |d, i|
             # download each disk to the work dir
             remote_file = d[:backing][:fileName].sub(/^\[.+?\] /, '')
@@ -1868,6 +1872,8 @@ _EOF_"
         if local_disks.empty?
             raise 'Unable to download any disks from vCenter storage.'.red
         end
+
+        puts "Downloaded disks from vCenter storage to local disk in (#{(Time.now - t0).round(2)}s)".green
 
         local_disks
     end
