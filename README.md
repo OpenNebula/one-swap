@@ -2,15 +2,18 @@
 
 # OneSwap
 
-OneSwap is a command-line tool designed to simplify migrating Virtual Machines from vCenter to OpenNebula. It supports `virt-v2v` and `qemu-img` conversion and is able to import Open Virtual Appliances (OVAs) previously exported from vCenter/ESXi environments.
+OneSwap is a command-line tool designed to simplify converting Virtual Machines from vCenter to OpenNebula. It supports `virt-v2v` and `qemu-img` conversion and is able to import Open Virtual Appliances (OVAs) previously exported from vCenter/ESXi environments.
 
 OneSwap has been used in the field with a 96% success rate in converting VMs automatically, greatly simplifying and speeding up the migration process.
 
-The full documentation is available in the [OneSwap Wiki](https://github.com/OpenNebula/one-swap/wiki). For guides on importing OVAs and VMDKs, see [Managing OVAs and VMDKs](https://docs.opennebula.io/7.0/software/migration_from_vmware/import_ova/) in the [OpenNebula documentation](https://docs.opennebula.io/7.0/).
+The full documentation is available in the in the [OpenNebula documentation](https://docs.opennebula.io/stable/):
+
+  - For guide on converting Virtual Machines from vCenter to OpenNebula, see [Migrating VMs with OneSwap](https://docs.opennebula.io/stable/software/migration_from_vmware/oneswap/)
+  - For guides on importing OVAs and VMDKs, see [Managing OVAs and VMDKs](https://docs.opennebula.io/stable/software/migration_from_vmware/import_ova/)
 
 ## Contributing
 
-* [Development and issue tracking](https://github.com/OpenNebula/one-swap/issues).
+* [Development and issue tracking](https://github.com/OpenNebula/one/issues?q=sort%3Aupdated-desc%20is%3Aissue%20is%3Aopen%20label%3A%22Category%3A%20OneSwap%22).
 
 ## Contact Information
 
