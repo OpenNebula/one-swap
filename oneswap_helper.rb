@@ -15,6 +15,7 @@
 #--------------------------------------------------------------------------- #
 
 require 'one_helper'
+require 'opennebula'
 require 'logger'
 require_relative 'vsphere_client'
 require_relative 'esxi_vm'
@@ -1782,7 +1783,7 @@ _EOF_"
                     os_name = guest_info['name']
                 end
             rescue Exception => e
-                if osinfo['name'] == 'windows'
+                if guest_info['name'] == 'windows'
                     puts 'Error with package injection. Conversion failed. Check that you have virtio and context packages in place.'.red
                     exit(-1)
                 else
