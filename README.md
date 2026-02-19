@@ -13,7 +13,7 @@ The full documentation is available in the in the [OpenNebula documentation](htt
 
 ## vCenter Permissions Requirements
 
-OneSwap requires specific vCenter permissions depending on the conversion mode used. Below are the required privileges for vCenter 8.x (for vCenter 7.x, see the [full documentation](.github/copilot-instructions.md#vcenter-permissions-required)).
+OneSwap requires specific vCenter permissions depending on the conversion mode used. Below are the required privileges for vCenter 8.
 
 ### Minimum Permissions (All Conversion Modes)
 
