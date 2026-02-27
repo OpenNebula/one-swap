@@ -1020,6 +1020,33 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         end
     end
 
+    def inject_dns_resolv_conf
+        val = @options[:inject_dns].to_s.strip
+        if val == 'host'
+            unless File.exist?('/etc/resolv.conf')
+                puts 'Warning: --inject-dns host specified but /etc/resolv.conf not found on host, skipping.'.brown
+                return nil
+            end
+            real_path = File.realpath('/etc/resolv.conf')
+            tmp_resolv = "#{@options[:work_dir]}/resolv.conf"
+            File.open(real_path, 'rb') do |src|
+                File.open(tmp_resolv, 'wb') {|dst| IO.copy_stream(src, dst) }
+            end
+            puts "Injecting host resolv.conf (from #{real_path}) into guest...".green
+            return tmp_resolv
+        else
+            ips = val.split(',').map(&:strip).reject(&:empty?)
+            if ips.empty?
+                puts 'Warning: --inject-dns value is not valid, skipping DNS injection.'.brown
+                return nil
+            end
+            tmp_resolv = "#{@options[:work_dir]}/resolv.conf"
+            File.write(tmp_resolv, ips.map {|ip| "nameserver #{ip}" }.join("\n") + "\n")
+            puts "Injecting custom resolv.conf (#{ips.join(', ')}) into guest for DNS resolution...".green
+            return tmp_resolv
+        end
+    end
+
     def context_command(disk, osinfo)
         base_cmd = "virt-customize -q -a #{disk}"
         cmd = nil
@@ -1036,6 +1063,13 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                   " --copy-in #{context_fullpath}:/Temp"\
                   " --firstboot-command 'msiexec -i c:\\Temp\\#{context_basename} /quiet && del c:\\Temp\\#{context_basename}'"
             return cmd, nil
+        end
+
+        if @options[:inject_dns]
+            resolv_src = inject_dns_resolv_conf
+            if resolv_src
+                base_cmd += " --copy-in #{resolv_src}:/etc/"
+            end
         end
 
         # os gives versions, so check that instead of distro
@@ -2416,6 +2450,11 @@ _EOF_"
     # @param options [Hash] User CLI Options
     #
     def import_image
+        if @options[:inject_dns]
+            raise 'virt-customize not found. Please install it: apt install libguestfs-tools / dnf install guestfs-tools'.red \
+                unless system('which virt-customize > /dev/null 2>&1')
+        end
+
         # Convert VMDK to QCOW2 compatible
         print 'Converting the Image => '
         img_loc = convert_vmdk(@options[:vmdk])
@@ -2431,6 +2470,11 @@ _EOF_"
     #
     # @param options [Hash] User CLI Options
     def convert_vm
+        if @options[:inject_dns]
+            raise 'virt-customize not found. Please install it: apt install libguestfs-tools / dnf install guestfs-tools'.red \
+                unless system('which virt-customize > /dev/null 2>&1')
+        end
+
         con_ops = connection_options('vm', @options)
         vi_client = RbVmomi::VIM.connect(con_ops)
         properties = [
