@@ -313,6 +313,15 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'Skips the injection of the context package'
     }
 
+    INJECT_DNS = {
+        :name => 'inject_dns',
+        :large => '--inject-dns host|ip',
+        :description => "Pass 'host' to copy the host's /etc/resolv.conf "\
+                        "or pass one or more comma-separated DNS server IPs (e.g. 8.8.8.8 or 8.8.8.8,1.1.1.1) "\
+                        "to generate a custom resolv.conf.",
+        :format => String
+    }
+
     ESXI = {
         :name => 'esxi_ip',
         :large => '--esxi ip',
@@ -519,9 +528,9 @@ CommandParser::CmdParser.new(ARGV) do
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DELTA, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                     CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                     PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
-                    SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
+                    SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH, INJECT_DNS] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
     IMPORT_OPTS = [OVA, VMDK, DATASTORE, NETWORK, SKIP_CONTEXT, REMOVE_VMTOOLS, UEFI_PATH,
-                   UEFI_SEC_PATH] + V2V_OPTS
+                   UEFI_SEC_PATH, INJECT_DNS] + V2V_OPTS
 
     ############################################################################
     # list resources
