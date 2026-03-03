@@ -17,8 +17,12 @@
 require 'one_helper'
 require 'opennebula'
 require 'logger'
+require 'fileutils'
+require 'shellwords'
+require 'tmpdir'
 require_relative 'vsphere_client'
 require_relative 'esxi_vm'
+require_relative 'windows_tuner'
 
 class String
 
@@ -125,6 +129,7 @@ end
 # Module OneVcenterHelper
 ##############################################################################
 class OneSwapHelper < OpenNebulaHelper::OneHelper
+    include WindowsTuner
 
     ONE_LOGS = '/var/log/one'
     LOG = "#{ONE_LOGS}/oneswap.log"
@@ -511,29 +516,6 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         destroy_task.wait_for_completion
         puts "Virtual machine '#{vm_name}' deleted successfully."
         return true
-    end
-
-    def tune_windows_tmpl(template)
-        vm_template = template
-        # Add USB tablet input device
-        input_hash = { 'BUS' => 'usb', 'TYPE' => 'tablet' }
-        vm_template.add_element('//VMTEMPLATE', { 'INPUT' => input_hash })
-
-        # Configure video settings
-        video_hash = { 'RESOLUTION' => '1440x900', 'TYPE' => 'virtio', 'VRAM' => '16384' }
-        vm_template.add_element('//VMTEMPLATE', { 'VIDEO' => video_hash })
-
-        # Configure features for Windows VM (Hyper-V and local time)
-        features_hash = { 'HYPERV' => 'YES', 'LOCALTIME' => 'YES' }
-        if vm_template.element_xml('FEATURES').nil? || vm_template.element_xml('FEATURES').empty?
-            puts 'Create features element and add hyperv'
-            vm_template.add_element('//VMTEMPLATE', { 'FEATURES' => features_hash })
-        else
-            puts 'Add hyperv to features element'
-            vm_template.add_element('//VMTEMPLATE/FEATURES', features_hash)
-        end
-
-        return vm_template
     end
 
     def create_vm_template_from_ova
@@ -1252,12 +1234,54 @@ _EOF_"
         cmd
     end
 
+    # Resolve the MSI path from --win-qemu-ga option
+    # Allowed formats are:
+    #   - /path/to/qemu-ga-x86_64.msi         direct MSI file
+    #   - /path/to/mounted-virtio-win/        directory already mounted
+    #   - /path/to/virtio-win.iso             ISO file (mounted temporarily)
+     def resolve_qemu_ga_msi(path)
+        if path.end_with?('.msi') && File.exist?(path)
+            path
+        elsif File.directory?(path)
+            candidate = File.join(path, 'guest-agent', 'qemu-ga-x86_64.msi')
+            unless File.exist?(candidate)
+                raise "Could not find guest-agent/qemu-ga-x86_64.msi under '#{path}'."
+            end
+            candidate
+        elsif path.end_with?('.iso') && File.exist?(path)
+            mnt = Dir.mktmpdir('oneswap-iso-')
+            begin
+                _out, err, st = Open3.capture3("mount -o loop,ro #{Shellwords.escape(path)} #{Shellwords.escape(mnt)}")
+                raise "Failed to mount ISO '#{path}': #{err.strip}" unless st.success?
+
+                candidate = File.join(mnt, 'guest-agent', 'qemu-ga-x86_64.msi')
+                unless File.exist?(candidate)
+                    raise "Could not find guest-agent/qemu-ga-x86_64.msi in ISO '#{path}'."
+                end
+
+                dest = File.join(@options[:work_dir] || Dir.tmpdir, 'qemu-ga-x86_64.msi')
+                FileUtils.cp(candidate, dest)
+                dest
+            ensure
+                system("umount #{Shellwords.escape(mnt)} 2>/dev/null")
+                Dir.rmdir(mnt) rescue nil
+            end
+        else
+            raise "Could not find qemu-ga-x86_64.msi from '#{path}'. " \
+                  'Pass the path to the .msi file, the mounted virtio-win directory or the virtio-win.iso file.'
+        end
+    end
+
     def qemu_ga_command(disk)
-        cmd = 'virt-customize'\
-              " -a #{disk}"\
-              " --inject-qemu-ga #{@options[:virtio_path]}"
-        puts 'qemu_ga_command cmd: ' + cmd
-        cmd
+        msi = resolve_qemu_ga_msi(@options[:qemu_ga_win].to_s)
+        msi_filename = File.basename(msi)
+        # Copy MSI into the guest and install it silently on first boot then delete it.
+        'virt-customize'\
+        " -a #{disk}"\
+        ' --mkdir /Temp'\
+        " --copy-in #{Shellwords.escape(msi)}:/Temp"\
+        " --firstboot-command " \
+        "'msiexec /i c:\\Temp\\#{msi_filename} /quiet /norestart && del c:\\Temp\\#{msi_filename}'"
     end
 
     def pkg_install_command(disk, pkg)
@@ -2429,7 +2453,7 @@ _EOF_"
 
         # Optimize template for Windows VMs
         if img_ids[0][:os] == 'windows'
-            vm_template = tune_windows_tmpl(vm_template)
+            vm_template = tune_windows_tmpl(vm_template, @options)
         end
 
         print 'Allocating the VM template...'
@@ -2569,7 +2593,7 @@ _EOF_"
         vm_template = add_one_nics(vm_template, vc_nics, vc_nic_backing)
 
         if img_ids[0][:os] == 'windows'
-            vm_template = tune_windows_tmpl(vm_template)
+            vm_template = tune_windows_tmpl(vm_template, @options)
         end
 
         new_vsphere_client
