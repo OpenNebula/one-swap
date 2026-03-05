@@ -99,6 +99,27 @@ ONE_CLI_LIB_FILES="oneswap_helper.rb vsphere_client.rb esxi_client.rb esxi_vm.rb
 CONF_FILES="oneswap.yaml"
 SCRIPTS_FILES="scripts/*"
 
+#-------------------------------------------------------------------------------
+# Dependency checks
+#-------------------------------------------------------------------------------
+check_dep() {
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "ERROR: '$1' not found. Install it before running oneswap." >&2
+        exit 1
+    fi
+}
+
+check_dep virt-v2v
+check_dep virt-customize
+check_dep qemu-img
+
+# OVMF firmware check
+if [ ! -d /usr/share/OVMF ] && [ ! -d /usr/share/edk2/ovmf ]; then
+    echo "WARNING: OVMF firmware not found (/usr/share/OVMF or /usr/share/edk2/ovmf)." >&2
+    echo "         Install 'ovmf' (Debian/Ubuntu) or 'edk2-ovmf' (RHEL/AlmaLinux/Rocky)" >&2
+    echo "         to support migration of UEFI guests." >&2
+fi
+
 #-----------------------------------------------------------------------------
 # INSTALL.SH SCRIPT
 #-----------------------------------------------------------------------------
