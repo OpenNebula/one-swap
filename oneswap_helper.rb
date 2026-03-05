@@ -182,8 +182,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     TABLE = {
         VOBJECT::VM => {
             :struct  => ['VM_LIST', 'VM'],
-            :columns => { :IMID => 8, :NAME => 20, :STATE => 10, :HOST => 10, :CPU => 3, :MEM => 7,
-:REF => 35 },
+            :columns => { :IMID => 8, :NAME => 20, :STATE => 10, :HOST => 20, :CPU => 3, :MEM => 7,
+:DISKS => 40, :REF => 35 },
             :cli     => [],
             :dialogue => ->(arg) {}
         },
@@ -380,6 +380,11 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             column :MEM, 'MEM', :left, :expand,
                    :size=>config[:MEM] || 7 do |d|
                 d[:mem]
+            end
+
+            column :DISKS, 'DISKS', :left, :expand,
+                   :size=>config[:DISKS] || 20 do |d|
+                d[:disks]
             end
 
             default(*config.keys)
@@ -2328,6 +2333,7 @@ _EOF_"
             'runtime.host',
             'config.hardware.numCPU',
             'config.hardware.memoryMB',
+            'config.hardware.device',
             'config.memoryHotAddEnabled',
             'config.cpuHotAddEnabled'
         ]
@@ -2371,7 +2377,15 @@ _EOF_"
             v[:host]  = props['runtime.host']
             v[:ref]   = props['config.uuid']
             v[:cpu]   = props['config.hardware.numCPU']
-            v[:mem]   = props['config.hardware.memoryMB']
+            mem_mb = props['config.hardware.memoryMB'].to_i
+            mem_gb = mem_mb / 1024.0
+            v[:mem]   = mem_gb == mem_gb.floor ? "#{mem_gb.to_i}G" : "#{mem_gb.round(1)}G"
+            disks = Array(props['config.hardware.device'])
+                        .select { |d| d.is_a?(RbVmomi::VIM::VirtualDisk) }
+            v[:disks] = disks.map { |d|
+                gb = d.capacityInKB.to_f / (1024 * 1024)
+                gb == gb.floor ? "#{gb.to_i}G" : "#{gb.round(1)}G"
+            }.join(',')
             list << v
         end
         format_list.show(list, options)
