@@ -12,11 +12,11 @@ class GroupedReporter < Minitest::AbstractReporter
         'RAW'        => /raw/,
         'FEATURES'   => /features/,
         'CPU_MODEL'  => /cpu_model/,
-        'OS / ARCH'  => /arch|_os_/,
+        'OS'         => /arch|machine|sd_disk|_os_/,
         'CONTEXT'    => /context|report_ready|token/
     }.freeze
 
-    DISPLAY_ORDER = %w[INPUT VIDEO FEATURES CPU_MODEL OS\ /\ ARCH CONTEXT RAW].freeze
+    DISPLAY_ORDER = %w[INPUT VIDEO FEATURES CPU_MODEL OS CONTEXT RAW].freeze
 
     GREEN = "\e[32m"
     RED   = "\e[31m"
@@ -224,7 +224,7 @@ class TuneWindowsTmplTest < Minitest::Test
         assert_equal 1, t.xpath_count('CPU_MODEL')
     end
 
-    # --- OS / ARCH ---
+    # --- OS  ---
 
     def test_sets_arch_x86_64_when_os_absent
         assert_equal 'x86_64', empty_template.xpath_text('OS/ARCH')
@@ -236,6 +236,28 @@ class TuneWindowsTmplTest < Minitest::Test
         assert_equal 'x86_64', t.xpath_text('OS/ARCH')
         refute_empty t.xpath_text('OS/FIRMWARE')
         assert_equal 1, t.xpath_count('OS')
+    end
+
+    def test_sets_machine_q35_when_os_absent
+        assert_equal 'q35', empty_template.xpath_text('OS/MACHINE')
+    end
+
+    def test_does_not_overwrite_existing_machine_type
+        stub = TemplateStub.new('<OS><MACHINE>pc</MACHINE></OS>')
+        t = tune_windows_tmpl(stub)
+        assert_equal 'pc', t.xpath_text('OS/MACHINE')
+        assert_equal 1, t.xpath_count('OS/MACHINE')
+    end
+
+    def test_sets_sd_disk_bus_scsi_when_os_absent
+        assert_equal 'scsi', empty_template.xpath_text('OS/SD_DISK_BUS')
+    end
+
+    def test_does_not_overwrite_existing_sd_disk_bus
+        stub = TemplateStub.new('<OS><SD_DISK_BUS>virtio</SD_DISK_BUS></OS>')
+        t = tune_windows_tmpl(stub)
+        assert_equal 'virtio', t.xpath_text('OS/SD_DISK_BUS')
+        assert_equal 1, t.xpath_count('OS/SD_DISK_BUS')
     end
 
     # --- CONTEXT: REPORT_READY / TOKEN ---
