@@ -11,6 +11,20 @@ The full documentation is available in the in the [OpenNebula documentation](htt
   - For guide on converting Virtual Machines from vCenter to OpenNebula, see [Migrating VMs with OneSwap](https://docs.opennebula.io/stable/software/migration_from_vmware/oneswap/)
   - For guides on importing OVAs and VMDKs, see [Managing OVAs and VMDKs](https://docs.opennebula.io/stable/software/migration_from_vmware/import_ova/)
 
+## System Requirements
+
+The following packages must be installed on the conversion host:
+
+| Package | Required for |
+|---------|-------------|
+| `virt-v2v` | All standard conversion modes |
+| `guestfs-tools` | Context injection, `--virtio`, `--win-qemu-ga` (requires ≥ 1.49.9 for those options) |
+| `qemu-img` | All conversion modes |
+| `ovmf` | Migrating UEFI guests (provides OVMF firmware for x86-64); without it `virt-v2v` will fail with *"cannot find firmware for UEFI guests"* |
+| `guestfish` / `virt-inspector` | Windows context injection and disk inspection |
+
+When installing OneSwap via the provided packages all dependencies are installed automatically. If deploying from source, the dependencies listed in the table above must be installed manually using the system package manager.
+
 ## vCenter Permissions Requirements
 
 OneSwap requires specific vCenter permissions depending on the conversion mode used. Below are the required privileges for vCenter 8.
