@@ -18,22 +18,12 @@ The following packages must be installed on the conversion host:
 | Package | Required for |
 |---------|-------------|
 | `virt-v2v` | All standard conversion modes |
-| `virt-customize` | Context injection, `--virtio`, `--win-qemu-ga` (requires ≥ 1.49.9 for those options) |
+| `guestfs-tools` | Context injection, `--virtio`, `--win-qemu-ga` (requires ≥ 1.49.9 for those options) |
 | `qemu-img` | All conversion modes |
 | `ovmf` | Migrating UEFI guests (provides OVMF firmware for x86-64); without it `virt-v2v` will fail with *"cannot find firmware for UEFI guests"* |
 | `guestfish` / `virt-inspector` | Windows context injection and disk inspection |
 
-On RPM-based systems (RHEL/AlmaLinux/Rocky):
-
-```bash
-dnf install virt-v2v guestfs-tools qemu-img edk2-ovmf
-```
-
-On Debian/Ubuntu:
-
-```bash
-apt-get install virt-v2v libguestfs-tools qemu-utils ovmf
-```
+When installing OneSwap via the provided packages all dependencies are installed automatically. If deploying from source, the dependencies listed in the table above must be installed manually using the system package manager.
 
 ## vCenter Permissions Requirements
 
