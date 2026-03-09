@@ -50,6 +50,16 @@ module WindowsTuner
             vm_template.add_element('//VMTEMPLATE/OS', { 'ARCH' => 'x86_64' })
         end
 
+        # Set q35 machine type
+        if vm_template.element_xml('OS/MACHINE').nil? || vm_template.element_xml('OS/MACHINE').empty?
+            vm_template.add_element('//VMTEMPLATE/OS', { 'MACHINE' => 'q35' })
+        end
+
+        # Use the virtio-scsi controller for optical/CD-ROM
+        if vm_template.element_xml('OS/SD_DISK_BUS').nil? || vm_template.element_xml('OS/SD_DISK_BUS').empty?
+            vm_template.add_element('//VMTEMPLATE/OS', { 'SD_DISK_BUS' => 'scsi' })
+        end
+
         # Signal OpenNebula when one-context has finished initializing the VM.
         unless vm_template.element_xml('CONTEXT').nil? || vm_template.element_xml('CONTEXT').empty?
             vm_template.add_element('//VMTEMPLATE/CONTEXT', { 'REPORT_READY' => 'YES', 'TOKEN' => 'YES' })
