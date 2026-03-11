@@ -10,9 +10,10 @@ class VSphereClient
 
     attr_reader :vcenter
 
-    def initialize(vcenter, user, password, logger)
+    def initialize(vcenter, user, password, logger, accept_cert = false)
         @vcenter = vcenter
         @logger = logger
+        @accept_cert = accept_cert
 
         @session_id = open_session(vcenter, user, password)
     end
@@ -125,9 +126,10 @@ class VSphereClient
     end
 
     def https_request(uri, &block)
+        verify_mode = @accept_cert ? OpenSSL::SSL::VERIFY_NONE : OpenSSL::SSL::VERIFY_PEER
         response = Net::HTTP.start(uri.hostname, uri.port,
                                    :use_ssl => true,
-                                   :verify_mode => OpenSSL::SSL::VERIFY_NONE,
+                                   :verify_mode => verify_mode,
                                    &block)
 
         if response.code.to_i >= 400

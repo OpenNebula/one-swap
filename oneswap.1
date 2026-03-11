@@ -13,6 +13,9 @@
 .
 .nf
 
+ \-\-accept\-cert               Accept self\-signed or untrusted SSL
+                           certificates when connecting to vCenter over
+                           HTTPS\.
  \-\-clone                   Trigger a VM full clone and convert that clone
                            without requiring to poweroff the original VM
  \-c, \-\-cluster text        Filter by Cluster name containing text
@@ -171,7 +174,7 @@ Examples:
     You can also define \-\-fallback instead of \-\-custom, which will first attempt virt\-v2v style, then fallback to custom\.
 
     oneswap convert vm\-1234 $VOPTS \-\-custom
-valid options: clone, config_file, context, cpu, cpu_model, custom_convert, datastore, delete, dev_prefix, disable_contextualization, esxi_ip, esxi_pass, esxi_user, fallback, format, graphics_command, graphics_keymap, graphics_listen, graphics_password, graphics_port, graphics_type, http_host, http_port, http_transfer, hybrid, img_wait, memory_max, network, one_cluster, one_datastore, one_datastore_cluster, one_host, persistent_img, port, qemu_ga_linux, qemu_ga_win, remove_vmtools, root, skip_ip, skip_mac, skip_prechecks, uefi_path, uefi_sec_path, v2v_path, v2v_path, vcenter, vcpu, vcpu_max, vddk_path, virt_tools, virtio_path, vpass, vuser, work_dir
+valid options: accept_cert, clone, config_file, context, cpu, cpu_model, custom_convert, datastore, delete, dev_prefix, disable_contextualization, esxi_ip, esxi_pass, esxi_user, fallback, format, graphics_command, graphics_keymap, graphics_listen, graphics_password, graphics_port, graphics_type, http_host, http_port, http_transfer, hybrid, img_wait, memory_max, network, one_cluster, one_datastore, one_datastore_cluster, one_host, persistent_img, port, qemu_ga_linux, qemu_ga_win, remove_vmtools, root, skip_ip, skip_mac, skip_prechecks, uefi_path, uefi_sec_path, v2v_path, v2v_path, vcenter, vcpu, vcpu_max, vddk_path, virt_tools, virtio_path, vpass, vuser, work_dir
 .
 .fi
 .
@@ -223,7 +226,7 @@ Examples:
    \- listing available vms in a Datacenter and Cluster:
 
      oneswap list vms \-\-datacenter DCName \-\-cluster Cluster2
-valid options: cluster, datacenter, name, port, state, vcenter, vpass, vuser
+valid options: accept_cert, cluster, datacenter, name, port, state, vcenter, vpass, vuser
 .
 .fi
 .
