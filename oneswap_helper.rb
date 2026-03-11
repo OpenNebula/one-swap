@@ -260,7 +260,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             :password => password,
             :host     => options[:vcenter],
             :port     => options[:port],
-            :insecure => true
+            :insecure => options[:accept_cert] || false
         }
     end
 
@@ -1448,16 +1448,18 @@ _EOF_"
             raise err_msg if pobj.nil?
         end
 
+        no_verify = @options[:accept_cert] ? '?no_verify=1' : ''
+        enc = ->(s) { CGI.escape(s.to_s).gsub('+', '%20') }
         if cluster == false
             url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
-                  "/#{dc[:name]}/#{host[:name]}?no_verify=1"
+                  "/#{enc.(dc[:name])}/#{enc.(host[:name])}#{no_verify}"
         else
             url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
-                  "/#{dc[:name]}/#{cluster[:name]}/#{host[:name]}?no_verify=1"
+                  "/#{enc.(dc[:name])}/#{enc.(cluster[:name])}/#{enc.(host[:name])}#{no_verify}"
         end
 
         "#{@options[:v2v_path]} -v --machine-readable"\
-                  " -ic #{url}"\
+                  " -ic '#{url}'"\
                   " -ip #{@options[:work_dir]}/vpassfile"\
                   ' -o local'\
                   " -os #{@options[:work_dir]}/conversions/"\
@@ -1536,10 +1538,12 @@ _EOF_"
 
         puts "Certificate thumbprint: #{@options[:vddk_thumb]}"
 
+        no_verify = @options[:accept_cert] ? '?no_verify=1' : ''
+        enc = ->(s) { CGI.escape(s.to_s).gsub('+', '%20') }
         url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
-              "/#{dc[:name]}/#{cluster[:name]}/#{host[:name]}?no_verify=1"
+              "/#{enc.(dc[:name])}/#{enc.(cluster[:name])}/#{enc.(host[:name])}#{no_verify}"
         "#{@options[:v2v_path]} -v --machine-readable"\
-                  " -ic #{url}"\
+                  " -ic '#{url}'"\
                   " -ip #{@options[:work_dir]}/vpassfile"\
                   ' -it vddk'\
                   " -io vddk-libdir=#{@options[:vddk_path]}"\
@@ -1890,6 +1894,8 @@ _EOF_"
             if rc.class == OpenNebula::Error
                 puts 'Failed to create image. Image Definition:'.red
                 puts img.to_xml
+                puts "OpenNebula error: #{rc.message}".red
+                next
             end
 
             img_wait_sec = @options[:img_wait] || 120
@@ -2449,6 +2455,8 @@ _EOF_"
         img_ids = run_v2v_conversion
         puts img_ids.nil? ? "No Images ID's reported being created".red : "Created images: #{img_ids}".green
 
+        raise 'No images were allocated in OpenNebula. Aborting template creation.' if img_ids.nil? || img_ids.empty?
+
         # Create base template using XML from OVA conversion
         vm_template = create_vm_template_from_ova
 
@@ -2580,6 +2588,8 @@ _EOF_"
 
         puts img_ids.nil? ? "No Images ID's reported being created".red : "Created images: #{img_ids}".green
 
+        raise 'No images were allocated in OpenNebula. Aborting template creation.' if img_ids.nil? || img_ids.empty?
+
         img_ids.each do |i|
             img_hash = { 'IMAGE_ID' => "#{i[:id]}" }
             if @options[:dev_prefix]
@@ -2636,7 +2646,8 @@ _EOF_"
     end
 
     def new_vsphere_client
-        args = [@options[:vcenter], @options[:vuser], @options[:vpass], @logger]
+        args = [@options[:vcenter], @options[:vuser], @options[:vpass], @logger,
+                @options[:accept_cert] || false]
 
         @vsphere_client = VSphereClient.new(*args)
     end

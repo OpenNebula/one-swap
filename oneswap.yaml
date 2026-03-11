@@ -8,6 +8,7 @@
 #:vuser: 'administrator@vsphere.local'    # vCenter username
 #:vpass: 'changeme123'                    # vCenter password
 #:port: 443                               # vCenter port
+#:accept_cert: false                      # Accept SSL certificates for vCenter connections
 
 # ESXi Authentication
 #:esxi_ip: '172.20.0.123'                 # ESXi hostname or IP
