@@ -1428,8 +1428,18 @@ _EOF_"
         #   -o local
         #   -os /path/to/working/folder
         #   -of [qcow2|raw]
+        err_msg = 'Unable to find Host, Cluster, and Datacenter of VM'
         dc, cluster, host = nil
-        pobj = @props['runtime.host']
+
+        # Fetch the HostSystem directly via get_objects so the returned object has
+        # @vi_client properly embedded for lazy parent traversal (nested property
+        # objects from VirtualMachine.to_hash may not carry the connection).
+        host_ref = @props['runtime.host']._ref
+        hs_list = get_objects(@vi_client, 'HostSystem', ['name'])
+        hs_entry = hs_list.find {|h| h.obj._ref == host_ref }
+        raise err_msg unless hs_entry
+
+        pobj = hs_entry.obj
 
         while dc.nil? || cluster.nil? || host.nil?
             host    = pobj  if pobj.class == RbVmomi::VIM::HostSystem
@@ -1440,12 +1450,10 @@ _EOF_"
             begin
                 pobj = pobj[:parent]
             rescue StandardError => e
-                puts e.message
-                @logger.error(e.message)
+                @logger.error("Error traversing vCenter inventory: #{e.message}")
                 raise err_msg
             end
 
-            err_msg = 'Unable to find Host, Cluster, and Datacenter of VM'
             raise err_msg if pobj.nil?
         end
 
@@ -1511,16 +1519,27 @@ _EOF_"
         #   -o local
         #   -os /path/to/working/folder
         #   -of [qcow2|raw]
+        err_msg = 'Unable to find Host, Cluster, and Datacenter of VM'
         dc, cluster, host = nil
-        pobj = @props['runtime.host']
+
+        host_ref = @props['runtime.host']._ref
+        hs_list = get_objects(@vi_client, 'HostSystem', ['name'])
+        hs_entry = hs_list.find {|h| h.obj._ref == host_ref }
+        raise err_msg unless hs_entry
+
+        pobj = hs_entry.obj
         while dc.nil? || cluster.nil? || host.nil?
             host    = pobj if pobj.class == RbVmomi::VIM::HostSystem
             cluster = pobj if pobj.class == RbVmomi::VIM::ClusterComputeResource
+            cluster = false if pobj.class == RbVmomi::VIM::ComputeResource
             dc      = pobj if pobj.class == RbVmomi::VIM::Datacenter
-            pobj = pobj[:parent]
-            if pobj.nil?
-                raise 'Unable to find Host, Cluster, and Datacenter of VM'
+            begin
+                pobj = pobj[:parent]
+            rescue StandardError => e
+                @logger.error("Error traversing vCenter inventory: #{e.message}")
+                raise err_msg
             end
+            raise err_msg if pobj.nil?
         end
 
         tcp_client = TCPSocket.new(@options[:vcenter], 443)
@@ -1541,8 +1560,13 @@ _EOF_"
 
         no_verify = @options[:accept_cert] ? '?no_verify=1' : ''
         enc = ->(s) { CGI.escape(s.to_s).gsub('+', '%20') }
-        url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
-              "/#{enc.(dc[:name])}/#{enc.(cluster[:name])}/#{enc.(host[:name])}#{no_verify}"
+        if cluster == false
+            url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
+                  "/#{enc.(dc[:name])}/#{enc.(host[:name])}#{no_verify}"
+        else
+            url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
+                  "/#{enc.(dc[:name])}/#{enc.(cluster[:name])}/#{enc.(host[:name])}#{no_verify}"
+        end
         "#{@options[:v2v_path]} -v --machine-readable"\
                   " -ic '#{url}'"\
                   " -ip #{@options[:work_dir]}/vpassfile"\
@@ -2028,8 +2052,8 @@ _EOF_"
         distributed_networks = get_objects(vi_client, 'DistributedVirtualPortgroup', properties)
 
         if distributed_networks.empty?
-            @logger.warn 'Could not find DistributedVirtualPortgroup objects in vCenter.'
-            return [], {}
+            @logger.warn 'Could not find DistributedVirtualPortgroup objects in vCenter. '\
+                         'NICs backed by standard vSwitch will still be discovered.'
         end
 
         network_types = [
@@ -2089,7 +2113,16 @@ _EOF_"
                     puts "Skipping MAC address for NIC##{nic_number}"
                 end
 
-                if !netmap.has_key?(vc_nic_backing[n[:key]])
+                if netmap.has_key?(vc_nic_backing[n[:key]])
+                    # VCENTER_NETWORK_MATCH attribute in OpenNebula network maps this vCenter network
+                    net_templ['NIC']['NETWORK_ID'] = netmap[vc_nic_backing[n[:key]]]
+                    net_templ['NIC']['NETWORK'] = vc_nic_backing[n[:key]]
+                elsif @options[:network]
+                    # User explicitly specified --network as fallback; use it directly
+                    puts "No VCENTER_NETWORK_MATCH found for '#{vc_nic_backing[n[:key]]}'. Using assigned network: #{assigned_network}"
+                    net_templ['NIC']['NETWORK_ID'] = "#{assigned_network}"
+                else
+                    # No explicit fallback: try matching by OpenNebula network name
                     network_info_found = false
                     one_networks.each do |on_network|
                         network_info = on_network.to_hash
@@ -2101,8 +2134,7 @@ _EOF_"
                         break
                     end
                     unless network_info_found
-                        puts "Could not find OpenNebula network matching the provided name. Setting to assigned network: #{assigned_network}"
-                        net_templ['NIC']['NETWORK_ID'] = "#{assigned_network}"
+                        puts "Could not find OpenNebula network matching '#{vc_nic_backing[n[:key]]}'. NIC will be added without a network assignment.".brown
                     end
                 end
 
@@ -2233,6 +2265,8 @@ _EOF_"
         end
 
         ## Precheck OpenNebula Networks (check if exists)
+        return unless @options[:network]
+
         one_networks = OpenNebula::VirtualNetworkPool.new(@client)
         one_networks.info
         return if one_networks.any? {|n| n.id == @options[:network].to_i }
@@ -2522,7 +2556,7 @@ _EOF_"
         end
 
         con_ops = connection_options('vm', @options)
-        vi_client = RbVmomi::VIM.connect(con_ops)
+        @vi_client = RbVmomi::VIM.connect(con_ops)
         properties = [
             'config',
             'datastore',
@@ -2536,7 +2570,7 @@ _EOF_"
             'runtime.host'
         ]
 
-        vm_pool = get_objects(vi_client, 'VirtualMachine', properties)
+        vm_pool = get_objects(@vi_client, 'VirtualMachine', properties)
         vm = vm_pool.find {|r| r['name'] == @options[:name] }
         if vm.nil?
             raise "Unable to find Virtual Machine by name '#{@options[:name]}'"
@@ -2547,7 +2581,7 @@ _EOF_"
         # If clone option is set, clone the VM and override VM properties
         if @options[:clone]
             begin
-                cloned_vm = clone_vm(vi_client, properties, vm)
+                cloned_vm = clone_vm(@vi_client, properties, vm)
                 @props = cloned_vm.to_hash
             rescue RbVmomi::Fault => e
                 raise "Failed to clone VM #{@options[:name]}: #{e.message}"
