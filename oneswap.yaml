@@ -59,6 +59,10 @@
 #:one_datastore:                          # ID of the OpenNebula System Datastore
 #:one_datastore_cluster:                  # ID of the OpenNebula Cluster for automatic Datastore assignment
 
+# OpenNebula Ownership Options
+#:one_user:                               # Assign migrated objects to this OpenNebula user (name or numeric ID)
+#:one_group:                              # Assign migrated objects to this OpenNebula group (name or numeric ID)
+
 # Extra VM Options:
 #:dev_prefix:                             # Device prefix for the VM disks ex: sd, hd, vd
 #:cpu_model:                              # CPU model
