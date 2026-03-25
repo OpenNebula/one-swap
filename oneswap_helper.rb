@@ -1922,6 +1922,8 @@ _EOF_"
                 next
             end
 
+            chown_one_object(img, *resolve_one_ownership)
+
             img_wait_sec = @options[:img_wait] || 120
             puts 'Waiting for image to be ready. Timeout: ' + img_wait_sec.to_s + ' seconds.'
 
@@ -2518,6 +2520,7 @@ _EOF_"
         if rc.nil?
             puts 'Success'.green
             puts "VM Template ID: #{vm_template.id}\n"
+            chown_one_object(vm_template, *resolve_one_ownership)
         else
             puts 'Failed'.red
             puts "\nVM Template:\n#{vm_template.to_xml}\n"
@@ -2671,6 +2674,7 @@ _EOF_"
         if rc.nil?
             puts 'Success'.green
             puts "VM Template ID: #{vm_template.id}\n"
+            chown_one_object(vm_template, *resolve_one_ownership)
         else
             puts 'Failed'.red
             puts "\nVM Template:\n#{vm_template.to_xml}\n"
@@ -2720,6 +2724,84 @@ _EOF_"
     end
 
     private
+
+    # Resolves :one_user and :one_group options to OpenNebula numeric IDs.
+    # Accepts either a numeric string/integer (used directly) or a name
+    # (looked up via the UserPool / GroupPool). Returns [-1, -1] when neither
+    # option is set, which tells chown to leave the current owner unchanged.
+    # Result is memoised so pool lookups only happen once per invocation.
+    #
+    # @return [Array(Integer, Integer)] [uid, gid]
+    def resolve_one_ownership
+        @resolved_ownership ||= begin
+            uid = -1
+            gid = -1
+
+            if @options[:one_user]
+                val = @options[:one_user].to_s
+                if val =~ /^\d+$/
+                    uid = val.to_i
+                else
+                    pool = OpenNebula::UserPool.new(@client)
+                    rc   = pool.info_all
+                    if rc.class == OpenNebula::Error
+                        puts "Failed to fetch user pool: #{rc.message}".red
+                    else
+                        found = pool.find {|u| u['NAME'] == val }
+                        if found
+                            uid = found['ID'].to_i
+                        else
+                            puts "OpenNebula user '#{val}' not found, skipping user ownership assignment.".brown
+                        end
+                    end
+                end
+            end
+
+            if @options[:one_group]
+                val = @options[:one_group].to_s
+                if val =~ /^\d+$/
+                    gid = val.to_i
+                else
+                    pool = OpenNebula::GroupPool.new(@client)
+                    rc   = pool.info_all
+                    if rc.class == OpenNebula::Error
+                        puts "Failed to fetch group pool: #{rc.message}".red
+                    else
+                        found = pool.find {|g| g['NAME'] == val }
+                        if found
+                            gid = found['ID'].to_i
+                        else
+                            puts "OpenNebula group '#{val}' not found, skipping group ownership assignment.".brown
+                        end
+                    end
+                end
+            end
+
+            [uid, gid]
+        end
+    end
+
+    # Changes ownership of an OpenNebula object.
+    # Pass uid/gid as -1 to leave the corresponding value unchanged.
+    #
+    # @param obj [OpenNebula::Image, OpenNebula::Template] object to chown
+    # @param uid [Integer] target user ID  (-1 = keep current)
+    # @param gid [Integer] target group ID (-1 = keep current)
+    def chown_one_object(obj, uid, gid)
+        return if uid == -1 && gid == -1
+
+        rc = obj.chown(uid, gid)
+        obj_type = obj.class.name.split('::').last
+        if rc.class == OpenNebula::Error
+            puts "Failed to change ownership of #{obj_type} #{obj.id}: #{rc.message}".red
+        else
+            owner_str = uid != -1 ? "user #{@options[:one_user]}(#{uid})" : nil
+            group_str = gid != -1 ? "group #{@options[:one_group]}(#{gid})" : nil
+            label = [owner_str, group_str].compact.join(' and ')
+            puts "#{obj_type} #{obj.id} assigned to #{label}".green
+            @logger.info "Changed ownership of #{obj_type} #{obj.id} to uid #{uid} gid #{gid}"
+        end
+    end
 
     def execute_command(cmd)
         @logger.info "Running command #{cmd}"
