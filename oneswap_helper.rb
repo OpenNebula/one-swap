@@ -19,6 +19,7 @@ require 'opennebula'
 require 'logger'
 require 'fileutils'
 require 'shellwords'
+require 'tempfile'
 require 'tmpdir'
 require_relative 'vsphere_client'
 require_relative 'esxi_vm'
@@ -2188,7 +2189,171 @@ _EOF_"
         vm_template
     end
 
+    # Disable VMware Tools services in the offline Windows registry so they
+    # never start during the first boot (which trigger the error dialog
+    # before the firstboot cleanup script runs).
+    VMTOOLS_SERVICES_TO_DISABLE = %w[VMTools VGAuthService].freeze
+    VMTOOLS_CONTROL_SETS = %w[ControlSet001 ControlSet002].freeze
+
+    def windows_control_sets_for_disk(disk)
+        cmd = "virt-win-reg #{disk} 'HKLM\\SYSTEM\\Select'"
+        stdout, stderr, status = Open3.capture3(cmd)
+
+        unless status.success?
+            @logger.warn("Could not read HKLM\\SYSTEM\\Select, using fallback control sets: #{stderr.to_s.strip}")
+            return VMTOOLS_CONTROL_SETS
+        end
+
+        sets = stdout.each_line.filter_map do |line|
+            match = line.match(/^"(Current|Default|LastKnownGood)"=dword:([0-9a-fA-F]+)/)
+            next unless match
+
+            index = match[2].to_i(16)
+            next if index <= 0
+
+            format('ControlSet%03d', index)
+        end
+
+        sets = (sets + ['ControlSet001']).uniq
+        @logger.info("Detected control sets for offline service disable: #{sets.join(', ')}")
+        sets
+    end
+
+    def disable_vmtools_services_offline(disk)
+        puts 'Disabling VMware Tools services in offline registry...'
+        @logger.info('Attempting to disable VMware Tools services offline')
+
+        # Try virt-win-reg first
+        @logger.info('Trying virt-win-reg method...')
+        if disable_vmtools_via_virt_win_reg(disk)
+            @logger.info('Successfully disabled services via virt-win-reg')
+            puts 'VMware Tools services disabled (virt-win-reg)'.green
+            return
+        end
+
+        # Fall back to guestfish
+        @logger.info('virt-win-reg failed or not available, falling back to guestfish')
+        puts 'virt-win-reg failed, trying guestfish...'.brown
+        unless disable_vmtools_via_guestfish(disk)
+            @logger.warn('Both virt-win-reg and guestfish failed to disable services')
+            puts 'Warning: could not disable VMware Tools services offline. ' \
+                 'The error dialog may still appear on first boot.'.brown
+            return false
+        end
+        @logger.info('Successfully disabled services via guestfish')
+        puts 'VMware Tools services disabled (guestfish)'.green
+    end
+
+    def disable_vmtools_via_virt_win_reg(disk)
+        control_sets = windows_control_sets_for_disk(disk)
+        applied_sets = []
+
+        control_sets.each do |control_set|
+            reg_entries = VMTOOLS_SERVICES_TO_DISABLE.map do |svc|
+                "[HKEY_LOCAL_MACHINE\\SYSTEM\\#{control_set}\\Services\\#{svc}]\n" \
+                "\"Start\"=dword:00000004\n"
+            end.join("\n")
+
+            reg_content = "Windows Registry Editor Version 5.00\n\n#{reg_entries}"
+
+            Tempfile.create(['disable_vmtools', '.reg']) do |f|
+                f.write(reg_content)
+                f.flush
+
+                @logger.debug("Registry file content for #{control_set}:\n#{reg_content}")
+                @logger.info("Running virt-win-reg for #{control_set}: #{VMTOOLS_SERVICES_TO_DISABLE.join(', ')}")
+
+                cmd = "virt-win-reg --merge #{disk} #{Shellwords.escape(f.path)}"
+                @logger.debug("virt-win-reg command: #{cmd}")
+
+                stdout, stderr, status = Open3.capture3(cmd)
+
+                @logger.debug("virt-win-reg stdout (#{control_set}): #{stdout}")
+                @logger.debug("virt-win-reg stderr (#{control_set}): #{stderr}")
+                @logger.debug("virt-win-reg exit code (#{control_set}): #{status.exitstatus}")
+
+                if status.success?
+                    applied_sets << control_set
+                else
+                    error_msg = stderr.to_s.strip.empty? ? stdout.to_s.strip : stderr.to_s.strip
+                    @logger.warn("virt-win-reg failed for #{control_set} with exit code #{status.exitstatus}: #{error_msg}")
+                    puts "  virt-win-reg error for #{control_set} (exit #{status.exitstatus}): #{error_msg}".brown if error_msg
+                end
+            end
+        end
+
+        if applied_sets.empty?
+            false
+        else
+            @logger.info("VMware Tools services disabled via virt-win-reg for: #{applied_sets.join(', ')}")
+            true
+        end
+    end
+
+    def disable_vmtools_via_guestfish(disk)
+        @logger.info("Attempting to disable services via guestfish + hivexregedit")
+        control_sets = windows_control_sets_for_disk(disk)
+        
+        guestfish_script = <<-GUESTFISH
+add #{disk}
+run
+GUESTFISH
+
+        control_sets.product(VMTOOLS_SERVICES_TO_DISABLE).each do |control_set, svc|
+            guestfish_script += "download /Windows/System32/config/SYSTEM /tmp/SYSTEM_orig\n"
+            guestfish_script += "! hivexregedit --merge /tmp/SYSTEM_orig HKEY_LOCAL_MACHINE\\\\SYSTEM\\\\#{control_set}\\\\Services\\\\#{svc} Start dword 0x00000004\n"
+            guestfish_script += "upload /tmp/SYSTEM_orig /Windows/System32/config/SYSTEM\n"
+        end
+
+        @logger.debug("Guestfish script:\n#{guestfish_script}")
+
+        Tempfile.create(['disable_vmtools', '.gf']) do |f|
+            f.write(guestfish_script)
+            f.flush
+            
+            cmd = "guestfish -f #{Shellwords.escape(f.path)}"
+            @logger.info("Running guestfish + hivexregedit to disable services: #{VMTOOLS_SERVICES_TO_DISABLE.join(', ')}")
+            @logger.debug("guestfish command: #{cmd}")
+            
+            stdout, stderr, status = Open3.capture3(cmd)
+            
+            @logger.debug("guestfish output: #{stdout}")
+            @logger.debug("guestfish stderr: #{stderr}")
+            @logger.debug("guestfish exit code: #{status.exitstatus}")
+            
+            if status.success?
+                @logger.info('VMware Tools services disabled via guestfish + hivexregedit')
+                return true
+            else
+                error_msg = stderr.to_s.strip.empty? ? stdout.to_s.strip : stderr.to_s.strip
+                error_msg = 'Unknown guestfish error' if error_msg.to_s.strip.empty?
+                @logger.warn("guestfish failed with exit code #{status.exitstatus}: #{error_msg}")
+                puts "  guestfish error (exit #{status.exitstatus}): #{error_msg}".brown if error_msg
+                return false
+            end
+        end
+    end
+
     # Remove VMWare Tools injection from the VM
+    def remove_vmtools_command(disk, osinfo, script_path)
+        if osinfo['name'] == 'windows'
+            script_name = File.basename(script_path)
+            real_script_path = File.realpath(script_path)
+            # Disable VMware services on first boot (before they start)
+            # Prevent error dialog box from appearing
+            disable_svc_cmd = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ' \
+                '"sc config VMTools start=disabled; sc config VGAuthService start=disabled; sc stop VMTools; sc stop VGAuthService" 2>$null'
+            
+            'virt-customize -q -a ' + disk +
+            ' --mkdir /Temp' +
+            " --copy-in #{Shellwords.escape(real_script_path)}:/Temp" +
+            " --firstboot-command '#{disable_svc_cmd}'" +
+            " --firstboot-command 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\Temp\\#{script_name}'"
+        else
+            "virt-customize -q -a #{disk} --firstboot '#{script_path}'"
+        end
+    end
+
     def remove_vmtools_injection(disk, osinfo)
         return unless @options[:remove_vmtools]
 
@@ -2203,13 +2368,14 @@ _EOF_"
             puts 'Unable to find vmware_tools_removal script, please remove VMWare Tools manually.'
             return
         end
-        cmd = "virt-customize -q -a #{disk} --firstboot '#{script_path}'"
+        cmd = remove_vmtools_command(disk, osinfo, script_path)
         _stdout, status = run_cmd_report(cmd, true)
         if !status.success?
             puts 'Remove VMWare tools injection failed somehow, please remove VMWare Tools manually.'
             return
         end
-        puts 'VMware Tools removal injection completed. The script will run on the first boot.'.green
+        disable_vmtools_services_offline(disk) if osinfo['name'] == 'windows'
+        puts 'VMware Tools removal script staged for first boot. Check the guest log if removal fails.'.green
     end
 
     # Run a OpenNebula system prechecks:
