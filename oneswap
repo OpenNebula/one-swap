@@ -540,6 +540,21 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
+    VM_LIST = {
+        :name  => 'vm_list',
+        :large => '--vm-list /path/to/vms.txt',
+        :description => 'Path to a file containing one VM name per line for batch conversion. '\
+                        'Empty lines and lines starting with # are ignored.',
+        :format => String
+    }
+
+    VMS = {
+        :name  => 'vm_names',
+        :large => '--vms vm1,vm2,...',
+        :description => 'Comma-separated list of VM names for batch conversion.',
+        :format => String
+    }
+
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
     V2V_OPTS = [V2V_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY, ROOT]
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
@@ -548,7 +563,7 @@ CommandParser::CmdParser.new(ARGV) do
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DELTA, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                     CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                     PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
-                    SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH, INJECT_DNS, ACCEPT_CERT, ONE_USER, ONE_GROUP] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
+                    SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH, INJECT_DNS, ACCEPT_CERT, ONE_USER, ONE_GROUP, VM_LIST, VMS] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
     IMPORT_OPTS = [OVA, VMDK, DATASTORE, NETWORK, SKIP_CONTEXT, REMOVE_VMTOOLS, UEFI_PATH,
                    UEFI_SEC_PATH, INJECT_DNS, ONE_USER, ONE_GROUP] + V2V_OPTS
 
@@ -616,9 +631,17 @@ CommandParser::CmdParser.new(ARGV) do
 
             oneswap convert vm-1234 $VOPTS --custom
 
+            - Convert a batch of VMs from a list file (one VM name per line, # for comments):
+
+            oneswap convert --vm-list vms.txt $VOPTS [--fallback|--custom|--hybrid]
+
+            - Convert a batch of VMs specified inline (comma-separated):
+
+            oneswap convert --vms vm-web-01,vm-db-01,vm-app-01 $VOPTS [--fallback|--custom|--hybrid]
+
     EOT
 
-    command :convert, conv_desc, :vm_name, :options => CONVERT_OPTS do
+    command :convert, conv_desc, [:vm_name, nil], :options => CONVERT_OPTS do
         begin
             if options[:config_file] && !File.exist?(options[:config_file])
                 puts "Unable to find the config file at #{options[:config_file]}"
@@ -628,8 +651,8 @@ CommandParser::CmdParser.new(ARGV) do
             options.merge!(cfg_file) if cfg_file
 
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
-            raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk]
-            if options[:hybrid] && (options[:custom] || options[:esxi_ip] || options[:vddk])
+            raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk_path]
+            if options[:hybrid] && (options[:custom_convert] || options[:esxi_ip] || options[:vddk_path])
                 raise 'Cannot use Hybrid option with Custom, ESXi, or VDDK options.'
             end
             if options[:virtio_path] && !File.exist?(options[:virtio_path])
@@ -676,7 +699,27 @@ CommandParser::CmdParser.new(ARGV) do
                 end
             end
 
-            helper.convert(args[0], options)
+            vm_name  = args[0]
+            vm_list  = options[:vm_list]
+            vm_names = options[:vm_names]
+
+            modes = [vm_name, vm_list, vm_names].compact
+            if modes.size > 1
+                raise 'Specify only one of: positional VM name, --vms, or --vm-list.'
+            end
+            raise 'Provide a VM name, --vms vm1,vm2,..., or --vm-list <file>.' if modes.empty?
+
+            if vm_list
+                exit helper.convert_batch(vm_list, options)
+            elsif vm_names
+                names = vm_names.split(',').map(&:strip).reject(&:empty?)
+                raise '--vms requires at least one VM name' if names.empty?
+                exit helper.convert_vm_list(names, options)
+            else
+                helper.convert(vm_name, options)
+            end
+        rescue ConversionError
+            exit 1
         rescue StandardError => e
             STDERR.puts e.message
             exit 1
@@ -713,8 +756,8 @@ CommandParser::CmdParser.new(ARGV) do
             options.merge!(cfg_file) if cfg_file
 
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
-            raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk]
-            if options[:hybrid] && (options[:custom] || options[:esxi_ip] || options[:vddk])
+            raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk_path]
+            if options[:hybrid] && (options[:custom_convert] || options[:esxi_ip] || options[:vddk_path])
                 raise 'Cannot use Hybrid option with Custom, ESXi, or VDDK options.'
             end
             if options[:virtio_path] && !File.exist?(options[:virtio_path])
