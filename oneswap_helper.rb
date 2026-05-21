@@ -2462,7 +2462,7 @@ _EOF_"
 
         list = []
         properties = [
-            'summary.usageSummary.totalVmCount',
+            'resourcePool',
             'name'
         ]
 
@@ -2478,10 +2478,19 @@ _EOF_"
             conf = c.to_hash
             v = {}
             v[:name] = conf['name'].to_s
-            v[:vm_count] = conf['summary.usageSummary.totalVmCount']
+            v[:vm_count] = resource_pool_vm_count(conf['resourcePool'])
             list << v
         end
         format_list.show(list, options)
+    end
+
+    def resource_pool_vm_count(resource_pool)
+        return 0 if resource_pool.nil?
+
+        vms = Array(resource_pool[:vm])
+        child_pools = Array(resource_pool[:resourcePool])
+
+        vms.length + child_pools.sum {|child| resource_pool_vm_count(child) }
     end
 
     # Import VM
