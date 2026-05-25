@@ -2625,29 +2625,52 @@ GUESTFISH
     def list_clusters(options)
         con_ops = connection_options('clusters', options)
         vi_client = RbVmomi::VIM.connect(con_ops)
+        filter = options.key?(:datacenter) ? { :datacenter => options[:datacenter] } : nil
 
-        list = []
-        properties = [
-            'summary.usageSummary.totalVmCount',
-            'name'
-        ]
-
-        if options.key?(:datacenter)
-            filter = {}
-            filter[:datacenter] = options[:datacenter]
-            cs = get_objects(vi_client, 'ComputeResource', properties, filter)
-        else
-            cs = get_objects(vi_client, 'ComputeResource', properties)
+        begin
+            list = list_clusters_by_resource_pool(vi_client, filter)
+        rescue RbVmomi::VIM::InvalidProperty
+            list = list_clusters_by_usage_summary(vi_client, filter)
         end
 
-        cs.each do |c|
-            conf = c.to_hash
-            v = {}
-            v[:name] = conf['name'].to_s
-            v[:vm_count] = conf['summary.usageSummary.totalVmCount']
-            list << v
-        end
         format_list.show(list, options)
+    end
+
+    def list_clusters_by_resource_pool(vi_client, filter)
+        properties = ['resourcePool', 'name']
+        cs = filter ? get_objects(vi_client, 'ComputeResource', properties, filter)
+                    : get_objects(vi_client, 'ComputeResource', properties)
+
+        cs.map do |c|
+            conf = c.to_hash
+            {
+                :name => conf['name'].to_s,
+                :vm_count => resource_pool_vm_count(conf['resourcePool'])
+            }
+        end
+    end
+
+    def list_clusters_by_usage_summary(vi_client, filter)
+        properties = ['summary.usageSummary.totalVmCount', 'name']
+        cs = filter ? get_objects(vi_client, 'ComputeResource', properties, filter)
+                    : get_objects(vi_client, 'ComputeResource', properties)
+
+        cs.map do |c|
+            conf = c.to_hash
+            {
+                :name => conf['name'].to_s,
+                :vm_count => conf['summary.usageSummary.totalVmCount']
+            }
+        end
+    end
+
+    def resource_pool_vm_count(resource_pool)
+        return 0 if resource_pool.nil?
+
+        vms = Array(resource_pool[:vm])
+        child_pools = Array(resource_pool[:resourcePool])
+
+        vms.length + child_pools.sum {|child| resource_pool_vm_count(child) }
     end
 
     # Import VM
