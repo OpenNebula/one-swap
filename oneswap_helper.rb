@@ -129,6 +129,8 @@ end
 ##############################################################################
 # Module OneVcenterHelper
 ##############################################################################
+class ConversionError < StandardError; end
+
 class OneSwapHelper < OpenNebulaHelper::OneHelper
     include WindowsTuner
 
@@ -2490,10 +2492,88 @@ GUESTFISH
             password_file.close
 
             convert_vm
+        rescue StandardError => e
+            STDERR.puts "Error: #{e.message}".red
+            @logger.error "Conversion of '#{name}' failed: #{e.message}"
+            raise ConversionError, e.message
         ensure
             password_file.close unless password_file.nil? or password_file.closed?
             cleanup_all
         end
+    end
+
+    # Read and parse a VM list file for batch conversion.
+    # Empty lines and lines starting with # are ignored.
+    #
+    # @param path [String] Path to the VM list file
+    # @return [Array<String>] VM names
+    def read_vm_list(path)
+        raise "VM list file not found: #{path}" unless File.exist?(path)
+
+        File.readlines(path, chomp: true)
+            .map(&:strip)
+            .reject {|l| l.empty? || l.start_with?('#') }
+    end
+
+    # Core sequential batch loop over an array of VM names.
+    # Called by both convert_batch (--vm-list) and directly for --vms.
+    #
+    # @param vm_names [Array<String>] VM names to convert
+    # @param options  [Hash]          CLI options shared across all VMs
+    # @return [Integer] 0 if all VMs succeeded, 1 if any failed
+    def convert_vm_list(vm_names, options)
+        total   = vm_names.size
+        success = []
+        failed  = []
+
+        puts "\nBatch conversion: #{total} VM(s) queued.\n"
+
+        vm_names.each_with_index do |name, idx|
+            puts "\n[#{idx + 1}/#{total}] Converting: #{name}".bold
+            begin
+                vm_opts = options.dup
+                vm_opts[:work_dir] = options[:work_dir].dup
+                convert(name, vm_opts)
+                success << name
+            rescue StandardError => e
+                if e.is_a?(ConversionError)
+                    STDERR.puts "  [#{idx + 1}/#{total}] FAILED #{name}".red
+                else
+                    STDERR.puts "  [#{idx + 1}/#{total}] FAILED #{name}: #{e.message}".red
+                end
+                failed << name
+            end
+        end
+
+        puts "\n#{'─' * 50}"
+        puts 'Batch conversion summary:'.bold
+        puts "  Total VMs requested:   #{total}"
+        puts "  Successful conversions: #{success.size}".green
+        if failed.empty?
+            puts '  Failed conversions:  0'.green
+        else
+            puts "  Failed conversions:  #{failed.size}".red
+            puts '  Failed VM names:'.red
+            failed.each {|n| puts "    - #{n}".red }
+        end
+        puts '─' * 50
+
+        failed.empty? ? 0 : 1
+    end
+
+    # Convert a batch of VMs listed in a file (--vm-list).
+    #
+    # @param list_file [String] Path to the VM list file
+    # @param options   [Hash]   CLI options shared across all VMs
+    # @return [Integer] 0 if all VMs succeeded, 1 if any failed
+    def convert_batch(list_file, options)
+        vm_names = read_vm_list(list_file)
+
+        if vm_names.empty?
+            raise "VM list file contains no valid entries: #{list_file}"
+        end
+
+        convert_vm_list(vm_names, options)
     end
 
     # Import a VM from file (OVA, folder with files)
