@@ -1762,6 +1762,8 @@ _EOF_"
             end
 
             create_one_images(disks_on_file)
+        rescue ConversionError
+            raise
         rescue StandardError => e
             # puts "Error raised: #{e.message}"
             if @props['config'][:guestFullName].include?('Windows')
@@ -1978,6 +1980,8 @@ _EOF_"
                     remove_vmtools_injection(d, guest_info)
                     os_name = guest_info['name']
                 end
+            rescue ConversionError
+                raise
             rescue Exception => e
                 if guest_info['name'] == 'windows'
                     puts 'Error with package injection. Conversion failed. Check that you have virtio and context packages in place.'.red
