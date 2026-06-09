@@ -178,7 +178,7 @@ Examples:
     You can also define \-\-fallback instead of \-\-custom, which will first attempt virt\-v2v style, then fallback to custom\.
 
     oneswap convert vm\-1234 $VOPTS \-\-custom
-valid options: accept_cert, clone, config_file, context, cpu, cpu_model, custom_convert, datastore, delete, dev_prefix, disable_contextualization, esxi_ip, esxi_pass, esxi_user, fallback, format, graphics_command, graphics_keymap, graphics_listen, graphics_password, graphics_port, graphics_type, http_host, http_port, http_transfer, hybrid, img_wait, memory_max, network, one_cluster, one_datastore, one_datastore_cluster, one_host, persistent_img, port, qemu_ga_linux, qemu_ga_win, remove_vmtools, root, skip_ip, skip_mac, skip_prechecks, uefi_path, uefi_sec_path, v2v_path, v2v_path, vcenter, vcpu, vcpu_max, vddk_path, virt_tools, virtio_path, vpass, vuser, work_dir
+valid options: accept_cert, clone, config_file, context, context_fail_on_low_space, context_min_free, context_timeout, cpu, cpu_model, custom_convert, datastore, delete, dev_prefix, disable_contextualization, esxi_ip, esxi_pass, esxi_user, fallback, format, graphics_command, graphics_keymap, graphics_listen, graphics_password, graphics_port, graphics_type, http_host, http_port, http_transfer, hybrid, img_wait, inject_dns, memory_max, network, one_cluster, one_datastore, one_datastore_cluster, one_host, persistent_img, port, qemu_ga_linux, qemu_ga_win, remove_vmtools, root, skip_ip, skip_mac, skip_prechecks, uefi_path, uefi_sec_path, v2v_path, v2v_path, vcenter, vcpu, vcpu_max, vddk_path, virt_tools, virtio_path, vpass, vuser, work_dir
 .
 .fi
 .
@@ -204,7 +204,7 @@ Examples:
    \- import Image from an VMDK file:
 
      oneswap import \-\-vmdk disk\.vmdk
-valid options: datastore, delete, format, network, ova, qemu_ga_linux, qemu_ga_win, remove_vmtools, root, skip_context, uefi_path, uefi_sec_path, v2v_path, vddk_path, virt_tools, virtio_path, vmdk, work_dir
+valid options: context_fail_on_low_space, context_min_free, context_timeout, datastore, delete, format, inject_dns, network, ova, qemu_ga_linux, qemu_ga_win, remove_vmtools, root, skip_context, uefi_path, uefi_sec_path, v2v_path, vddk_path, virt_tools, virtio_path, vmdk, work_dir
 .
 .fi
 .
