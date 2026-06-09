@@ -928,20 +928,64 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     #
     # @param cmd [String] The command to be executed.
     # @param out [Boolean] (optional) Whether to return the output or not.
+    # @param timeout [Integer, nil] (optional) Abort the command if it runs longer than this specified number of seconds, 0 disables timeout.
     # @return [Array] Returns an array containing the stdout and status if out is true.
-    def run_cmd_report(cmd, out = false)
+    def run_cmd_report(cmd, out = false, timeout: nil)
         t0 = Time.now
         stdout, stderr, status = nil
+        timed_out = false
         puts "Running: #{cmd}"
         show_wait_spinner do
-            stdout, stderr, status = Open3.capture3(cmd)
+            if timeout && timeout.to_i > 0
+                stdout, stderr, status, timed_out = run_cmd_with_timeout(cmd, timeout.to_i)
+            else
+                stdout, stderr, status = Open3.capture3(cmd)
+            end
         end
         t1 = (Time.now - t0).round(2)
-        puts !status.success? ? "Failed (#{t1}s)".red : "Success (#{t1}s)".green
+        if timed_out
+            puts "Timed out after #{t1}s".red
+        else
+            puts !status.success? ? "Failed (#{t1}s)".red : "Success (#{t1}s)".green
+        end
 
-        @logger.debug(stderr) unless status.success?
+        @logger.debug(stderr) unless status&.success?
 
         return stdout, status if out
+    end
+
+    # Runs a command, terminating it if exceeds the given amount of seconds
+    #
+    # @return [Array] [stdout, stderr, status, timed_out]
+    def run_cmd_with_timeout(cmd, timeout)
+        timed_out = false
+        stdout = stderr = ''
+        status = nil
+
+        Open3.popen3(cmd, :pgroup => true) do |stdin, out_io, err_io, wait_thr|
+            stdin.close
+            out_reader = Thread.new { out_io.read }
+            err_reader = Thread.new { err_io.read }
+
+            unless wait_thr.join(timeout)
+                timed_out = true
+                kill_process_group(wait_thr.pid)
+            end
+
+            status = wait_thr.value
+            stdout = out_reader.value.to_s
+            stderr = err_reader.value.to_s
+        end
+
+        [stdout, stderr, status, timed_out]
+    end
+
+    # Sends TERM then KILL to the process group led by pid
+    def kill_process_group(pid)
+        Process.kill('TERM', -pid)
+        sleep 5
+        Process.kill('KILL', -pid)
+    rescue Errno::ESRCH, Errno::EPERM
     end
 
     def detect_distro(disk)
@@ -1298,9 +1342,65 @@ _EOF_"
               " --install #{pkg}"
     end
 
-    def install_pkg(disk, pkg)
+    def install_pkg(disk, pkg, timeout: nil)
         print "Installing #{pkg}..."
-        run_cmd_report(pkg_install_command(disk, pkg))
+        run_cmd_report(pkg_install_command(disk, pkg), false, timeout: timeout)
+    end
+
+    # Returns the free space (in MB) on the guest root filesystem, or nil if it cannot be determined
+    def guest_root_free_mb(disk, osinfo)
+        root_dev = osinfo['mounts'] && osinfo['mounts']['/']
+        return nil unless root_dev
+
+        cmd = 'guestfish --ro'\
+              " -a #{disk}"\
+              " run : mount-ro #{root_dev} / : statvfs /"
+        stdout, stderr, status = Open3.capture3(cmd)
+        unless status.success?
+            @logger.debug("Could not stat guest root filesystem: #{stderr}")
+            return nil
+        end
+
+        # guestfish prints the statvfs struct as "key: value" lines
+        stats = {}
+        stdout.each_line do |line|
+            key, val = line.split(':', 2).map {|s| s.to_s.strip }
+            stats[key] = val.to_i if !key.to_s.empty? && val.to_s =~ /\A\d+\z/
+        end
+
+        block_size = stats['frsize'].to_i > 0 ? stats['frsize'].to_i : stats['bsize'].to_i
+        avail = stats['bavail']
+        return nil unless block_size > 0 && avail
+
+        (avail * block_size) / (1024 * 1024)
+    rescue StandardError => e
+        @logger.debug("Error checking guest free space: #{e.message}")
+        nil
+    end
+
+    # Verifies the guest root filesystem has enough free space for context
+    # injection. Returns true if injection should proceed, false if it should be
+    # skipped (warn mode). Raises ConversionError when --context-fail-on-low-space
+    # is set and free space is insufficient.
+    def ensure_guest_free_space(disk, osinfo)
+        min_free = @options[:context_min_free].to_i
+        return true if min_free <= 0
+
+        free_mb = guest_root_free_mb(disk, osinfo)
+        if free_mb.nil?
+            puts 'Warning: could not determine guest root filesystem free space, proceeding with context injection.'.brown
+            return true
+        end
+
+        return true if free_mb >= min_free
+
+        msg = "Guest root filesystem has only #{free_mb} MB free, below the #{min_free} MB " \
+              'required for context injection.'
+        raise ConversionError, msg if @options[:context_fail_on_low_space]
+
+        puts msg.red
+        puts 'Skipping context injection to avoid hanging; install one-context manually after boot.'.brown
+        false
     end
 
     def guest_run_cmd(disk, cmd)
@@ -1314,24 +1414,26 @@ _EOF_"
 
     def package_injection(disk, osinfo)
         injector_cmd, fallback_cmd = context_command(disk, osinfo)
+        ctx_timeout = @options[:context_timeout]
         if !injector_cmd
             if osinfo['name'] == 'windows'
-                win_context_inject(disk, osinfo)
+                win_context_inject(disk, osinfo) if ensure_guest_free_space(disk, osinfo)
             else
                 puts 'Unsupported guest OS or couldn\'t find context file for context injection. Please install manually.'.brown
             end
         elsif @options[:skip_context]
             print 'Skipping context injection...'
             return
-        else
-            # Perhaps have a separet function that does a bit more....stuff...
+        elsif ensure_guest_free_space(disk, osinfo)
             print 'Injecting one-context...'
-            _stdout, status = run_cmd_report(injector_cmd, true)
+            _stdout, status = run_cmd_report(injector_cmd, true, timeout: ctx_timeout)
             if !status.success?
-                print 'Context injection command appears to have failed. Attempting fallback'.brown
-                _stdout, status = run_cmd_report(fallback_cmd, true)
+                if fallback_cmd
+                    print 'Context injection command appears to have failed. Attempting fallback'.brown
+                    _stdout, status = run_cmd_report(fallback_cmd, true, timeout: ctx_timeout)
+                end
                 if !status.success?
-                    puts 'Context injection fallback command failed somehow, please install context manually.'.red
+                    puts 'Context injection failed, please install context manually.'.red
                     return
                 end
                 print 'Context will install on first boot, you may need to boot it twice.'.brown
@@ -1341,18 +1443,18 @@ _EOF_"
         if osinfo['name'] == 'windows' && @options[:virtio_path]
             injector_cmd = win_virtio_command(disk)
             print 'Injecting VirtIO to Windows...'
-            run_cmd_report(injector_cmd)
+            run_cmd_report(injector_cmd, false, timeout: ctx_timeout)
         end
 
         if @options[:qemu_ga_win] && osinfo['name'] == 'windows'
             injector_cmd = qemu_ga_command(disk)
             print 'Injecting QEMU Guest Agent...'
-            run_cmd_report(injector_cmd)
+            run_cmd_report(injector_cmd, false, timeout: ctx_timeout)
         end
 
         return unless @options[:qemu_ga_linux] && osinfo['name'] != 'windows'
 
-        install_pkg(disk, 'qemu-guest-agent')
+        install_pkg(disk, 'qemu-guest-agent', timeout: ctx_timeout)
     end
 
     def get_objects(vim, type, properties, folder = nil)
@@ -1660,6 +1762,8 @@ _EOF_"
             end
 
             create_one_images(disks_on_file)
+        rescue ConversionError
+            raise
         rescue StandardError => e
             # puts "Error raised: #{e.message}"
             if @props['config'][:guestFullName].include?('Windows')
@@ -1876,6 +1980,8 @@ _EOF_"
                     remove_vmtools_injection(d, guest_info)
                     os_name = guest_info['name']
                 end
+            rescue ConversionError
+                raise
             rescue Exception => e
                 if guest_info['name'] == 'windows'
                     puts 'Error with package injection. Conversion failed. Check that you have virtio and context packages in place.'.red

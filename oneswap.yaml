@@ -49,6 +49,9 @@
 # Extra Options
 #:delete: false                           # Delete the VM Disks after transfer
 #:context: '/var/lib/one/context/'        # Path to OpenNebula context packages
+#:context_min_free: 1024                  # Minimum free MB on the guest root filesystem before context injection (0 to disable)
+#:context_fail_on_low_space: false        # Fail the disk conversion (instead of warning and skipping) when free space is below the threshold
+#:context_timeout: 600                    # Max seconds for each context injection command before it is aborted (0 to disable)
 #:remove-vmtools: false                   # Add context script to force remove of VMWare Tools
 #:uefi_path: '/usr/share/OVMF/OVMF_CODE.fd'                 # Path to the UEFI file to be configured in the VM template.
 #:uefi_sec_path: '/usr/share/OVMF/OVMF_CODE.secboot.fd'     # Path to the UEFI Secure file to be configured in the VM template.
