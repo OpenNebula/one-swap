@@ -1,0 +1,14 @@
+<domain type='kvm' xmlns:qemu='http://libvirt.org/schemas/domain/qemu/1.0'>
+    <name>tmp-v2v</name>
+    <devices>
+        <disk type='file' device='disk'>
+            <source file='/full_path/out.raw'/>
+            <target dev='sda' bus='scsi'/>
+            <driver name='qemu' type='raw' cache='none' io='native' discard='unmap'/>
+            <address type='drive' controller='0' bus='0' target='0' unit='0'/>
+        </disk>
+        <controller type='scsi' index='0' model='virtio-scsi'>
+            <driver queues='1'/>
+        </controller>
+    </devices>
+</domain>
