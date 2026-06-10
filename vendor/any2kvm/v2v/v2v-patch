@@ -1,0 +1,62 @@
+commit 548ed584e97dfa81da0e3910a8debe3bc8b9f157
+
+    sp patches
+
+diff --git a/v2v/convert_windows.ml b/v2v/convert_windows.ml
+index 1db3c0e..49e4fea 100644
+--- a/v2v/convert_windows.ml
++++ b/v2v/convert_windows.ml
+@@ -293,7 +293,8 @@ let convert (g : G.guestfs) inspect source output rcaps =
+ 
+     unconfigure_xenpv ();
+     unconfigure_prltools ();
+-    unconfigure_vmwaretools ()
++    unconfigure_vmwaretools ();
++    install_qemu ()
+ 
+   (* [set_reg_val_dword_1 path name] creates a registry key
+    * called [name = dword:1] in the registry [path].
+@@ -462,6 +463,19 @@ if errorlevel 3010 exit /b 0
+         Firstboot.add_firstboot_script g inspect.i_root
+           "uninstall VMware Tools" fb_script
+     ) vmwaretools_uninst
++  
++  and install_qemu () =
++    let fb_script = "\
++@echo off
++
++echo installing qemu drivers
++powershell \"Import-Certificate -FilePath \\\"C:\\windows\\drivers\\virtio\\cert1.cer\\\" -CertStoreLocation Cert:\\LocalMachine\\TrustedPublisher\"
++powershell \"Get-ChildItem \\\"C:\\windows\\drivers\\virtio\\\" -Recurse -Filter \"*.inf\" | ForEach-Object { c:\\windows\\sysnative\\PNPUtil.exe -i -a $_.FullName }\"
++c:\\windows\\drivers\\virtio\\qemu-ga-x64.msi
++"
++    in
++       Firstboot.add_firstboot_script g inspect.i_root
++           "install qemu tools" fb_script
+ 
+   and update_system_hive reg =
+     (* Update the SYSTEM hive.  When this function is called the hive has
+diff --git a/v2v/windows_virtio.ml b/v2v/windows_virtio.ml
+index 92bf3ec..104a4df 100644
+--- a/v2v/windows_virtio.ml
++++ b/v2v/windows_virtio.ml
+@@ -49,6 +49,19 @@ let rec install_drivers ((g, _) as reg) inspect rcaps =
+   let driverdir = sprintf "%s/Drivers/VirtIO" inspect.i_windows_systemroot in
+   g#mkdir_p driverdir;
+ 
++  let source = "/opt/windows-convert/files/cert1.cer" in
++            let target = driverdir // "cert1.cer" in
++            debug "windows: copying guest tools bits: 'host:%s' -> '%s'"
++                  source target;
++
++            g#write target (read_whole_file source);
++
++  let source = "/opt/windows-convert/files/qemu-ga-x64.msi" in
++            let target = driverdir // "qemu-ga-x64.msi" in
++            debug "windows: copying guest tools<--> bits: 'host:%s' -> '%s'"
++                  source target;
++
++            g#write target (read_whole_file source);
+   if not (copy_drivers g inspect driverdir) then (
+     match rcaps with
+     | { rcaps_block_bus = Some Virtio_blk | Some Virtio_SCSI }
