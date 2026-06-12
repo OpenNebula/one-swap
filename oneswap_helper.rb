@@ -1747,7 +1747,7 @@ _EOF_"
             print "\n"
             # puts "Process exited with status: #{exit_status}"
             if error_check
-                raise "Error: #{error_check.message}"
+                raise error_check
             end
             if exit_status != 0
                 raise "virt-v2v exited in error code #{exit_status} but did not provide an error"
@@ -1849,7 +1849,21 @@ _EOF_"
         error_list = [
             {
                 :text  => 'inspection could not detect the source guest',
-                :error => 'Could not find the guest OS inside the target machine.'
+                :error => 'Could not find the guest OS inside the target machine.',
+                :windows_hint => "For Windows guests this failure is usually caused by:\n" \
+                    "  - NTFS system compression (CompactOS). Check inside the guest with\n" \
+                    "    'compact /compactos:query'. Fix it with 'compact /compactos:never' and\n" \
+                    "    a clean shutdown, or run\n" \
+                    "    /usr/lib/one/oneswap/scripts/setup_ntfs_wof.sh\n" \
+                    "    once on this conversion host.\n" \
+                    "  - BitLocker encryption on the system volume.\n" \
+                    '  - Hibernation / Fast Startup leaving the NTFS volume dirty.'
+            },
+            {
+                :text  => 'nbdkit-vddk-plugin is not installed',
+                :error => "nbdkit on this conversion host is missing the VDDK plugin\n" \
+                          "(Debian/Ubuntu packages do not ship it). Run once on this host:\n" \
+                          '  /usr/lib/one/oneswap/scripts/setup_nbdkit_vddk.sh'
             },
             {
                 :text  => 'virt-v2v is unable to convert this guest type',
@@ -1857,15 +1871,11 @@ _EOF_"
             },
             {
                 :text  => 'unable to mount the disk image for writing',
-                :error => 'Disk did not mount properly, try disabling Windows Hiberanation or Fast Restart in this guest.'
+                :error => 'Disk did not mount properly, try disabling Windows Hibernation or Fast Restart in this guest.'
             },
             {
                 :text  => 'filesystem was mounted read-only, even though',
-                :error => 'Disk mountd read-only, try disabling Windows Hiberation or Fast Restart in this guest and cleanly shut it down.'
-            },
-            {
-                :text  => 'inspection could not detect the source guest',
-                :error => 'Unable to find, or inspect, the OS disk'
+                :error => 'Disk mounted read-only, try disabling Windows Hibernation or Fast Restart in this guest and cleanly shut it down.'
             },
             {
                 :text  => 'multi-boot operating systems are not supported',
@@ -1890,7 +1900,16 @@ _EOF_"
 
         err = error_list.detect {|e| line['message'].start_with?(e[:text]) }
         puts "DEBUG INFO: #{line['message']}".red
-        err ? raise(err[:error].red) : raise("Unknown error occurred: #{line['message']}".bg_red)
+        raise("Unknown error occurred: #{line['message']}".bg_red) unless err
+
+        msg = err[:error]
+        # 'config' is a RbVmomi object on the vCenter path and a Hash on the
+        # OVA path; both support [], neither is guaranteed to have #dig.
+        config = @props.to_h['config']
+        if err[:windows_hint] && config && config[:guestFullName].to_s.include?('Windows')
+            msg = "#{msg}\n#{err[:windows_hint]}"
+        end
+        raise(msg.red)
     end
 
     def handle_stdout(line)
@@ -2486,6 +2505,47 @@ GUESTFISH
         puts 'VMware Tools removal script staged for first boot. Check the guest log if removal fails.'.green
     end
 
+    # Warn when the conversion host cannot read CompactOS/WOF-compressed NTFS
+    #
+    # @param plugin_globs  [Array<String>] globs for the ntfs-3g plugin .so
+    # @param overlay_globs [Array<String>] globs for the supermin.d overlay
+    # @param env           [Hash] environment (injectable for tests)
+    # @return [Boolean] true when a warning was printed
+    def warn_if_wof_support_missing(
+        plugin_globs: ['/usr/lib/*/ntfs-3g/ntfs-plugin-80000017.so',
+                       '/usr/lib64/ntfs-3g/ntfs-plugin-80000017.so'],
+        overlay_globs: ['/usr/lib/*/guestfs/supermin.d/zz-ntfs-wof.tar.gz'],
+        env: ENV
+    )
+        return false unless env['LIBGUESTFS_PATH'].to_s.empty?
+        return false if plugin_globs.any? {|g| !Dir.glob(g).empty? }
+        return false if overlay_globs.any? {|g| !Dir.glob(g).empty? }
+
+        puts 'Warning: this host cannot read CompactOS-compressed NTFS. Windows'.brown
+        puts 'guests using CompactOS will fail inspection. Run once on this host:'.brown
+        puts '  /usr/lib/one/oneswap/scripts/setup_ntfs_wof.sh'.brown
+        true
+    end
+
+    # Fail fast when --vddk is requested but nbdkit lacks the VDDK plugin.
+    #
+    # @param plugin_globs [Array<String>] globs for nbdkit-vddk-plugin.so
+    # @return [void]
+    def check_nbdkit_vddk_plugin!(
+        plugin_globs: ['/usr/lib/*/nbdkit/plugins/nbdkit-vddk-plugin.so',
+                       '/usr/lib64/nbdkit/plugins/nbdkit-vddk-plugin.so',
+                       '/usr/local/lib/nbdkit/plugins/nbdkit-vddk-plugin.so']
+    )
+        return if plugin_globs.any? {|g| !Dir.glob(g).empty? }
+
+        msg = "nbdkit on this conversion host is missing the VDDK plugin, which is\n" \
+              "required for --vddk transfers (Debian/Ubuntu packages do not ship it).\n" \
+              "Run once on this host:\n" \
+              "  /usr/lib/one/oneswap/scripts/setup_nbdkit_vddk.sh\n" \
+              'or pass --skip-prechecks to bypass this check.'
+        raise(msg.red)
+    end
+
     # Run a OpenNebula system prechecks:
     #
     # - Check if there is enough space in the datastore
@@ -2495,6 +2555,11 @@ GUESTFISH
     #
     def one_prechecks(vm)
         puts 'Running OpenNebula prechecks...'
+        config = @props.to_h['config']
+        if config && config[:guestFullName].to_s.include?('Windows')
+            warn_if_wof_support_missing
+        end
+        check_nbdkit_vddk_plugin! if @options[:vddk_path]
         ## Precheck datastore space (check if it will be enough space for the image)
         vm_obj = vm.obj
         vm_size_kb = 0
