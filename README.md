@@ -22,8 +22,49 @@ The following packages must be installed on the conversion host:
 | `qemu-img` | All conversion modes |
 | `ovmf` | Migrating UEFI guests (provides OVMF firmware for x86-64); without it `virt-v2v` will fail with *"cannot find firmware for UEFI guests"* |
 | `guestfish` / `virt-inspector` | Windows context injection and disk inspection |
+| `nbdkit` (with VDDK plugin) | `--vddk` transfers; Debian/Ubuntu packages do not ship the VDDK plugin — see [VDDK Transfer Support](#vddk-transfer-support) |
 
 When installing OneSwap via the provided packages all dependencies are installed automatically. If deploying from source, the dependencies listed in the table above must be installed manually using the system package manager.
+
+## Windows CompactOS Support
+
+Windows guests that use NTFS system compression (CompactOS / WOF) fail
+conversion with `inspection could not detect the source guest` /
+`No root device found`, because the ntfs-3g inside the libguestfs appliance
+cannot read WOF-compressed system files. You can check a guest from an
+elevated prompt with:
+
+```
+compact /compactos:query
+```
+
+To enable CompactOS support, run once on each migration host (as root):
+
+```
+/usr/lib/one/oneswap/scripts/setup_ntfs_wof.sh
+```
+
+The script builds the
+[ntfs-3g-system-compression](https://github.com/ebiggers/ntfs-3g-system-compression)
+plugin, installs it, and packs it as a supermin.d overlay so every libguestfs
+appliance rebuild includes it automatically (no fixed appliance or
+`LIBGUESTFS_PATH` needed). It requires internet access, or an internal mirror
+via the `NTFS_WOF_REPO_URL` environment variable.
+
+## VDDK Transfer Support
+
+`--vddk` transfers require the nbdkit VDDK plugin, which Debian/Ubuntu
+packages do not ship (on RHEL install the `nbdkit-vddk-plugin` package). To
+build and install it, run once on each migration host (as root):
+
+```
+/usr/lib/one/oneswap/scripts/setup_nbdkit_vddk.sh
+```
+
+The script builds the nbdkit version matching the installed distro package
+and copies only the VDDK plugin into nbdkit's plugin directory. It requires
+internet access, or an internal mirror via the `NBDKIT_REPO_URL` environment
+variable.
 
 ## vCenter Permissions Requirements
 
