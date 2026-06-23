@@ -56,6 +56,9 @@
 #:uefi_path: '/usr/share/OVMF/OVMF_CODE.fd'                 # Path to the UEFI file to be configured in the VM template.
 #:uefi_sec_path: '/usr/share/OVMF/OVMF_CODE.secboot.fd'     # Path to the UEFI Secure file to be configured in the VM template.
 
+# Logging Options
+#:verbose: true                           # Verbose mode: log at DEBUG and echo diagnostics to the terminal (STDERR) as well as /var/log/one/oneswap.log. Equivalent to the -v/--verbose flag or the ONE_SWAP_DEBUG env var. Note: like every option here, an uncommented value takes precedence over the command line.
+
 # OpenNebula Placement Options
 #:one_cluster:                            # ID of the OpenNebula Cluster
 #:one_host:                               # ID of the OpenNebula Host

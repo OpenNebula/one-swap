@@ -24,6 +24,7 @@ require 'tmpdir'
 require_relative 'vsphere_client'
 require_relative 'esxi_vm'
 require_relative 'windows_tuner'
+require_relative 'oneswap_logger'
 
 class String
 
@@ -142,10 +143,25 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
         Dir.mkdir(ONE_LOGS) unless Dir.exist?(ONE_LOGS)
 
-        log_level = ENV['ONE_SWAP_DEBUG'].nil? ? 'INFO' : 'DEBUG'
+        @log_file = File.open(LOG, 'a')
+        @log_file.sync = true
 
-        @logger = Logger.new(LOG)
-        @logger.level = Logger.const_get(log_level)
+        @verbose = OneSwapLogger.verbose?({})
+        @logger  = OneSwapLogger.build(@log_file, :verbose => @verbose)
+    end
+
+    # Raise log verbosity to DEBUG (and echo diagnostics to the terminal, not
+    # just the oneswap log file) when verbose mode is requested through any
+    # channel: the -v/--verbose CLI flag, a ":verbose: true" entry in
+    # oneswap.yaml, or the ONE_SWAP_DEBUG env var. 
+    #
+    # @param options [Hash] CLI options, already merged with the config file
+    def apply_verbosity(options)
+        return if @verbose
+        return unless OneSwapLogger.verbose?(options)
+
+        @verbose = true
+        @logger  = OneSwapLogger.build(@log_file, :verbose => true)
     end
 
     @props, @options = []
@@ -2620,6 +2636,7 @@ GUESTFISH
     # @param options [Hash] User CLI options
     # @param object  [Hash] Object Type
     def list(options)
+        apply_verbosity(options)
         case options[:object]
         when 'datacenters'
             list_datacenters(options)
@@ -2637,6 +2654,7 @@ GUESTFISH
     # @param name    [Hash] Object Name
     # @param options [Hash] User CLI options
     def convert(name, options)
+        apply_verbosity(options)
         check_one_connectivity
         if !Dir.exist?(options[:work_dir])
             raise 'Provided working directory '\
@@ -2752,6 +2770,7 @@ GUESTFISH
     # @param name    [Hash] Object Name
     # @param options [Hash] User CLI options
     def import(options)
+        apply_verbosity(options)
         source = options[:ova] || options[:vmdk]
         name = File.basename(source, File.extname(source))
         check_one_connectivity

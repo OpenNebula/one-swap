@@ -780,7 +780,7 @@ CommandParser::CmdParser.new(ARGV) do
                 puts "Unable to find the config file at #{options[:config_file]}"
             end
 
-            options[:config_file] ||= '/var/lib/one/oneswap.yaml'
+            options[:config_file] ||= '/etc/one/oneswap.yaml'
             cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
 
