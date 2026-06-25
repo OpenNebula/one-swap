@@ -401,6 +401,13 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'Download the disk using rbvmomi2, then convert the vm using virt-v2v locally.'
     }
 
+    DOWNLOAD_STRIPES = {
+        :name => 'download_stripes',
+        :large => '--download-stripes N',
+        :description => 'Parallel HTTP range downloads for hybrid datastore transfers only. Default: 1',
+        :format => Integer
+    }
+
     WIN_GA = {
         :name => 'qemu_ga_win',
         :large => '--win-qemu-ga /path/to/iso',
@@ -585,7 +592,7 @@ CommandParser::CmdParser.new(ARGV) do
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE, ACCEPT_CERT] + AUTH_OPTS
-    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DELTA, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                     CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                     PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
                     SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH, INJECT_DNS, CONTEXT_MIN_FREE, CONTEXT_FAIL_LOW_SPACE, CONTEXT_TIMEOUT,
@@ -677,6 +684,10 @@ CommandParser::CmdParser.new(ARGV) do
             cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
 
+            if (options[:download_stripes] || 1).to_i > 1 && !options[:hybrid]
+                raise '--download-stripes N > 1 requires --hybrid.'
+            end
+
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
             raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk_path]
             if options[:hybrid] && (options[:custom_convert] || options[:esxi_ip] || options[:vddk_path])
@@ -712,6 +723,7 @@ CommandParser::CmdParser.new(ARGV) do
             options[:skip_prechecks]   ||= false
             options[:context_min_free] ||= 1024
             options[:context_timeout]  ||= 600
+            options[:download_stripes] ||= 1
 
             if options[:http_transfer]
                 options[:http_host] ||= Socket.ip_address_list.detect do |addrinfo|

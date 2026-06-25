@@ -2105,7 +2105,7 @@ _EOF_"
             end
 
             local_file = @options[:work_dir] + '/transfers/' + @props['name'] + "-disk#{i}.vmdk"
-            d[:backing][:datastore].download(remote_file, local_file)
+            hybrid_datastore_download(d[:backing][:datastore], remote_file, local_file)
             local_disks.append(local_file)
         end
 
@@ -2116,6 +2116,103 @@ _EOF_"
         puts "Downloaded disks from vCenter storage to local disk in (#{(Time.now - t0).round(2)}s)".green
 
         local_disks
+    end
+
+    def hybrid_datastore_download(datastore, remote_file, local_file)
+        stripes = (@options[:download_stripes] || 1).to_i
+        return datastore.download(remote_file, local_file) if stripes <= 1
+
+        http = datastore._connection.http
+        scheme = http.use_ssl? ? 'https' : 'http'
+        url = "#{scheme}://#{http.address}:#{http.port}" \
+              "#{datastore.send(:mkuripath, remote_file)}"
+        cookie = datastore._connection.cookie.to_s
+        headers_file = Tempfile.new('oneswap-range-headers')
+        probe_file = Tempfile.new('oneswap-range-probe')
+        headers_file.close
+        probe_file.close
+
+        probe_ok = system('curl', '-k', '--noproxy', '*', '-f',
+                          '-r', '0-1048575', '-D', headers_file.path,
+                          '--max-filesize', '1048576',
+                          '-o', probe_file.path, '-b', cookie, url)
+        content_range = File.read(headers_file.path).scan(
+            /^content-range:\s*bytes\s+0-(\d+)\/(\d+)\s*$/i
+        ).last
+
+        probe_end = content_range && content_range[0].to_i
+        remote_size = content_range && content_range[1].to_i
+        probe_size = File.size(probe_file.path)
+        valid_range = remote_size && remote_size > 0 &&
+                      probe_end == [1048575, remote_size - 1].min &&
+                      probe_size == [1048576, remote_size].min
+
+        unless probe_ok && valid_range
+            puts 'HTTP Range unsupported; using single-stream hybrid download'
+            return datastore.download(remote_file, local_file)
+        end
+
+        if stripes > remote_size
+            raise "Unable to split #{remote_size} bytes into #{stripes} download stripes."
+        end
+
+        ranges = stripes.times.map do |i|
+            first = (remote_size * i) / stripes
+            last = ((remote_size * (i + 1)) / stripes) - 1
+            [first, last]
+        end
+        part_files = ranges.each_index.map {|i| "#{local_file}.part#{i}" }
+
+        puts "Using striped hybrid download (#{stripes} stripes)"
+        ranges.each_with_index do |range, i|
+            puts "Stripe #{i}: bytes #{range[0]}-#{range[1]}"
+        end
+
+        pids = []
+        begin
+            ranges.each_with_index do |range, i|
+                pids << Process.spawn('curl', '-k', '--noproxy', '*', '-f',
+                                      '-r', "#{range[0]}-#{range[1]}",
+                                      '-o', part_files[i], '-b', cookie, url)
+            end
+            failed = []
+            pids.each_with_index do |pid, i|
+                _waited_pid, status = Process.wait2(pid)
+                failed << i unless status.success?
+            end
+
+            unless failed.empty?
+                raise "Striped hybrid download failed for stripe(s): #{failed.join(', ')}."
+            end
+
+            # TODO: Write ranges into a preallocated output file by offset to
+            # avoid temporary double disk usage.
+            File.open(local_file, 'wb') do |output|
+                part_files.each do |part_file|
+                    File.open(part_file, 'rb') do |part|
+                        IO.copy_stream(part, output)
+                    end
+                end
+            end
+
+            assembled_size = File.size(local_file)
+            if assembled_size != remote_size
+                FileUtils.rm_f(local_file)
+                raise "Striped hybrid download size mismatch: expected #{remote_size}, " \
+                      "got #{assembled_size}."
+            end
+        ensure
+            pids.each do |pid|
+                Process.wait(pid)
+            rescue Errno::ECHILD
+                nil
+            end
+            FileUtils.rm_f(part_files)
+        end
+        puts "Assembled striped hybrid download (#{assembled_size} bytes)"
+    ensure
+        headers_file&.unlink
+        probe_file&.unlink
     end
 
     def build_hybrid_xml(disks)
