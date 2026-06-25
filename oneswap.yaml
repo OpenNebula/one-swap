@@ -19,6 +19,10 @@
 #:custom_convert:                         # Uses OpenNebula's custom conversion process, useful for distributions which are not supported or fail to convert
 #:fallback:                               # Fallback to OpenNebula's custom conversion process
 #:hybrid:                                 # Transfer using rbvmomi2's download, then convert with virt-v2v locally
+# Number of parallel HTTP Range downloads used by hybrid datastore transfers.
+# Applies only to --hybrid mode. Default is 1, which preserves the existing
+# single-stream download behavior.
+#:download_stripes: 1
 #:img_wait:                               # Amount of time to wait in seconds for image to be created in OpenNebula, default: 120
 
 # Import Options
