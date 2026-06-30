@@ -25,6 +25,11 @@
 #:download_stripes: 1
 #:img_wait:                               # Amount of time to wait in seconds for image to be created in OpenNebula, default: 120
 
+# Dry-run Estimator Options
+#:dry_run_source_export_mib_s: 80         # Fallback source export throughput in MiB/s
+#:dry_run_qcow2_conversion_mib_s: 120     # Fallback qcow2 conversion throughput in MiB/s
+#:dry_run_target_import_mib_s: 80         # Fallback target import throughput in MiB/s
+
 # Import Options
 #:ova: /path/to/ova                       # Path to OVA or folder with OVF files
 

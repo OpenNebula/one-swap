@@ -425,12 +425,14 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def cleanup_passwords
-        puts 'Deleting password files.'
+        puts 'Deleting password files.' unless @options[:dry_run]
         File.delete("#{@options[:work_dir]}/vpassfile")
         File.delete("#{@options[:work_dir]}/esxpassfile")
     end
 
     def cleanup_disks
+        return if @options[:dry_run]
+
         if @options[:delete]
             puts "Deleting vdisks in #{"#{@options[:work_dir]}/conversions"}"
             FileUtils.rm_rf("#{@options[:work_dir]}/conversions")
@@ -443,6 +445,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def cleanup_dirs
+        return if @options[:dry_run]
+
         if @options[:delete]
             puts "Deleting everything in and including #{"#{@options[:work_dir]}"}"
             FileUtils.rm_rf("#{@options[:work_dir]}")
@@ -1816,6 +1820,134 @@ _EOF_"
         create_one_images(disks_on_file)
     end
 
+    def run_dry_run_estimate
+        if @options[:delta]
+            return run_delta_dry_run_estimate
+        end
+
+        disks = dry_run_disk_metadata
+        total_provisioned_mib = disks.sum {|disk| disk[:provisioned_mib] }
+        total_data_mib = disks.sum {|disk| disk[:estimated_data_mib] }
+
+        source_rate = positive_float_option(:dry_run_source_export_mib_s)
+        convert_rate = positive_float_option(:dry_run_qcow2_conversion_mib_s)
+        import_rate = positive_float_option(:dry_run_target_import_mib_s)
+
+        export_time = total_data_mib / source_rate
+        conversion_time = total_data_mib / convert_rate
+        import_time = total_data_mib / import_rate
+
+        puts 'OneSwap dry-run estimate'
+        puts "VM: #{@options[:name]}"
+        puts "Disks: #{disks.length}"
+        disks.each_with_index do |disk, index|
+            puts "  disk #{index + 1}: provisioned #{format_mib(disk[:provisioned_mib])}, " \
+                 "estimated data #{format_mib(disk[:estimated_data_mib])} " \
+                 "(#{disk[:data_source]})"
+        end
+        puts "Total provisioned size: #{format_mib(total_provisioned_mib)}"
+        puts "Estimated data size: #{format_mib(total_data_mib)}"
+        puts
+        puts 'Throughput assumptions:'
+        puts "  source export: #{source_rate.round(2)} MiB/s"
+        puts "  qcow2 conversion: #{convert_rate.round(2)} MiB/s"
+        puts "  target import: #{import_rate.round(2)} MiB/s"
+        puts
+        puts 'Estimated phase durations:'
+        puts "  export: #{format_duration(export_time)}"
+        puts "  conversion: #{format_duration(conversion_time)}"
+        puts "  import: #{format_duration(import_time)}"
+        puts "  total: #{format_duration(export_time + conversion_time + import_time)}"
+        puts
+        puts 'Warning: configured fallback throughput values are used.'
+    end
+
+    def run_delta_dry_run_estimate
+        delta_mib = dry_run_known_delta_mib
+
+        puts 'OneSwap dry-run delta estimate'
+        puts "VM: #{@options[:name]}"
+
+        if delta_mib.nil?
+            puts 'Downtime estimate is not available. The remaining delta size is only known after the base phase has been completed.'
+            return
+        end
+
+        source_rate = positive_float_option(:dry_run_source_export_mib_s)
+        import_rate = positive_float_option(:dry_run_target_import_mib_s)
+        downtime = delta_mib / [source_rate, import_rate].min
+
+        puts "Known remaining delta size: #{format_mib(delta_mib)}"
+        puts "Bottleneck throughput: #{[source_rate, import_rate].min.round(2)} MiB/s"
+        puts "Estimated downtime: #{format_duration(downtime)}"
+    end
+
+    def dry_run_disk_metadata
+        devices = @props['config'][:hardware][:device]
+        devices.grep(RbVmomi::VIM::VirtualDisk).sort_by(&:key).map do |disk|
+            provisioned_mib = virtual_disk_provisioned_mib(disk)
+            allocated_mib = virtual_disk_allocated_mib(disk)
+
+            {
+                :provisioned_mib => provisioned_mib,
+                :estimated_data_mib => allocated_mib || provisioned_mib,
+                :data_source => allocated_mib ? 'allocated size from metadata' : 'provisioned size fallback'
+            }
+        end
+    end
+
+    def virtual_disk_provisioned_mib(disk)
+        if disk.respond_to?(:capacityInBytes) && disk.capacityInBytes
+            disk.capacityInBytes.to_f / (1024 * 1024)
+        else
+            disk.capacityInKB.to_f / 1024
+        end
+    end
+
+    def virtual_disk_allocated_mib(disk)
+        backing = disk.respond_to?(:backing) ? disk.backing : nil
+        return nil unless backing && backing.respond_to?(:committed) && backing.committed
+
+        backing.committed.to_f / (1024 * 1024)
+    end
+
+    def dry_run_known_delta_mib
+        # The current delta implementation runs the full flow inside live2kvm:
+        # snapshot creation, base transfer/conversion, VM shutdown, and delta apply.
+        # There is no persisted base-phase state or known remaining delta size yet.
+        nil
+    end
+
+    def positive_float_option(name)
+        value = @options[name].to_f
+        raise "#{name} must be greater than zero" if value <= 0
+
+        value
+    end
+
+    def format_mib(mib)
+        if mib >= 1024
+            "#{(mib / 1024).round(2)} GiB"
+        else
+            "#{mib.round(2)} MiB"
+        end
+    end
+
+    def format_duration(seconds)
+        seconds = seconds.round
+        hours = seconds / 3600
+        minutes = (seconds % 3600) / 60
+        secs = seconds % 60
+
+        if hours > 0
+            format('%dh %dm %ds', hours, minutes, secs)
+        elsif minutes > 0
+            format('%dm %ds', minutes, secs)
+        else
+            format('%ds', secs)
+        end
+    end
+
     # Create and run the qemu-img vmdk conversion
     # This uses qemu-img to convert an vmdk image to desired format (Default: qcow2).
     # Outputs a converted image location if success
@@ -3136,6 +3268,20 @@ GUESTFISH
         end
 
         @props = vm.to_hash
+
+        if @options[:dry_run]
+            if @props['config'][:guestFullName].include?('Windows') && @options[:custom_convert]
+                raise "Windows is not supported in OpenNebula's Custom Conversion process".red
+            end
+
+            # OpenNebula system prechecks
+            if !@options[:skip_prechecks]
+                one_prechecks(vm)
+            end
+
+            run_dry_run_estimate
+            return
+        end
 
         # If clone option is set, clone the VM and override VM properties
         if @options[:clone]
