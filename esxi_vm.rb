@@ -136,13 +136,18 @@ class ESXi::VirtualMachine
             live_storage_transfer_cleanup(transfer_dir, message)
             return false
         end
-        puts "Transferred base disk files in #{format_elapsed(Time.now - t0)}."
+        base_transfer_seconds = Time.now - t0
+        base_transfer_bytes = local_tree_size(transfer_dir)
+        base_transfer_mib_s = mib_per_second(base_transfer_bytes, base_transfer_seconds)
+        puts "Transferred base disk files in #{format_elapsed(base_transfer_seconds)}."
 
         cloned_vmdk_list = Dir.children(transfer_dir)
 
         convert_dir = "#{transfer_dir}/convert"
         Dir.mkdir(convert_dir) unless Dir.exist?(convert_dir)
 
+        base_convert_seconds = 0.0
+        base_convert_bytes = 0
         cloned_vmdk_list.each do |file|
             next if file.end_with?('-flat.vmdk')
 
@@ -153,7 +158,10 @@ class ESXi::VirtualMachine
             puts "Converting base disk to raw: #{file}..."
             t0 = Time.now
             if @client.convert_vmdk(source, target, format)
-                puts "Converted #{file} to raw in #{format_elapsed(Time.now - t0)}."
+                elapsed = Time.now - t0
+                base_convert_seconds += elapsed
+                base_convert_bytes += File.size(target) if File.exist?(target)
+                puts "Converted #{file} to raw in #{format_elapsed(elapsed)}."
                 next
             end
 
@@ -161,6 +169,7 @@ class ESXi::VirtualMachine
             live_storage_transfer_cleanup(transfer_dir, message)
             return false
         end
+        base_convert_mib_s = mib_per_second(base_convert_bytes, base_convert_seconds)
 
         puts 'Writing prepared delta state...'
         state = {
@@ -174,6 +183,12 @@ class ESXi::VirtualMachine
             # Delta size is only a point-in-time value while the VM keeps running;
             # it can continue growing until the final commit phase shuts it down.
             'delta_size_bytes' => nil,
+            'base_transfer_bytes' => base_transfer_bytes,
+            'base_transfer_seconds' => base_transfer_seconds,
+            'base_transfer_mib_s' => base_transfer_mib_s,
+            'base_convert_bytes' => base_convert_bytes,
+            'base_convert_seconds' => base_convert_seconds,
+            'base_convert_mib_s' => base_convert_mib_s,
             'disks' => disks
         }
         if !write_live2kvm_state(target_dir, state)
@@ -289,6 +304,10 @@ class ESXi::VirtualMachine
         total
     end
 
+    def live2kvm_state(target_dir)
+        read_live2kvm_state(target_dir)
+    end
+
     def disable_autostart
         @client.disable_vm_autostart(@id)
     end
@@ -391,6 +410,18 @@ class ESXi::VirtualMachine
 
     def format_elapsed(seconds)
         "#{seconds.round(2)}s"
+    end
+
+    def local_tree_size(path)
+        Dir.glob("#{path}/**/*", File::FNM_DOTMATCH).sum do |file|
+            File.file?(file) ? File.size(file) : 0
+        end
+    end
+
+    def mib_per_second(bytes, seconds)
+        return nil if bytes.to_i <= 0 || seconds.to_f <= 0
+
+        (bytes.to_f / (1024 * 1024)) / seconds.to_f
     end
 
     def live_storage_transfer_precheck

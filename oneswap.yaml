@@ -12,8 +12,8 @@
 
 # ESXi Authentication
 #:esxi_ip: '172.20.0.123'                 # ESXi hostname or IP
-#:esxi_user: 'root'                       # ESXi username
-#:esxi_pass: 'changeme123'                # ESXi password
+#:esxi_user: 'root'                       # ESXi username. Also used by delta prepare/commit when passwordless SSH is not available.
+#:esxi_pass: 'changeme123'                # ESXi password. Also used by delta prepare/commit when passwordless SSH is not available.
 
 # Transfer Options
 #:custom_convert:                         # Uses OpenNebula's custom conversion process, useful for distributions which are not supported or fail to convert
@@ -26,9 +26,9 @@
 #:img_wait:                               # Amount of time to wait in seconds for image to be created in OpenNebula, default: 120
 
 # Dry-run Estimator Options
-#:dry_run_source_export_mib_s: 80         # Fallback source export throughput in MiB/s
-#:dry_run_qcow2_conversion_mib_s: 120     # Fallback qcow2 conversion throughput in MiB/s
-#:dry_run_target_import_mib_s: 80         # Fallback target import throughput in MiB/s
+#:dry_run_source_export_mib_s: 80         # Fallback source/export throughput in MiB/s. Delta dry-run prefers measured prepare transfer throughput when available.
+#:dry_run_qcow2_conversion_mib_s: 120     # Fallback qcow2 conversion throughput in MiB/s for regular dry-run estimates.
+#:dry_run_target_import_mib_s: 80         # Fallback target import throughput in MiB/s, including delta downtime estimates.
 
 # Import Options
 #:ova: /path/to/ova                       # Path to OVA or folder with OVF files

@@ -1,6 +1,8 @@
 require 'open3'
 require 'logger'
 require 'fileutils'
+require 'tempfile'
+require 'shellwords'
 
 module ESXi; end
 
@@ -17,8 +19,14 @@ class ESXi::Client
     def initialize(host, logger = self.class.stdout_logger, options = {})
         @host = host
         @logger = logger
-        @ssh_options = options[:non_interactive] ? '-o BatchMode=yes -o NumberOfPasswordPrompts=0' : ''
-        precheck
+        @user = options[:user] || USER
+        @password = options[:password]
+        @non_interactive = options[:non_interactive] || false
+        @ssh_options = ''
+        @ssh_env = {}
+
+        authenticate!
+        dependency_precheck
 
         @vm_list = []
     end
@@ -157,7 +165,7 @@ class ESXi::Client
     def pull_files(files, target)
         source = "#{@host}:#{files}"
         @logger.info "Copying files from #{source} to #{target}"
-        scp("#{USER}@#{source}", target)
+        scp("#{@user}@#{source}", target)
     end
 
     def remove_files(target)
@@ -314,15 +322,30 @@ class ESXi::Client
         logger
     end
 
-    def precheck
+    def authenticate!
         check_cmd = "#{CTRL_CMD} -v"
+        @ssh_options = '-o BatchMode=yes -o NumberOfPasswordPrompts=0'
+        @ssh_env = {}
         _, _, s = ssh(check_cmd)
+        return true if s
 
-        if !s
-            @logger.error "Failed to run #{check_cmd} as user #{USER} via SSH on ESXi host #{@host}"
-            raise "#{USER} passwordless SSH access is required for the ESXi Client"
+        if @password && !@password.to_s.empty?
+            configure_password_auth
+            _, _, s = ssh(check_cmd)
+            return true if s
         end
 
+        if !@non_interactive
+            @ssh_options = '-o NumberOfPasswordPrompts=3'
+            @ssh_env = {}
+            _, _, s = ssh(check_cmd)
+            return true if s
+        end
+
+        raise "Unable to authenticate to ESXi host #{@user}@#{@host}. Configure passwordless SSH or set esxi_user/esxi_pass. Authentication failed after 3 attempts."
+    end
+
+    def dependency_precheck
         CLI_UTILS.each do |cmd|
             if !ESXi::Client.command_exists?(cmd)
                 message = "Command #{cmd} not found. Limited functionality available"
@@ -340,14 +363,14 @@ class ESXi::Client
     end
 
     def ssh(cmd)
-        ssh_cmd = "ssh #{@ssh_options} #{USER}@#{@host} '#{cmd}'"
-        execute(ssh_cmd)
+        ssh_cmd = "ssh #{@ssh_options} #{@user}@#{@host} '#{cmd}'"
+        execute(ssh_cmd, @ssh_env)
     end
 
     def scp(source, target)
-        cmd = "scp -r #{source} #{target}"
+        cmd = "scp #{@ssh_options} -r #{source} #{target}"
         message = "Failed to perform remote copy from #{source} to #{target}"
-        live_execution(cmd, message)
+        live_execution(cmd, message, @ssh_env)
     end
 
     def simple_execution(cmd, error_message = nil)
@@ -358,9 +381,9 @@ class ESXi::Client
         s
     end
 
-    def live_execution(cmd, error_message = nil)
+    def live_execution(cmd, error_message = nil, env = {})
         status = nil
-        Open3.popen3(cmd) do |stdin, stdout, stderr, wait_thr|
+        Open3.popen3(env, cmd) do |stdin, stdout, stderr, wait_thr|
             stdin.close
 
             threads = []
@@ -376,11 +399,11 @@ class ESXi::Client
         status
     end
 
-    def execute(cmd)
+    def execute(cmd, env = {})
         @logger.debug "Running command #{cmd}"
 
         t0 = Time.now
-        stdout, stderr, status = Open3.capture3(cmd)
+        stdout, stderr, status = Open3.capture3(env, cmd)
         @logger.debug "Execution time #{Time.now - t0}"
 
         if !status.success?
@@ -393,6 +416,20 @@ class ESXi::Client
 
     def log_host_operation(operation_message)
         @logger.info("#{operation_message} on ESXi host #{@host}")
+    end
+
+    def configure_password_auth
+        @askpass_file = Tempfile.new('oneswap-esxi-askpass')
+        @askpass_file.write("#!/bin/sh\nprintf '%s\\n' #{Shellwords.escape(@password)}\n")
+        @askpass_file.close
+        File.chmod(0o700, @askpass_file.path)
+
+        @ssh_options = '-o BatchMode=no -o NumberOfPasswordPrompts=1'
+        @ssh_env = {
+            'SSH_ASKPASS' => @askpass_file.path,
+            'SSH_ASKPASS_REQUIRE' => 'force',
+            'DISPLAY' => ENV['DISPLAY'].to_s.empty? ? 'none:0' : ENV['DISPLAY']
+        }
     end
 
 end

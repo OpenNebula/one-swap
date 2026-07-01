@@ -1885,23 +1885,24 @@ _EOF_"
     end
 
     def run_delta_dry_run_estimate
-        delta_mib = dry_run_known_delta_mib
+        delta_info = dry_run_delta_info
 
         puts 'OneSwap dry-run delta estimate'
         puts "VM: #{@options[:name]}"
 
-        if delta_mib.nil?
+        if delta_info.nil?
             puts 'Downtime estimate is not available. The remaining delta size is only known after the base phase has been completed.'
             return
         end
 
-        source_rate = positive_float_option(:dry_run_source_export_mib_s)
+        delta_mib = delta_info[:delta_mib]
+        source_rate = delta_info[:source_rate]
         import_rate = positive_float_option(:dry_run_target_import_mib_s)
         bottleneck_rate = [source_rate, import_rate].min
         downtime = delta_mib / bottleneck_rate
 
         puts "Current known delta size: #{format_mib(delta_mib)}"
-        puts "Source export fallback rate: #{source_rate.round(2)} MiB/s"
+        puts "Source export #{delta_info[:source_rate_source]} rate: #{source_rate.round(2)} MiB/s"
         puts "Target import fallback rate: #{import_rate.round(2)} MiB/s"
         puts "Bottleneck throughput: #{bottleneck_rate.round(2)} MiB/s"
         puts "Estimated downtime: #{format_duration(downtime)}"
@@ -1938,6 +1939,11 @@ _EOF_"
     end
 
     def dry_run_known_delta_mib
+        info = dry_run_delta_info
+        info && info[:delta_mib]
+    end
+
+    def dry_run_delta_info
         client = ESXi::Client.new(get_esxi_host, @logger, esxi_client_options(:non_interactive => true))
         vm = client.get_vm_by_name(@options[:name])
         return nil unless vm
@@ -1945,7 +1951,21 @@ _EOF_"
         bytes = vm.live2kvm_current_delta_size_bytes(@options[:work_dir])
         return nil if bytes.nil?
 
-        bytes.to_f / (1024 * 1024)
+        state = vm.live2kvm_state(@options[:work_dir]) || {}
+        measured_rate = state['base_transfer_mib_s'].to_f
+        if measured_rate > 0
+            source_rate = measured_rate
+            source_rate_source = 'measured prepare transfer'
+        else
+            source_rate = positive_float_option(:dry_run_source_export_mib_s)
+            source_rate_source = 'fallback'
+        end
+
+        {
+            :delta_mib => bytes.to_f / (1024 * 1024),
+            :source_rate => source_rate,
+            :source_rate_source => source_rate_source
+        }
     rescue StandardError => e
         @logger.warn "Unable to read prepared delta size: #{e.message}"
         nil

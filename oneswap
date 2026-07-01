@@ -383,6 +383,18 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'Convert the VM with reduced downtime using snapshots. Requires ESXi host paswordless root SSH access.'
     }
 
+    DELTA_PREPARE = {
+        :name => 'delta_prepare',
+        :large => '--delta-prepare',
+        :description => 'Run only the delta base phase and persist state for a later dry-run or commit.'
+    }
+
+    DELTA_COMMIT = {
+        :name => 'delta_commit',
+        :large => '--delta-commit',
+        :description => 'Run only the delta final phase from prepared state.'
+    }
+
     DRY_RUN = {
         :name => 'dry_run',
         :large => '--dry-run',
@@ -598,7 +610,7 @@ CommandParser::CmdParser.new(ARGV) do
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE, ACCEPT_CERT] + AUTH_OPTS
-    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, DRY_RUN, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, DELTA_PREPARE, DELTA_COMMIT, DRY_RUN, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                     CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                     PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
                     SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH, INJECT_DNS, CONTEXT_MIN_FREE, CONTEXT_FAIL_LOW_SPACE, CONTEXT_TIMEOUT,
@@ -692,6 +704,16 @@ CommandParser::CmdParser.new(ARGV) do
 
             if (options[:download_stripes] || 1).to_i > 1 && !options[:hybrid]
                 raise '--download-stripes N > 1 requires --hybrid.'
+            end
+
+            if (options[:delta_prepare] || options[:delta_commit]) && !options[:delta]
+                raise '--delta-prepare and --delta-commit require --delta.'
+            end
+            if options[:delta_prepare] && options[:delta_commit]
+                raise '--delta-prepare cannot be combined with --delta-commit.'
+            end
+            if options[:dry_run] && (options[:delta_prepare] || options[:delta_commit])
+                raise '--dry-run cannot be combined with --delta-prepare or --delta-commit.'
             end
 
             if options[:delta]

@@ -66,6 +66,71 @@ and copies only the VDDK plugin into nbdkit's plugin directory. It requires
 internet access, or an internal mirror via the `NBDKIT_REPO_URL` environment
 variable.
 
+## Dry-run Estimates
+
+To estimate a regular conversion without running the migration:
+
+```
+oneswap convert <vm> --dry-run
+```
+
+This reads VM and disk metadata, estimates export, qcow2 conversion, and
+OpenNebula import time, and uses the configured fallback throughput values from
+`oneswap.yaml`. It does not create VMware snapshots, OpenNebula images, or
+OpenNebula templates, and it does not modify the source VM.
+
+### Delta Dry-run Workflow
+
+For delta migrations, run the base phase first:
+
+```
+oneswap convert <vm> --delta --delta-prepare
+```
+
+This creates a VMware snapshot while the source VM keeps running, then
+clones, transfers, and converts the base disks. It writes prepared state under
+the VM work directory and does not shut down the VM, apply the final delta, or
+create OpenNebula images/templates. The VMware snapshot remains active after
+prepare, so the delta can continue growing.
+
+Then estimate downtime from the prepared state:
+
+```
+oneswap convert <vm> --dry-run --delta
+```
+
+This reads the prepared state, checks the current snapshot delta extent size
+on ESXi, and estimates downtime from the current delta size. When available,
+it prefers the measured base transfer throughput stored during prepare; if
+that data is missing, it falls back to the configured dry-run throughput
+values.
+
+Finally, run the downtime phase:
+
+```
+oneswap convert <vm> --delta --delta-commit
+```
+
+This shuts down the source VM, copies and applies the remaining delta, and
+then creates OpenNebula images/templates through the existing migration flow.
+
+For backward compatibility, the original command still performs the full delta
+migration in one shot:
+
+```
+oneswap convert <vm> --delta
+```
+
+Delta migration discovers the ESXi host from vCenter `runtime.host`. ESXi SSH
+authentication tries passwordless SSH first, then uses `esxi_user`/`esxi_pass`
+from CLI options or `oneswap.yaml`, and finally falls back to a limited
+interactive prompt. A single `esxi_user`/`esxi_pass` pair applies to the
+discovered ESXi host; per-host credential mapping is not implemented.
+
+Do not leave the VMware snapshot created by `--delta --delta-prepare` active
+indefinitely. Either finish with `--delta --delta-commit` or remove/clean up
+the snapshot if aborting the migration.
+
 ## vCenter Permissions Requirements
 
 OneSwap requires specific vCenter permissions depending on the conversion mode used. Below are the required privileges for vCenter 8.
