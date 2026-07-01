@@ -1806,18 +1806,39 @@ _EOF_"
 
     # Passworldess root access to ESXi host IP required
     def run_delta_conversion
-        client = ESXi::Client.new(get_esxi_host, @logger)
+        client = ESXi::Client.new(get_esxi_host, @logger, esxi_client_options)
 
         vm_name = @options[:name]
         vm = client.get_vm_by_name(vm_name)
 
-        conversion_dir = vm.live2kvm(@options[:work_dir])
+        conversion_dir = if @options[:delta_commit]
+                             vm.live2kvm_commit(@options[:work_dir])
+                         else
+                             vm.live2kvm(@options[:work_dir])
+                         end
 
         raise 'Failed to perform delta migration' unless conversion_dir
 
         disks_on_file = Dir.children(conversion_dir).map {|disk| File.join(conversion_dir, disk) }
 
         create_one_images(disks_on_file)
+    end
+
+    def run_delta_prepare
+        esxi_host = get_esxi_host
+        puts "Checking ESXi SSH/auth for #{@options[:esxi_user] || 'root'}@#{esxi_host}..."
+        client = ESXi::Client.new(esxi_host, @logger, esxi_client_options)
+        puts 'ESXi SSH/auth check completed.'
+
+        vm_name = @options[:name]
+        vm = client.get_vm_by_name(vm_name)
+
+        state = vm.live2kvm_prepare(@options[:work_dir])
+        raise 'Failed to prepare delta migration' unless state
+
+        state_file = File.join(state['transfer_dir'], 'oneswap-delta-state.yaml')
+        puts "Delta base phase prepared. State file: #{state_file}"
+        puts 'Warning: the VM snapshot remains active. Delta size can continue growing until --delta-commit is run.'
     end
 
     def run_dry_run_estimate
@@ -1917,7 +1938,7 @@ _EOF_"
     end
 
     def dry_run_known_delta_mib
-        client = ESXi::Client.new(get_esxi_host, @logger, :non_interactive => true)
+        client = ESXi::Client.new(get_esxi_host, @logger, esxi_client_options(:non_interactive => true))
         vm = client.get_vm_by_name(@options[:name])
         return nil unless vm
 
@@ -1928,6 +1949,13 @@ _EOF_"
     rescue StandardError => e
         @logger.warn "Unable to read prepared delta size: #{e.message}"
         nil
+    end
+
+    def esxi_client_options(extra = {})
+        {
+            :user => @options[:esxi_user] || 'root',
+            :password => @options[:esxi_pass]
+        }.merge(extra)
     end
 
     def dry_run_conversion_mode
@@ -3332,6 +3360,11 @@ GUESTFISH
         # OpenNebula system prechecks
         if !@options[:skip_prechecks]
             one_prechecks(vm)
+        end
+
+        if @options[:delta_prepare]
+            run_delta_prepare
+            return
         end
 
         # Gather NIC backing early because it makes a call to vCenter,

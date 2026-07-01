@@ -58,15 +58,22 @@ class ESXi::VirtualMachine
     end
 
     def live2kvm_prepare(target_dir)
+        puts "Starting delta prepare for VM #{@name}."
+        puts 'Running delta prepare prechecks...'
         return false unless live_storage_transfer_precheck
+        puts 'Delta prepare prechecks completed.'
 
         transfer_dir = live2kvm_transfer_dir(target_dir)
+        puts "Cleaning previous delta work directories at #{transfer_dir}..."
         live_storage_transfer_cleanup(transfer_dir)
 
         results_dir = live2kvm_results_dir(target_dir)
         FileUtils.rm_r(results_dir) if Dir.exist?(results_dir)
+        puts 'Previous delta work directories cleaned.'
 
+        puts "Creating premigrate snapshot for VM #{@name}..."
         @logger.info "Creating premigrate snapshot for VM #{@name}"
+        t0 = Time.now
         snapshot_name = ESXi::Client.default_snapshot_name
         snapshot_options = ESXi::Client.default_snapshot_options
         if !vmwaretools?
@@ -78,6 +85,7 @@ class ESXi::VirtualMachine
             @logger.error 'Aborting live storage transfer due to failed snapshot creation'
             return false
         end
+        puts "Snapshot created in #{format_elapsed(Time.now - t0)}."
 
         FileUtils.mkdir_p(transfer_dir) unless Dir.exist?(transfer_dir)
         if !@client.create_dir(@clone_dir)
@@ -86,9 +94,13 @@ class ESXi::VirtualMachine
             return false
         end
 
+        puts 'Reading VMX and detecting active disks...'
+        t0 = Time.now
         refresh_vmx # snapshots created new active disks
+        detected_disks = active_disks
+        puts "Detected #{detected_disks.length} active disk(s) in #{format_elapsed(Time.now - t0)}."
         disks = []
-        active_disks.each do |disk|
+        detected_disks.each do |disk|
             vmdk_data = vmdk_info(disk)
             parent_disk = vmdk_data['parentFileNameHint']
             disk_name = disk.chomp('.vmdk')
@@ -97,7 +109,10 @@ class ESXi::VirtualMachine
             clone_source = storage_path(parent_disk)
             clone_target = "#{@clone_dir}/#{parent_disk}"
 
+            puts "Cloning base disk on ESXi: #{parent_disk}..."
+            t0 = Time.now
             if @client.clone_virtual_disk(clone_source, clone_target)
+                puts "Cloned base disk #{parent_disk} in #{format_elapsed(Time.now - t0)}."
                 disks << {
                     'active_snapshot_descriptor' => disk,
                     'active_snapshot_extent' => "#{disk_name}-sesparse.vmdk",
@@ -114,11 +129,14 @@ class ESXi::VirtualMachine
         end
 
         @logger.info "Transferring VM #{@name} storage to #{transfer_dir}"
+        puts "Transferring base disk files to local work dir #{transfer_dir}..."
+        t0 = Time.now
         if !@client.pull_files("#{@clone_dir}/*", transfer_dir)
             message = 'failed disk transfer'
             live_storage_transfer_cleanup(transfer_dir, message)
             return false
         end
+        puts "Transferred base disk files in #{format_elapsed(Time.now - t0)}."
 
         cloned_vmdk_list = Dir.children(transfer_dir)
 
@@ -132,13 +150,19 @@ class ESXi::VirtualMachine
             target = "#{convert_dir}/#{file.chomp('.vmdk')}.raw"
             format = 'raw'
 
-            next if @client.convert_vmdk(source, target, format)
+            puts "Converting base disk to raw: #{file}..."
+            t0 = Time.now
+            if @client.convert_vmdk(source, target, format)
+                puts "Converted #{file} to raw in #{format_elapsed(Time.now - t0)}."
+                next
+            end
 
             message = "failed disk #{source} conversion"
             live_storage_transfer_cleanup(transfer_dir, message)
             return false
         end
 
+        puts 'Writing prepared delta state...'
         state = {
             'vm_name' => @name,
             'vm_storage_path' => @vm_storage,
@@ -157,6 +181,7 @@ class ESXi::VirtualMachine
             live_storage_transfer_cleanup(transfer_dir, message)
             return false
         end
+        puts "Prepared delta state written to #{live2kvm_state_file(target_dir)}."
 
         state
     end
@@ -362,6 +387,10 @@ class ESXi::VirtualMachine
     rescue StandardError => e
         @logger.error "Failed to read delta migration state: #{e.message}"
         nil
+    end
+
+    def format_elapsed(seconds)
+        "#{seconds.round(2)}s"
     end
 
     def live_storage_transfer_precheck
