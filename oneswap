@@ -694,6 +694,19 @@ CommandParser::CmdParser.new(ARGV) do
                 raise '--download-stripes N > 1 requires --hybrid.'
             end
 
+            if options[:delta]
+                incompatible_delta = []
+                incompatible_delta << '--custom' if options[:custom_convert]
+                incompatible_delta << '--hybrid' if options[:hybrid]
+                incompatible_delta << '--fallback' if options[:fallback]
+                incompatible_delta << '--vddk' if options[:vddk_path]
+                incompatible_delta << '--esxi' if options[:esxi_ip]
+
+                if !incompatible_delta.empty?
+                    raise "--delta cannot be combined with #{incompatible_delta.join(', ')}."
+                end
+            end
+
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
             raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk_path]
             if options[:hybrid] && (options[:custom_convert] || options[:esxi_ip] || options[:vddk_path])

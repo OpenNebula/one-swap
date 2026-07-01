@@ -52,22 +52,28 @@ class ESXi::VirtualMachine
 
     # TODO: Report document output with timers
     def live2kvm(target_dir)
+        return false unless live2kvm_prepare(target_dir)
+
+        live2kvm_commit(target_dir)
+    end
+
+    def live2kvm_prepare(target_dir)
         return false unless live_storage_transfer_precheck
 
-        transfer_dir = "#{target_dir}/esxi_client-#{@name}"
+        transfer_dir = live2kvm_transfer_dir(target_dir)
         live_storage_transfer_cleanup(transfer_dir)
 
-        results_dir = "#{target_dir}/esxi2kvm-#{@name}"
+        results_dir = live2kvm_results_dir(target_dir)
         FileUtils.rm_r(results_dir) if Dir.exist?(results_dir)
 
         @logger.info "Creating premigrate snapshot for VM #{@name}"
-        if !(if vmwaretools?
-                 create_snapshot
-             else
-                 name = ESXi::Client.default_snapshot_name
-                 options = ESXi::Client.default_snapshot_options.merge({ :quiesce => true })
-                 create_snapshot(name, options)
-             end)
+        snapshot_name = ESXi::Client.default_snapshot_name
+        snapshot_options = ESXi::Client.default_snapshot_options
+        if !vmwaretools?
+            snapshot_options = snapshot_options.merge({ :quiesce => true })
+        end
+
+        if !create_snapshot(snapshot_name, snapshot_options)
 
             @logger.error 'Aborting live storage transfer due to failed snapshot creation'
             return false
@@ -81,14 +87,25 @@ class ESXi::VirtualMachine
         end
 
         refresh_vmx # snapshots created new active disks
+        disks = []
         active_disks.each do |disk|
             vmdk_data = vmdk_info(disk)
             parent_disk = vmdk_data['parentFileNameHint']
+            disk_name = disk.chomp('.vmdk')
+            parent_disk_name = parent_disk.chomp('.vmdk')
 
             clone_source = storage_path(parent_disk)
             clone_target = "#{@clone_dir}/#{parent_disk}"
 
-            next if @client.clone_virtual_disk(clone_source, clone_target)
+            if @client.clone_virtual_disk(clone_source, clone_target)
+                disks << {
+                    'active_snapshot_descriptor' => disk,
+                    'active_snapshot_extent' => "#{disk_name}-sesparse.vmdk",
+                    'parent_base_descriptor' => parent_disk,
+                    'converted_raw_base_path' => "#{transfer_dir}/convert/#{parent_disk_name}.raw"
+                }
+                next
+            end
 
             message = "failed disk #{parent_disk} clone"
 
@@ -98,7 +115,7 @@ class ESXi::VirtualMachine
 
         @logger.info "Transferring VM #{@name} storage to #{transfer_dir}"
         if !@client.pull_files("#{@clone_dir}/*", transfer_dir)
-            message = "failed disk #{parent_disk} transfer"
+            message = 'failed disk transfer'
             live_storage_transfer_cleanup(transfer_dir, message)
             return false
         end
@@ -122,6 +139,36 @@ class ESXi::VirtualMachine
             return false
         end
 
+        state = {
+            'vm_name' => @name,
+            'vm_storage_path' => @vm_storage,
+            'datastore_path' => "#{ESXi::Client::DATASTORES_PATH}/#{@datastore}",
+            'snapshot_name' => snapshot_name,
+            'transfer_dir' => transfer_dir,
+            'convert_dir' => convert_dir,
+            'results_dir' => results_dir,
+            # Delta size is only a point-in-time value while the VM keeps running;
+            # it can continue growing until the final commit phase shuts it down.
+            'delta_size_bytes' => nil,
+            'disks' => disks
+        }
+        if !write_live2kvm_state(target_dir, state)
+            message = 'failed to persist delta migration state'
+            live_storage_transfer_cleanup(transfer_dir, message)
+            return false
+        end
+
+        state
+    end
+
+    def live2kvm_commit(target_dir)
+        state = read_live2kvm_state(target_dir)
+        return false unless state
+
+        transfer_dir = state['transfer_dir']
+        convert_dir = state['convert_dir']
+        results_dir = state['results_dir']
+
         t0 = Time.now
         @logger.warn "Shutting down VM #{@name}. Downtime begins"
         if !shutdown
@@ -131,20 +178,17 @@ class ESXi::VirtualMachine
         end
 
         # transfer and apply active snapshot vmdk
-        active_disks.each do |disk|
+        state['disks'].each do |disk_data|
             # alma9-clone_17-000022.vmdk
             # alma9-clone --> vm name
             # _17 --> disk identifier
             # --> 000022 snapshots
-            disk_name = disk.chomp('.vmdk')
-
-            vmdk_data = vmdk_info(disk)
-            parent_disk = vmdk_data['parentFileNameHint']
-            parent_disk_name = parent_disk.chomp('.vmdk')
+            disk = disk_data['active_snapshot_descriptor']
+            snapshot_extent = disk_data['active_snapshot_extent']
 
             # copy vmdk metadata + bits
-            ['', '-sesparse'].each do |suffix|
-                source = storage_path("#{disk_name}#{suffix}.vmdk")
+            [disk, snapshot_extent].each do |file|
+                source = storage_path(file)
 
                 next if @client.pull_files(source, transfer_dir)
 
@@ -154,8 +198,8 @@ class ESXi::VirtualMachine
             end
 
             # apply active snapshot to flat converted disk
-            snapshot = "#{transfer_dir}/#{disk_name}-sesparse.vmdk"
-            parent = "#{convert_dir}/#{parent_disk_name}.raw"
+            snapshot = "#{transfer_dir}/#{snapshot_extent}"
+            parent = disk_data['converted_raw_base_path']
 
             next if @client.apply_vmdk_snapshot_to_raw(snapshot, parent)
 
@@ -192,6 +236,32 @@ class ESXi::VirtualMachine
         live_storage_transfer_cleanup(transfer_dir)
 
         results_dir
+    end
+
+    def live2kvm_current_delta_size_bytes(target_dir)
+        state = read_live2kvm_state(target_dir)
+        return nil unless state
+
+        disks = state['disks']
+        return nil unless disks.is_a?(Array) && !disks.empty?
+
+        total = 0
+        disks.each do |disk_data|
+            extent = disk_data['active_snapshot_extent']
+            return nil if extent.to_s.empty?
+
+            # This is a point-in-time value. While the VM keeps running after
+            # prepare, snapshot delta extents can continue to grow.
+            size = @client.file_size_bytes(storage_path(extent))
+            return nil if size.nil?
+
+            total += size
+        end
+
+        state['delta_size_bytes'] = total
+        write_live2kvm_state(target_dir, state)
+
+        total
     end
 
     def disable_autostart
@@ -260,6 +330,39 @@ class ESXi::VirtualMachine
     end
 
     private
+
+    def live2kvm_transfer_dir(target_dir)
+        "#{target_dir}/esxi_client-#{@name}"
+    end
+
+    def live2kvm_results_dir(target_dir)
+        "#{target_dir}/esxi2kvm-#{@name}"
+    end
+
+    def live2kvm_state_file(target_dir)
+        "#{live2kvm_transfer_dir(target_dir)}/oneswap-delta-state.yaml"
+    end
+
+    def write_live2kvm_state(target_dir, state)
+        File.write(live2kvm_state_file(target_dir), state.to_yaml)
+        true
+    rescue StandardError => e
+        @logger.error "Failed to write delta migration state: #{e.message}"
+        false
+    end
+
+    def read_live2kvm_state(target_dir)
+        state_file = live2kvm_state_file(target_dir)
+        if !File.exist?(state_file)
+            @logger.error "Delta migration state file not found at #{state_file}"
+            return nil
+        end
+
+        YAML.load_file(state_file)
+    rescue StandardError => e
+        @logger.error "Failed to read delta migration state: #{e.message}"
+        nil
+    end
 
     def live_storage_transfer_precheck
         if !running?

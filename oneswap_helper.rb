@@ -1839,6 +1839,7 @@ _EOF_"
 
         puts 'OneSwap dry-run estimate'
         puts "VM: #{@options[:name]}"
+        puts "Conversion mode: #{dry_run_conversion_mode}"
         puts "Disks: #{disks.length}"
         disks.each_with_index do |disk, index|
             puts "  disk #{index + 1}: provisioned #{format_mib(disk[:provisioned_mib])}, " \
@@ -1859,7 +1860,7 @@ _EOF_"
         puts "  import: #{format_duration(import_time)}"
         puts "  total: #{format_duration(export_time + conversion_time + import_time)}"
         puts
-        puts 'Warning: configured fallback throughput values are used.'
+        puts 'Warning: configured fallback throughput values are used. Actual runtime can differ depending on the selected transfer/conversion mode.'
     end
 
     def run_delta_dry_run_estimate
@@ -1875,11 +1876,15 @@ _EOF_"
 
         source_rate = positive_float_option(:dry_run_source_export_mib_s)
         import_rate = positive_float_option(:dry_run_target_import_mib_s)
-        downtime = delta_mib / [source_rate, import_rate].min
+        bottleneck_rate = [source_rate, import_rate].min
+        downtime = delta_mib / bottleneck_rate
 
-        puts "Known remaining delta size: #{format_mib(delta_mib)}"
-        puts "Bottleneck throughput: #{[source_rate, import_rate].min.round(2)} MiB/s"
+        puts "Current known delta size: #{format_mib(delta_mib)}"
+        puts "Source export fallback rate: #{source_rate.round(2)} MiB/s"
+        puts "Target import fallback rate: #{import_rate.round(2)} MiB/s"
+        puts "Bottleneck throughput: #{bottleneck_rate.round(2)} MiB/s"
         puts "Estimated downtime: #{format_duration(downtime)}"
+        puts 'Note: this is a point-in-time estimate. Delta size can continue growing while the VM is running.'
     end
 
     def dry_run_disk_metadata
@@ -1912,10 +1917,27 @@ _EOF_"
     end
 
     def dry_run_known_delta_mib
-        # The current delta implementation runs the full flow inside live2kvm:
-        # snapshot creation, base transfer/conversion, VM shutdown, and delta apply.
-        # There is no persisted base-phase state or known remaining delta size yet.
+        client = ESXi::Client.new(get_esxi_host, @logger, :non_interactive => true)
+        vm = client.get_vm_by_name(@options[:name])
+        return nil unless vm
+
+        bytes = vm.live2kvm_current_delta_size_bytes(@options[:work_dir])
+        return nil if bytes.nil?
+
+        bytes.to_f / (1024 * 1024)
+    rescue StandardError => e
+        @logger.warn "Unable to read prepared delta size: #{e.message}"
         nil
+    end
+
+    def dry_run_conversion_mode
+        return 'delta' if @options[:delta]
+        return 'custom' if @options[:custom_convert]
+        return 'hybrid' if @options[:hybrid]
+        return 'ESXi virt-v2v' if @options[:esxi_ip]
+        return 'vCenter VDDK virt-v2v' if @options[:vddk_path]
+
+        'vCenter API virt-v2v'
     end
 
     def positive_float_option(name)

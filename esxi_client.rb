@@ -14,9 +14,10 @@ class ESXi::Client
 
     attr_reader :logger
 
-    def initialize(host, logger = self.class.stdout_logger)
+    def initialize(host, logger = self.class.stdout_logger, options = {})
         @host = host
         @logger = logger
+        @ssh_options = options[:non_interactive] ? '-o BatchMode=yes -o NumberOfPasswordPrompts=0' : ''
         precheck
 
         @vm_list = []
@@ -214,6 +215,21 @@ class ESXi::Client
         live_execution(cmd, message)
     end
 
+    def file_size_bytes(path)
+        if !path.start_with?(DATASTORES_PATH) || path.include?("'")
+            @logger.error "Refusing to read file size outside datastore path: #{path}"
+            return nil
+        end
+
+        stdout, _stderr, status = ssh("ls -ln \"#{path}\"")
+        return nil unless status
+
+        size = stdout.lines.last.to_s.split[4]
+        return nil unless size && size =~ /^\d+$/
+
+        size.to_i
+    end
+
     private
 
     def self.vmsvc_getallvms_to_array(getallvms_output)
@@ -324,7 +340,7 @@ class ESXi::Client
     end
 
     def ssh(cmd)
-        ssh_cmd = "ssh #{USER}@#{@host} '#{cmd}'"
+        ssh_cmd = "ssh #{@ssh_options} #{USER}@#{@host} '#{cmd}'"
         execute(ssh_cmd)
     end
 
