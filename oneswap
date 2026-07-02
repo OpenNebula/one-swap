@@ -525,6 +525,12 @@ CommandParser::CmdParser.new(ARGV) do
         :format => Integer
     }
 
+    ALLOW_LOCAL_PATH_REMOTE = {
+        :name => 'allow_local_path_remote',
+        :large => '--allow-local-path-remote',
+        :description => 'Allow local PATH image allocation when OpenNebula endpoint appears remote. Use only when work_dir is shared at the same path.'
+    }
+
     CONF_FILE = {
         :name => 'config_file',
         :large => '--config-file /path/to/custom/config.yaml',
@@ -624,7 +630,7 @@ CommandParser::CmdParser.new(ARGV) do
 
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
     V2V_OPTS = [V2V_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY, ROOT]
-    HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
+    HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT, ALLOW_LOCAL_PATH_REMOTE]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE, ACCEPT_CERT] + AUTH_OPTS
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, DELTA_PREPARE, DELTA_COMMIT, DELTA_CLEANUP, DRY_RUN, BENCHMARK_IMPORT, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
@@ -803,7 +809,7 @@ CommandParser::CmdParser.new(ARGV) do
 
                 options[:http_port] ||= 29869
             else
-                if options[:endpoint]
+                if options[:endpoint] && !options[:allow_local_path_remote]
                     raise 'Using alternative OpenNebula endpoint requires HTTP Transfer'
                 end
             end

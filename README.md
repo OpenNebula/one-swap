@@ -112,6 +112,10 @@ falls back to configured values such as `dry_run_target_import_mib_s`,
 match the full OpenNebula frontend/datastore import path, not only network
 bandwidth.
 
+Each delta dry-run refreshes the live snapshot extent size from ESXi using the
+prepared state. If that refresh fails, OneSwap warns and falls back to the
+prepare-time stored value with lower confidence.
+
 The delta dry-run report includes an estimate basis section showing whether
 each phase comes from prepare measurements, an import benchmark, previous full
 import metrics, or configured fallbacks. Confidence is `high` when prepare
@@ -143,6 +147,12 @@ benchmark because it is more representative. If the benchmark cannot run or
 fails, the estimate falls back to previous import metrics or
 `dry_run_target_import_mib_s`.
 
+Import metrics are transfer-mode specific. HTTP benchmark/import metrics are
+used only when the current run has `http_transfer` enabled; local-path imports
+use local-path metrics or the configured fallback. This avoids applying a
+previous HTTP measurement to a commit that will allocate images from local
+filesystem paths.
+
 If you want to continue immediately, run the downtime phase:
 
 ```
@@ -155,6 +165,15 @@ This is the real migration completion step, not a dry-run. If OneSwap runs on
 a worker host that is not the OpenNebula frontend, enable `http_transfer` and
 set `http_host`/`http_port` so the frontend can fetch the committed disk files
 over HTTP instead of trying to read worker-local paths.
+
+When `http_transfer` is disabled, OpenNebula image `PATH` values are local
+filesystem paths resolved by the OpenNebula frontend/oned host. In local PATH
+mode, run OneSwap on the OpenNebula frontend or make sure `work_dir` is shared
+at the same absolute path on the frontend. Delta commit preflights this before
+shutting down the source VM; if the OpenNebula endpoint appears remote, it
+aborts and preserves the prepared state. Use `http_transfer` for worker-host
+migrations, or pass `--allow-local-path-remote` only when the path is
+intentionally shared and visible to the frontend.
 
 If you only wanted timing data and will migrate later, clean up the prepared
 snapshot and state:

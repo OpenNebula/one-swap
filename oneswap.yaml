@@ -2,6 +2,7 @@
 #:http_transfer: false                    # Enable HTTP transfer
 #:http_host: '192.168.0.10'               # Hostname of this server
 #:http_port: 29869                        # HTTP Port to transfer over
+#:allow_local_path_remote: false          # Allow local PATH image allocation with a remote OpenNebula endpoint only when work_dir is shared at the same path.
 
 # vCenter Authentication
 #:vcenter: '172.20.0.123'                 # vCenter hostname or IP

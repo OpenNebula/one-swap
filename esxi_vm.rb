@@ -1,4 +1,5 @@
 require 'tempfile'
+require 'time'
 require 'yaml'
 require_relative 'esxi_client'
 
@@ -292,29 +293,58 @@ class ESXi::VirtualMachine
     end
 
     def live2kvm_current_delta_size_bytes(target_dir)
+        info = live2kvm_current_delta_size(target_dir)
+        info && info[:bytes]
+    end
+
+    def live2kvm_current_delta_size(target_dir)
         state = read_live2kvm_state(target_dir)
         return nil unless state
 
         disks = state['disks']
         return nil unless disks.is_a?(Array) && !disks.empty?
+        vm_storage_path = state['vm_storage_path']
+        return nil if vm_storage_path.to_s.empty?
 
         total = 0
+        paths = []
         disks.each do |disk_data|
             extent = disk_data['active_snapshot_extent']
-            return nil if extent.to_s.empty?
+            raise 'prepared state is missing active snapshot extent' if extent.to_s.empty?
 
             # This is a point-in-time value. While the VM keeps running after
             # prepare, snapshot delta extents can continue to grow.
-            size = @client.file_size_bytes(storage_path(extent))
-            return nil if size.nil?
+            path = "#{vm_storage_path}/#{extent}"
+            @logger.debug "Reading live snapshot delta size from #{path}"
+            size = @client.file_size_bytes(path)
+            raise "unable to read live snapshot extent size for #{path}" if size.nil?
 
+            paths << path
             total += size
         end
 
-        state['delta_size_bytes'] = total
+        state['current_delta_size_bytes'] = total
+        state['current_delta_size_refreshed_at'] = Time.now.utc.iso8601
         write_live2kvm_state(target_dir, state)
 
-        total
+        {
+            :bytes => total,
+            :source => 'refreshed from ESXi snapshot extent',
+            :paths => paths,
+            :refreshed => true
+        }
+    rescue StandardError => e
+        @logger.warn "Unable to refresh live snapshot delta size: #{e.message}"
+        stored = state && state['delta_size_bytes'].to_i
+        return nil unless stored && stored > 0
+
+        {
+            :bytes => stored,
+            :source => 'stored prepare-time delta size',
+            :paths => [],
+            :refreshed => false,
+            :warning => 'Warning: unable to refresh live snapshot delta size from ESXi; using stored prepare-time value.'
+        }
     end
 
     def live2kvm_state(target_dir)

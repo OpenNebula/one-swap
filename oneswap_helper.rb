@@ -19,9 +19,11 @@ require 'opennebula'
 require 'logger'
 require 'fileutils'
 require 'shellwords'
+require 'socket'
 require 'tempfile'
 require 'tmpdir'
 require 'time'
+require 'uri'
 require 'webrick'
 require 'yaml'
 require_relative 'vsphere_client'
@@ -1809,6 +1811,8 @@ _EOF_"
 
     # Passworldess root access to ESXi host IP required
     def run_delta_conversion
+        local_path_image_allocation_preflight!
+
         client = ESXi::Client.new(get_esxi_host, @logger, esxi_client_options)
 
         vm_name = @options[:name]
@@ -1825,6 +1829,55 @@ _EOF_"
         disks_on_file = Dir.children(conversion_dir).map {|disk| File.join(conversion_dir, disk) }
 
         create_one_images(disks_on_file)
+    end
+
+    def local_path_image_allocation_preflight!
+        return if @options[:http_transfer]
+
+        puts 'Local PATH mode requires OneSwap to run on the OpenNebula frontend or work_dir to be shared at the same path.'
+
+        endpoint_host = opennebula_endpoint_host
+        return if endpoint_host.nil? || local_opennebula_endpoint?(endpoint_host)
+        return if @options[:allow_local_path_remote]
+
+        raise "OpenNebula endpoint host '#{endpoint_host}' appears to differ from this OneSwap worker. " \
+              'Local PATH image allocation would be resolved on the OpenNebula frontend and may not see worker-local files. ' \
+              'Enable http_transfer/http_host/http_port, run OneSwap on the frontend, share work_dir at the same path, ' \
+              'or pass --allow-local-path-remote if this path is intentionally shared.'
+    end
+
+    def opennebula_endpoint_host
+        endpoint = @options[:endpoint] || ENV['ONE_XMLRPC']
+        if endpoint.to_s.empty? && @client
+            endpoint = @client.endpoint if @client.respond_to?(:endpoint)
+            endpoint ||= @client.instance_variable_get(:@endpoint) if @client.instance_variable_defined?(:@endpoint)
+        end
+        endpoint = 'http://localhost:2633/RPC2' if endpoint.to_s.empty?
+
+        URI.parse(endpoint).host
+    rescue StandardError => e
+        @logger.warn "Unable to determine OpenNebula endpoint host: #{e.message}"
+        nil
+    end
+
+    def local_opennebula_endpoint?(host)
+        host = host.to_s.downcase
+        return true if host.empty?
+        return true if ['localhost', '127.0.0.1', '::1'].include?(host)
+        return true if host.start_with?('127.')
+
+        local_names = [Socket.gethostname]
+        begin
+            local_names << Socket.gethostbyname(Socket.gethostname).first
+        rescue StandardError
+            nil
+        end
+        local_names.compact!
+        local_names.map!(&:downcase)
+        return true if local_names.include?(host)
+
+        local_ips = Socket.ip_address_list.map(&:ip_address) rescue []
+        local_ips.include?(host)
     end
 
     def run_delta_prepare
@@ -1922,14 +1975,19 @@ _EOF_"
         total_time = copy_delta_time + apply_delta_time + os_morph_time +
             customization_time + import_time.to_f
 
-        puts "Current delta size: #{format_mib(delta_mib)}"
+        puts "Current delta size: #{format_mib(delta_mib)} (#{delta_info[:delta_size_source]})"
         if delta_info[:base_mib]
             puts "Prepared base disk size: #{format_mib(delta_info[:base_mib])}"
         else
             puts 'Prepared base disk size: unavailable'
         end
+        if delta_info[:delta_size_warning]
+            puts
+            puts delta_info[:delta_size_warning]
+        end
         puts
         puts 'Estimate basis:'
+        puts "  current delta size: #{delta_info[:delta_size_source]}"
         puts "  delta transfer: #{delta_info[:source_basis]}"
         puts "  delta apply: #{delta_info[:apply_basis]}"
         puts "  target import: #{delta_info[:import_basis]}"
@@ -2002,10 +2060,25 @@ _EOF_"
         vm = client.get_vm_by_name(@options[:name])
         return nil unless vm
 
-        bytes = vm.live2kvm_current_delta_size_bytes(@options[:work_dir])
-        return nil if bytes.nil?
-
         state = vm.live2kvm_state(@options[:work_dir]) || {}
+        delta_size = vm.live2kvm_current_delta_size(@options[:work_dir])
+        if delta_size.nil?
+            stored_bytes = state['delta_size_bytes'].to_i
+            return nil unless stored_bytes > 0
+
+            delta_size = {
+                :bytes => stored_bytes,
+                :source => 'stored prepare-time delta size',
+                :paths => [],
+                :refreshed => false,
+                :warning => 'Warning: unable to refresh live snapshot delta size from ESXi; using stored prepare-time value.'
+            }
+        end
+
+        delta_size[:paths].each do |path|
+            @logger.debug "Dry-run delta extent path: #{path}"
+        end
+
         measured_rate = state['base_transfer_mib_s'].to_f
         if measured_rate > 0
             source_rate = measured_rate
@@ -2034,23 +2107,28 @@ _EOF_"
 
         base_bytes = prepared_base_bytes(state)
         metrics = read_metrics
+        import_mode = opennebula_import_mode
         measured_import_rate = metrics['opennebula_import_mib_s'].to_f
         benchmark_import_rate = metrics['opennebula_import_benchmark_mib_s'].to_f
+        measured_import_mode = metrics['opennebula_import_mode']
+        benchmark_import_mode = metrics['opennebula_import_benchmark_mode']
         measured_import_mib = metrics['opennebula_import_bytes'].to_i.to_f / (1024 * 1024)
         measured_import_seconds = metrics['opennebula_import_seconds'].to_f
         benchmark_import_mib = metrics['opennebula_import_benchmark_bytes'].to_i.to_f / (1024 * 1024)
         benchmark_import_seconds = metrics['opennebula_import_benchmark_seconds'].to_f
-        if measured_import_rate > 0 && (benchmark_import_rate <= 0 || benchmark_import_mib < 1024)
+        measured_import_matches = measured_import_rate > 0 && measured_import_mode == import_mode
+        benchmark_import_matches = benchmark_import_rate > 0 && benchmark_import_mode == import_mode
+        if measured_import_matches && (!benchmark_import_matches || benchmark_import_mib < 1024)
             import_rate = measured_import_rate
             import_rate_source = :previous_full_import
             import_rate_label = previous_import_label(measured_import_mib, measured_import_seconds, import_rate)
             import_basis = "#{import_rate_label}, #{import_rate.round(2)} MiB/s"
-        elsif benchmark_import_rate > 0
+        elsif benchmark_import_matches
             import_rate = benchmark_import_rate
             import_rate_source = benchmark_import_mib >= 4096 ? :large_benchmark : :small_benchmark
             import_rate_label = benchmark_import_label(benchmark_import_mib, benchmark_import_seconds, import_rate)
             import_basis = "#{import_rate_label}, #{import_rate.round(2)} MiB/s"
-        elsif measured_import_rate > 0
+        elsif measured_import_matches
             import_rate = measured_import_rate
             import_rate_source = :previous_full_import
             import_rate_label = previous_import_label(measured_import_mib, measured_import_seconds, import_rate)
@@ -2058,8 +2136,8 @@ _EOF_"
         else
             import_rate = positive_float_option(:dry_run_target_import_mib_s)
             import_rate_source = :configured_fallback
-            import_rate_label = "configured fallback, not measured: #{import_rate.round(2)} MiB/s"
-            import_basis = "configured fallback, not measured, #{import_rate.round(2)} MiB/s"
+            import_rate_label = "configured fallback, not measured for #{import_mode} mode"
+            import_basis = "configured fallback, not measured for #{import_mode} mode, #{import_rate.round(2)} MiB/s"
         end
 
         measured_os_morph = positive_metric(metrics['delta_os_morph_seconds'])
@@ -2096,10 +2174,14 @@ _EOF_"
             customization_source,
             base_bytes
         )
+        confidence = 'low' unless delta_size[:refreshed]
         confidence_note = final_phase_fallback_note(os_morph_source, customization_source)
 
         {
-            :delta_mib => bytes.to_f / (1024 * 1024),
+            :delta_mib => delta_size[:bytes].to_f / (1024 * 1024),
+            :delta_size_source => delta_size[:source],
+            :delta_size_refreshed => delta_size[:refreshed],
+            :delta_size_warning => delta_size[:warning],
             :source_rate => source_rate,
             :source_rate_source => source_rate_source,
             :source_rate_label => source_rate_label,
@@ -2233,8 +2315,13 @@ _EOF_"
                           'opennebula_import_bytes' => bytes,
                           'opennebula_import_seconds' => seconds,
                           'opennebula_import_mib_s' => mib_per_second(bytes, seconds),
+                          'opennebula_import_mode' => opennebula_import_mode,
                           'customization_seconds' => customization_seconds
                       })
+    end
+
+    def opennebula_import_mode
+        @options[:http_transfer] ? 'http' : 'local-path'
     end
 
     def run_opennebula_import_benchmark
@@ -2245,7 +2332,8 @@ _EOF_"
 
         unless @options[:http_transfer]
             puts 'Warning: import benchmark skipped because http_transfer is not enabled.'
-            puts 'The dry-run estimate will use previous import metrics or dry_run_target_import_mib_s.'
+            puts 'HTTP benchmark metrics will not be reused for local-path mode.'
+            puts 'The dry-run estimate will use matching local-path import metrics or dry_run_target_import_mib_s.'
             return
         end
 
@@ -2295,6 +2383,7 @@ _EOF_"
                               'opennebula_import_benchmark_size_mib' => size_mib,
                               'opennebula_import_benchmark_seconds' => seconds,
                               'opennebula_import_benchmark_mib_s' => mib_s,
+                              'opennebula_import_benchmark_mode' => opennebula_import_mode,
                               'opennebula_import_benchmark_at' => Time.now.utc.iso8601,
                               'opennebula_import_benchmark_datastore' => ds_id
                           })
@@ -2380,6 +2469,11 @@ _EOF_"
     end
 
     def format_duration(seconds)
+        if seconds < 60
+            rounded = seconds.round(1)
+            return rounded == rounded.to_i ? "#{rounded.to_i}s" : "#{rounded}s"
+        end
+
         seconds = seconds.round
         hours = seconds / 3600
         minutes = (seconds % 3600) / 60
@@ -2679,6 +2773,7 @@ _EOF_"
                 'opennebula_import_bytes' => import_bytes,
                 'opennebula_import_seconds' => import_seconds,
                 'opennebula_import_mib_s' => import_mib_s,
+                'opennebula_import_mode' => opennebula_import_mode,
                 'customization_seconds' => customization_seconds
             }
 
