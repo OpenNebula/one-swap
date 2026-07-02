@@ -80,6 +80,28 @@ class ESXi::Client
         s
     end
 
+    def snapshot_id_by_name(vm_id, name)
+        actions = "snapshot.get #{vm_id}"
+        stdout, _stderr, status = vm_cmd(actions)
+        return nil unless status
+
+        current_id = nil
+        current_name = nil
+        stdout.each_line do |line|
+            current_id = Regexp.last_match(1) if line =~ /Snapshot Id\s*:\s*(\d+)/
+            current_name = Regexp.last_match(1).strip if line =~ /Snapshot Name\s*:\s*(.*)$/
+            return current_id if current_id && current_name == name
+        end
+
+        nil
+    end
+
+    def remove_snapshot_vm(vm_id, snapshot_id)
+        actions = "snapshot.remove #{vm_id} #{snapshot_id} false"
+        _, _, s = vm_cmd(actions)
+        s
+    end
+
     def shutdown_vm(vm_id, vmware_tools = false)
         @logger.info "Shutting down VM #{vm_id}"
 

@@ -21,6 +21,9 @@ require 'fileutils'
 require 'shellwords'
 require 'tempfile'
 require 'tmpdir'
+require 'time'
+require 'webrick'
+require 'yaml'
 require_relative 'vsphere_client'
 require_relative 'esxi_vm'
 require_relative 'windows_tuner'
@@ -1841,6 +1844,16 @@ _EOF_"
         puts 'Warning: the VM snapshot remains active. Delta size can continue growing until --delta-commit is run.'
     end
 
+    def run_delta_cleanup
+        client = ESXi::Client.new(get_esxi_host, @logger, esxi_client_options)
+
+        vm_name = @options[:name]
+        vm = client.get_vm_by_name(vm_name)
+        raise "Unable to find VM #{vm_name} on ESXi host" unless vm
+
+        vm.live2kvm_cleanup(@options[:work_dir])
+    end
+
     def run_dry_run_estimate
         if @options[:delta]
             return run_delta_dry_run_estimate
@@ -1885,6 +1898,8 @@ _EOF_"
     end
 
     def run_delta_dry_run_estimate
+        run_opennebula_import_benchmark if @options[:benchmark_import]
+
         delta_info = dry_run_delta_info
 
         puts 'OneSwap dry-run delta estimate'
@@ -1897,16 +1912,55 @@ _EOF_"
 
         delta_mib = delta_info[:delta_mib]
         source_rate = delta_info[:source_rate]
-        import_rate = positive_float_option(:dry_run_target_import_mib_s)
-        bottleneck_rate = [source_rate, import_rate].min
-        downtime = delta_mib / bottleneck_rate
+        apply_rate = delta_info[:apply_rate]
+        import_rate = delta_info[:import_rate]
+        copy_delta_time = delta_mib / source_rate
+        apply_delta_time = delta_mib / apply_rate
+        import_time = delta_info[:base_mib] ? delta_info[:base_mib] / import_rate : nil
+        os_morph_time = delta_info[:os_morph_seconds]
+        customization_time = delta_info[:customization_seconds]
+        total_time = copy_delta_time + apply_delta_time + os_morph_time +
+            customization_time + import_time.to_f
 
-        puts "Current known delta size: #{format_mib(delta_mib)}"
-        puts "Source export #{delta_info[:source_rate_source]} rate: #{source_rate.round(2)} MiB/s"
-        puts "Target import fallback rate: #{import_rate.round(2)} MiB/s"
-        puts "Bottleneck throughput: #{bottleneck_rate.round(2)} MiB/s"
-        puts "Estimated downtime: #{format_duration(downtime)}"
-        puts 'Note: this is a point-in-time estimate. Delta size can continue growing while the VM is running.'
+        puts "Current delta size: #{format_mib(delta_mib)}"
+        if delta_info[:base_mib]
+            puts "Prepared base disk size: #{format_mib(delta_info[:base_mib])}"
+        else
+            puts 'Prepared base disk size: unavailable'
+        end
+        puts
+        puts 'Estimate basis:'
+        puts "  delta transfer: #{delta_info[:source_basis]}"
+        puts "  delta apply: #{delta_info[:apply_basis]}"
+        puts "  target import: #{delta_info[:import_basis]}"
+        puts "  OS morph: #{delta_info[:os_morph_basis]}"
+        puts "  guest customization: #{delta_info[:customization_basis]}"
+        puts
+        puts 'Rates:'
+        puts "  source/delta transfer: #{source_rate.round(2)} MiB/s (#{delta_info[:source_rate_label]})"
+        puts "  delta apply/conversion: #{apply_rate.round(2)} MiB/s (#{delta_info[:apply_rate_label]})"
+        puts "  target import: #{import_rate.round(2)} MiB/s (#{delta_info[:import_rate_label]})"
+        puts
+        puts 'Estimated final phase:'
+        puts "  copy remaining delta: #{format_duration(copy_delta_time)} (#{delta_info[:source_rate_label]})"
+        puts "  apply delta to prepared disk: #{format_duration(apply_delta_time)} (#{delta_info[:apply_rate_label]})"
+        puts "  virt-v2v-in-place / OS morph: #{format_duration(os_morph_time)} (#{delta_info[:os_morph_label]})"
+        puts "  guest customization: #{format_duration(customization_time)} (#{delta_info[:customization_label]})"
+        puts "  OpenNebula image import/copy: #{import_time ? format_duration(import_time) : 'not estimated'} (#{delta_info[:import_rate_label]})"
+        puts '  template creation: negligible'
+        puts "  total estimated downtime/import-ready time: #{format_duration(total_time)}"
+        puts "  confidence: #{delta_info[:confidence]}"
+        puts "  note: #{delta_info[:confidence_note]}" if delta_info[:confidence_note]
+        puts
+        puts 'Note: this is only an estimate. It does not run commit.'
+        puts 'The optional import benchmark creates and deletes a temporary OpenNebula image.'
+        puts 'Delta size can continue growing while the VM is running.'
+        puts 'If you want to continue now, run:'
+        puts "  oneswap convert #{@options[:name]} --delta --delta-commit"
+        puts 'If you only wanted timing data and will migrate later, run:'
+        puts "  oneswap convert #{@options[:name]} --delta --delta-cleanup"
+        puts "Then run normal `oneswap convert #{@options[:name]} --delta` during the selected maintenance window."
+        puts 'Do not leave the prepared snapshot active indefinitely, because the delta can grow very large.'
     end
 
     def dry_run_disk_metadata
@@ -1955,20 +2009,342 @@ _EOF_"
         measured_rate = state['base_transfer_mib_s'].to_f
         if measured_rate > 0
             source_rate = measured_rate
-            source_rate_source = 'measured prepare transfer'
+            source_rate_source = :prepare_measured
+            source_rate_label = 'measured during prepare'
+            source_basis = "measured during prepare, #{source_rate.round(2)} MiB/s"
         else
             source_rate = positive_float_option(:dry_run_source_export_mib_s)
-            source_rate_source = 'fallback'
+            source_rate_source = :configured_fallback
+            source_rate_label = 'configured fallback, not measured'
+            source_basis = "configured fallback, not measured, #{source_rate.round(2)} MiB/s"
         end
+
+        measured_apply_rate = state['base_convert_mib_s'].to_f
+        if measured_apply_rate > 0
+            apply_rate = measured_apply_rate
+            apply_rate_source = :prepare_measured
+            apply_rate_label = 'measured during prepare'
+            apply_basis = "measured during prepare, #{apply_rate.round(2)} MiB/s"
+        else
+            apply_rate = positive_float_option(:dry_run_qcow2_conversion_mib_s)
+            apply_rate_source = :configured_fallback
+            apply_rate_label = 'configured fallback, not measured'
+            apply_basis = "configured fallback, not measured, #{apply_rate.round(2)} MiB/s"
+        end
+
+        base_bytes = prepared_base_bytes(state)
+        metrics = read_metrics
+        measured_import_rate = metrics['opennebula_import_mib_s'].to_f
+        benchmark_import_rate = metrics['opennebula_import_benchmark_mib_s'].to_f
+        measured_import_mib = metrics['opennebula_import_bytes'].to_i.to_f / (1024 * 1024)
+        measured_import_seconds = metrics['opennebula_import_seconds'].to_f
+        benchmark_import_mib = metrics['opennebula_import_benchmark_bytes'].to_i.to_f / (1024 * 1024)
+        benchmark_import_seconds = metrics['opennebula_import_benchmark_seconds'].to_f
+        if measured_import_rate > 0 && (benchmark_import_rate <= 0 || benchmark_import_mib < 1024)
+            import_rate = measured_import_rate
+            import_rate_source = :previous_full_import
+            import_rate_label = previous_import_label(measured_import_mib, measured_import_seconds, import_rate)
+            import_basis = "#{import_rate_label}, #{import_rate.round(2)} MiB/s"
+        elsif benchmark_import_rate > 0
+            import_rate = benchmark_import_rate
+            import_rate_source = benchmark_import_mib >= 4096 ? :large_benchmark : :small_benchmark
+            import_rate_label = benchmark_import_label(benchmark_import_mib, benchmark_import_seconds, import_rate)
+            import_basis = "#{import_rate_label}, #{import_rate.round(2)} MiB/s"
+        elsif measured_import_rate > 0
+            import_rate = measured_import_rate
+            import_rate_source = :previous_full_import
+            import_rate_label = previous_import_label(measured_import_mib, measured_import_seconds, import_rate)
+            import_basis = "#{import_rate_label}, #{import_rate.round(2)} MiB/s"
+        else
+            import_rate = positive_float_option(:dry_run_target_import_mib_s)
+            import_rate_source = :configured_fallback
+            import_rate_label = "configured fallback, not measured: #{import_rate.round(2)} MiB/s"
+            import_basis = "configured fallback, not measured, #{import_rate.round(2)} MiB/s"
+        end
+
+        measured_os_morph = positive_metric(metrics['delta_os_morph_seconds'])
+        if measured_os_morph
+            os_morph_seconds = measured_os_morph
+            os_morph_source = :previous_metrics
+            os_morph_label = 'previous full run'
+            os_morph_basis = "previous full run, #{format_duration(os_morph_seconds)}"
+        else
+            os_morph_seconds = positive_float_option(:dry_run_delta_os_morph_seconds)
+            os_morph_source = :configured_fallback
+            os_morph_label = 'configured fallback'
+            os_morph_basis = "configured fallback, #{os_morph_seconds.round}s"
+        end
+
+        measured_customization = positive_metric(metrics['customization_seconds'])
+        if measured_customization
+            customization_seconds = measured_customization
+            customization_source = :previous_metrics
+            customization_label = 'previous full run'
+            customization_basis = "previous full run, #{format_duration(customization_seconds)}"
+        else
+            customization_seconds = positive_float_option(:dry_run_guest_customization_seconds)
+            customization_source = :configured_fallback
+            customization_label = 'configured fallback'
+            customization_basis = "configured fallback, #{customization_seconds.round}s"
+        end
+
+        confidence = estimate_confidence(
+            source_rate_source,
+            apply_rate_source,
+            import_rate_source,
+            os_morph_source,
+            customization_source,
+            base_bytes
+        )
+        confidence_note = final_phase_fallback_note(os_morph_source, customization_source)
 
         {
             :delta_mib => bytes.to_f / (1024 * 1024),
             :source_rate => source_rate,
-            :source_rate_source => source_rate_source
+            :source_rate_source => source_rate_source,
+            :source_rate_label => source_rate_label,
+            :source_basis => source_basis,
+            :apply_rate => apply_rate,
+            :apply_rate_source => apply_rate_source,
+            :apply_rate_label => apply_rate_label,
+            :apply_basis => apply_basis,
+            :import_rate => import_rate,
+            :import_rate_source => import_rate_source,
+            :import_rate_label => import_rate_label,
+            :import_basis => import_basis,
+            :base_mib => base_bytes && base_bytes.to_f / (1024 * 1024),
+            :os_morph_seconds => os_morph_seconds,
+            :os_morph_source => os_morph_source,
+            :os_morph_label => os_morph_label,
+            :os_morph_basis => os_morph_basis,
+            :customization_seconds => customization_seconds,
+            :customization_source => customization_source,
+            :customization_label => customization_label,
+            :customization_basis => customization_basis,
+            :confidence => confidence,
+            :confidence_note => confidence_note
         }
     rescue StandardError => e
         @logger.warn "Unable to read prepared delta size: #{e.message}"
         nil
+    end
+
+    def positive_metric(value)
+        value = value.to_f
+        value > 0 ? value : nil
+    end
+
+    def estimate_confidence(source_rate_source, apply_rate_source, import_rate_source,
+                            os_morph_source, customization_source, base_bytes)
+        prepare_measured = source_rate_source == :prepare_measured &&
+            apply_rate_source == :prepare_measured
+        import_strong = [:previous_full_import, :large_benchmark].include?(import_rate_source)
+        import_usable = import_strong ||
+            [:configured_fallback, :small_benchmark].include?(import_rate_source)
+        final_phase_measured = os_morph_source == :previous_metrics &&
+            customization_source == :previous_metrics
+        final_phase_accounted = [:previous_metrics, :configured_fallback].include?(os_morph_source) &&
+            [:previous_metrics, :configured_fallback].include?(customization_source) &&
+            !base_bytes.nil?
+
+        return 'high' if prepare_measured && import_strong && final_phase_measured && final_phase_accounted
+        return 'medium' if prepare_measured && import_usable && final_phase_accounted
+
+        'low'
+    end
+
+    def final_phase_fallback_note(os_morph_source, customization_source)
+        fallback_phases = []
+        fallback_phases << 'OS morph' if os_morph_source == :configured_fallback
+        fallback_phases << 'guest customization' if customization_source == :configured_fallback
+        return nil if fallback_phases.empty?
+
+        "#{fallback_phases.join(' and ')} #{fallback_phases.size == 1 ? 'is' : 'are'} fallback estimates until a successful commit records real timings."
+    end
+
+    def previous_import_label(size_mib, seconds, rate)
+        if size_mib > 0 && seconds > 0
+            "previous full import: #{format_mib(size_mib)} in #{format_duration(seconds)}"
+        else
+            "previous full import: #{rate.round(2)} MiB/s"
+        end
+    end
+
+    def benchmark_import_label(size_mib, seconds, rate)
+        label = if size_mib > 0
+                    "measured benchmark: #{format_mib(size_mib)}"
+                else
+                    "measured benchmark: #{rate.round(2)} MiB/s"
+                end
+        label += " in #{format_duration(seconds)}" if seconds > 0
+        label
+    end
+
+    def prepared_base_bytes(state)
+        bytes = state['base_convert_bytes'].to_i
+        return bytes if bytes > 0
+
+        disks = state['disks']
+        return nil unless disks.is_a?(Array)
+
+        total = 0
+        disks.each do |disk|
+            path = disk['converted_raw_base_path']
+            return nil unless path && File.exist?(path)
+
+            total += File.size(path)
+        end
+
+        total > 0 ? total : nil
+    end
+
+    def metrics_file
+        File.join(@options[:work_dir], 'oneswap-metrics.yaml')
+    end
+
+    def delta_state_file
+        File.join(@options[:work_dir], "esxi_client-#{@options[:name]}", 'oneswap-delta-state.yaml')
+    end
+
+    def read_metrics
+        return {} unless File.exist?(metrics_file)
+
+        YAML.load_file(metrics_file) || {}
+    rescue StandardError => e
+        @logger.warn "Unable to read metrics file #{metrics_file}: #{e.message}"
+        {}
+    end
+
+    def write_metrics(metrics)
+        File.write(metrics_file, read_metrics.merge(metrics).to_yaml)
+    rescue StandardError => e
+        @logger.warn "Unable to write metrics file #{metrics_file}: #{e.message}"
+    end
+
+    def persist_opennebula_import_metrics(import_metrics)
+        return if import_metrics.empty?
+
+        bytes = import_metrics.sum {|m| m['opennebula_import_bytes'].to_i }
+        seconds = import_metrics.sum {|m| m['opennebula_import_seconds'].to_f }
+        customization_seconds = import_metrics.sum {|m| m['customization_seconds'].to_f }
+
+        write_metrics({
+                          'opennebula_imports' => import_metrics,
+                          'opennebula_import_bytes' => bytes,
+                          'opennebula_import_seconds' => seconds,
+                          'opennebula_import_mib_s' => mib_per_second(bytes, seconds),
+                          'customization_seconds' => customization_seconds
+                      })
+    end
+
+    def run_opennebula_import_benchmark
+        unless File.exist?(delta_state_file)
+            puts "Warning: import benchmark skipped because prepared delta state was not found at #{delta_state_file}."
+            return
+        end
+
+        unless @options[:http_transfer]
+            puts 'Warning: import benchmark skipped because http_transfer is not enabled.'
+            puts 'The dry-run estimate will use previous import metrics or dry_run_target_import_mib_s.'
+            return
+        end
+
+        size_mib = positive_float_option(:dry_run_import_benchmark_size_mib)
+        benchmark_dir = File.join(@options[:work_dir], 'dry-run-import-benchmark')
+        FileUtils.mkdir_p(benchmark_dir)
+        test_file = File.join(benchmark_dir, "#{@options[:name]}-import-benchmark.raw")
+        bytes = (size_mib * 1024 * 1024).to_i
+
+        puts "Running OpenNebula import benchmark with #{format_mib(size_mib)} temporary raw file."
+        if size_mib < 1024
+            puts 'Warning: benchmark size is below 1024 MiB. OpenNebula fixed allocation/datastore/polling overhead can dominate small imports and make the result pessimistic.'
+        end
+        puts 'Writing non-sparse benchmark file with real zero-filled data.'
+        write_benchmark_file(test_file, bytes)
+
+        server_thread = nil
+        img = nil
+        begin
+            server_thread = start_http_transfer_server(benchmark_dir)
+            path = "http://#{@options[:http_host]}:#{@options[:http_port]}/#{File.basename(test_file)}"
+            img = OpenNebula::Image.new(OpenNebula::Image.build_xml, @client)
+            img.add_element('//IMAGE', {
+                                'NAME' => "#{@options[:name]}_dry_run_import_benchmark_#{Time.now.to_i}",
+                'TYPE' => 'DATABLOCK',
+                'PATH' => path,
+                'PERSISTENT' => 'NO'
+                            })
+
+            ds_id = @options[:datastore].to_s.split(',').map(&:strip).map(&:to_i).first
+            import_t0 = Time.now
+            rc = img.allocate(img.to_xml, ds_id)
+            if rc.class == OpenNebula::Error
+                raise "OpenNebula image allocation failed: #{rc.message}"
+            end
+
+            puts 'Waiting for benchmark image to be ready.'
+            img_wait_sec = @options[:img_wait] || 120
+            unless img.wait_state('READY', img_wait_sec)
+                raise "benchmark image did not become READY before #{img_wait_sec}s timeout"
+            end
+
+            seconds = Time.now - import_t0
+            mib_s = mib_per_second(bytes, seconds)
+            write_metrics({
+                              'opennebula_import_benchmark_bytes' => bytes,
+                              'opennebula_import_benchmark_size_mib' => size_mib,
+                              'opennebula_import_benchmark_seconds' => seconds,
+                              'opennebula_import_benchmark_mib_s' => mib_s,
+                              'opennebula_import_benchmark_at' => Time.now.utc.iso8601,
+                              'opennebula_import_benchmark_datastore' => ds_id
+                          })
+
+            puts "OpenNebula import benchmark: #{format_mib(size_mib)} in " \
+                 "#{format_duration(seconds)} (#{mib_s.round(2)} MiB/s)"
+        rescue StandardError => e
+            puts "Warning: import benchmark failed: #{e.message}"
+            puts 'The dry-run estimate will use previous import metrics or dry_run_target_import_mib_s.'
+        ensure
+            begin
+                img.delete if img && img.id
+            rescue StandardError => e
+                puts "Warning: unable to delete benchmark image #{img.id}: #{e.message}" if img && img.id
+            end
+            if server_thread
+                server_thread.kill
+                server_thread.join
+            end
+            FileUtils.rm_f(test_file)
+        end
+    end
+
+    def start_http_transfer_server(document_root)
+        Thread.new do
+            server = WEBrick::HTTPServer.new({
+                                                 :Port => @options[:http_port],
+                :DocumentRoot => document_root,
+                :RequestCallback => lambda {|_req, res|
+                    res['Cache-Control'] = 'public, max-age=3600'
+                },
+                :MaxThreads => 8
+                                             })
+
+            trap('INT') { server.shutdown }
+            server.start
+        end.tap { sleep 0.2 }
+    end
+
+    def write_benchmark_file(path, bytes)
+        chunk = "\0" * (1024 * 1024)
+        remaining = bytes
+
+        File.open(path, 'wb') do |file|
+            while remaining > 0
+                write_size = [remaining, chunk.bytesize].min
+                file.write(write_size == chunk.bytesize ? chunk : chunk.byteslice(0, write_size))
+                remaining -= write_size
+            end
+        end
     end
 
     def esxi_client_options(extra = {})
@@ -2016,6 +2392,12 @@ _EOF_"
         else
             format('%ds', secs)
         end
+    end
+
+    def mib_per_second(bytes, seconds)
+        return nil if bytes.to_i <= 0 || seconds.to_f <= 0
+
+        (bytes.to_f / (1024 * 1024)) / seconds.to_f
     end
 
     # Create and run the qemu-img vmdk conversion
@@ -2203,12 +2585,14 @@ _EOF_"
         img_ids = []
         persistent_image = @options[:persistent_img] ? 'YES' : 'NO'
         t0 = Time.now
+        import_metrics = []
 
         # Normalize datastore input to an array of integers
         datastores = @options[:datastore].to_s.split(',').map(&:strip).map(&:to_i)
 
         disks.each_with_index do |d, i|
             img = OpenNebula::Image.new(OpenNebula::Image.build_xml, @client)
+            customization_t0 = Time.now
             guest_info = detect_distro(d)
             os_name = false
             begin
@@ -2228,9 +2612,11 @@ _EOF_"
                     puts "#{e.message}"
                 end
             end
+            customization_seconds = Time.now - customization_t0
 
             if @options[:http_transfer]
                 path = "http://#{@options[:http_host]}:#{@options[:http_port]}/#{File.basename(d)}"
+                puts "Using HTTP transfer for image #{i}: #{path}"
                 server_thread = Thread.new do
                     server = WEBrick::HTTPServer.new({
                                                          :Port => @options[:http_port],
@@ -2260,6 +2646,7 @@ _EOF_"
 
             # Pick datastore index if available, else default to the first one
             ds_id = datastores[i] || datastores.first
+            import_t0 = Time.now
             rc = img.allocate(img.to_xml, ds_id)
 
             if rc.class == OpenNebula::Error
@@ -2280,6 +2667,21 @@ _EOF_"
                 puts 'Image Short State: ' + img.short_state_str
             end
 
+            import_seconds = Time.now - import_t0
+            import_bytes = File.exist?(d) ? File.size(d) : 0
+            import_mib_s = mib_per_second(import_bytes, import_seconds)
+            if import_mib_s
+                puts "OpenNebula import for image #{i}: #{format_mib(import_bytes.to_f / (1024 * 1024))} " \
+                     "in #{format_duration(import_seconds)} (#{import_mib_s.round(2)} MiB/s)"
+            end
+            import_metrics << {
+                'disk' => d,
+                'opennebula_import_bytes' => import_bytes,
+                'opennebula_import_seconds' => import_seconds,
+                'opennebula_import_mib_s' => import_mib_s,
+                'customization_seconds' => customization_seconds
+            }
+
             if @options[:http_transfer]
                 server_thread.kill
                 server_thread.join
@@ -2288,6 +2690,7 @@ _EOF_"
             img_ids.append({ :id => img.id, :os => os_name })
         end
 
+        persist_opennebula_import_metrics(import_metrics)
         puts "Allocated images in OpenNebula in (#{(Time.now - t0).round(2)}s)".green
 
         img_ids
@@ -3384,6 +3787,11 @@ GUESTFISH
 
         if @options[:delta_prepare]
             run_delta_prepare
+            return
+        end
+
+        if @options[:delta_cleanup]
+            run_delta_cleanup
             return
         end
 

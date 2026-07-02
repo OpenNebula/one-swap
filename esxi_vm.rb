@@ -180,6 +180,7 @@ class ESXi::VirtualMachine
             'transfer_dir' => transfer_dir,
             'convert_dir' => convert_dir,
             'results_dir' => results_dir,
+            'clone_dir' => @clone_dir,
             # Delta size is only a point-in-time value while the VM keeps running;
             # it can continue growing until the final commit phase shuts it down.
             'delta_size_bytes' => nil,
@@ -249,10 +250,18 @@ class ESXi::VirtualMachine
         end
 
         converted_disks = Dir.children(convert_dir)
+        os_morph_seconds = 0.0
+        os_morph_disks_tried = 0
         converted_disks.each do |disk|
             root_disk_path = "#{convert_dir}/#{disk}"
 
-            break if @client.os_morph(root_disk_path, VIRT_V2V_OPTIONS_EXTRA)
+            t_os_morph = Time.now
+            os_morph_disks_tried += 1
+            if @client.os_morph(root_disk_path, VIRT_V2V_OPTIONS_EXTRA)
+                os_morph_seconds += Time.now - t_os_morph
+                break
+            end
+            os_morph_seconds += Time.now - t_os_morph
 
             if converted_disks.last != disk
                 @logger.warn "Failed to morph OS on disk #{disk}"
@@ -266,6 +275,10 @@ class ESXi::VirtualMachine
         end
 
         FileUtils.mv(convert_dir, results_dir)
+        write_live2kvm_metrics(target_dir, {
+                                   'delta_os_morph_seconds' => os_morph_seconds,
+                                   'delta_os_morph_disks_tried' => os_morph_disks_tried
+                               })
 
         t_downtime = Time.now - t0
         t_downtime_formatted = Time.at(t_downtime).utc.strftime("%M:%S")
@@ -306,6 +319,22 @@ class ESXi::VirtualMachine
 
     def live2kvm_state(target_dir)
         read_live2kvm_state(target_dir)
+    end
+
+    def live2kvm_cleanup(target_dir)
+        puts "Cleaning prepared delta migration for VM #{@name}"
+        state = read_live2kvm_state(target_dir)
+        if state.nil?
+            puts "No prepared delta state found at #{live2kvm_state_file(target_dir)}."
+            return false
+        end
+
+        cleanup_snapshot(state)
+        cleanup_clone_dir(state)
+        cleanup_local_state(target_dir, state)
+
+        puts 'Delta prepare cleanup completed.'
+        true
     end
 
     def disable_autostart
@@ -387,6 +416,10 @@ class ESXi::VirtualMachine
         "#{live2kvm_transfer_dir(target_dir)}/oneswap-delta-state.yaml"
     end
 
+    def live2kvm_metrics_file(target_dir)
+        "#{target_dir}/oneswap-metrics.yaml"
+    end
+
     def write_live2kvm_state(target_dir, state)
         File.write(live2kvm_state_file(target_dir), state.to_yaml)
         true
@@ -408,6 +441,17 @@ class ESXi::VirtualMachine
         nil
     end
 
+    def write_live2kvm_metrics(target_dir, metrics)
+        current = if File.exist?(live2kvm_metrics_file(target_dir))
+                      YAML.load_file(live2kvm_metrics_file(target_dir)) || {}
+                  else
+                      {}
+                  end
+        File.write(live2kvm_metrics_file(target_dir), current.merge(metrics).to_yaml)
+    rescue StandardError => e
+        @logger.warn "Failed to write delta migration metrics: #{e.message}"
+    end
+
     def format_elapsed(seconds)
         "#{seconds.round(2)}s"
     end
@@ -422,6 +466,59 @@ class ESXi::VirtualMachine
         return nil if bytes.to_i <= 0 || seconds.to_f <= 0
 
         (bytes.to_f / (1024 * 1024)) / seconds.to_f
+    end
+
+    def cleanup_snapshot(state)
+        snapshot_name = state['snapshot_name']
+        if snapshot_name.to_s.empty?
+            puts 'Snapshot name is missing from prepared state; automatic snapshot cleanup is unavailable.'
+            return
+        end
+
+        puts "Removing VMware snapshot #{snapshot_name}..."
+        snapshot_id = @client.snapshot_id_by_name(@id, snapshot_name)
+        if snapshot_id.nil?
+            puts "Warning: VMware snapshot #{snapshot_name} was not found; continuing cleanup."
+            return
+        end
+
+        if @client.remove_snapshot_vm(@id, snapshot_id)
+            puts "Removed VMware snapshot #{snapshot_name}."
+        else
+            puts "Warning: failed to remove VMware snapshot #{snapshot_name}; continuing cleanup."
+        end
+    end
+
+    def cleanup_clone_dir(state)
+        clone_dir = state['clone_dir'] || @clone_dir
+        if clone_dir.to_s.empty? || !clone_dir.start_with?(ESXi::Client::DATASTORES_PATH)
+            puts 'Warning: ESXi clone directory is missing or unsafe; skipping remote clone cleanup.'
+            return
+        end
+
+        puts "Removing ESXi clone directory #{clone_dir}..."
+        if @client.remove_files(clone_dir)
+            puts "Removed ESXi clone directory #{clone_dir}."
+        else
+            puts "Warning: failed to remove ESXi clone directory #{clone_dir}; continuing cleanup."
+        end
+    end
+
+    def cleanup_local_state(target_dir, state)
+        transfer_dir = state['transfer_dir']
+        expected_dir = live2kvm_transfer_dir(target_dir)
+        if transfer_dir != expected_dir
+            puts "Warning: prepared state path #{transfer_dir} does not match expected #{expected_dir}; skipping local cleanup."
+            return
+        end
+
+        puts "Removing local prepared state #{transfer_dir}..."
+        if Dir.exist?(transfer_dir)
+            FileUtils.remove_dir(transfer_dir)
+            puts "Removed local prepared state #{transfer_dir}."
+        else
+            puts "Warning: local prepared state #{transfer_dir} is already gone."
+        end
     end
 
     def live_storage_transfer_precheck

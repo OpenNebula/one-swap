@@ -71,6 +71,11 @@ CommandParser::CmdParser.new(ARGV) do
     version OpenNebulaHelper::ONE_VERSION
 
     helper = OneSwapHelper.new
+    normalize_config = lambda do |cfg|
+        next cfg unless cfg.respond_to?(:transform_keys)
+
+        cfg.transform_keys {|key| key.to_s.sub(/^:/, '').to_sym }
+    end
 
     before_proc do
         helper.set_client(options)
@@ -395,10 +400,22 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'Run only the delta final phase from prepared state.'
     }
 
+    DELTA_CLEANUP = {
+        :name => 'delta_cleanup',
+        :large => '--delta-cleanup',
+        :description => 'Clean up prepared delta state, snapshot, and temporary files.'
+    }
+
     DRY_RUN = {
         :name => 'dry_run',
         :large => '--dry-run',
         :description => 'Estimate conversion time without creating snapshots, images, or templates.'
+    }
+
+    BENCHMARK_IMPORT = {
+        :name => 'benchmark_import',
+        :large => '--benchmark-import',
+        :description => 'Benchmark OpenNebula image import during --dry-run --delta using a temporary image.'
     }
 
     CUSTOM = { # not sure what to call this actually
@@ -610,7 +627,7 @@ CommandParser::CmdParser.new(ARGV) do
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE, ACCEPT_CERT] + AUTH_OPTS
-    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, DELTA_PREPARE, DELTA_COMMIT, DRY_RUN, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, DELTA_PREPARE, DELTA_COMMIT, DELTA_CLEANUP, DRY_RUN, BENCHMARK_IMPORT, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                     CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                     PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
                     SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH, INJECT_DNS, CONTEXT_MIN_FREE, CONTEXT_FAIL_LOW_SPACE, CONTEXT_TIMEOUT,
@@ -647,7 +664,7 @@ CommandParser::CmdParser.new(ARGV) do
                 raise "Unable to find the config file at #{options[:config_file]}"
             end
 
-            cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
+            cfg_file = normalize_config.call(YAML.load_file(options[:config_file])) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
             options[:object] = args[0]
             helper.parse_opts(options)
@@ -699,21 +716,25 @@ CommandParser::CmdParser.new(ARGV) do
                 puts "Unable to find the config file at #{options[:config_file]}"
             end
             options[:config_file] ||= '/etc/one/oneswap.yaml'
-            cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
+            cfg_file = normalize_config.call(YAML.load_file(options[:config_file])) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
 
             if (options[:download_stripes] || 1).to_i > 1 && !options[:hybrid]
                 raise '--download-stripes N > 1 requires --hybrid.'
             end
 
-            if (options[:delta_prepare] || options[:delta_commit]) && !options[:delta]
-                raise '--delta-prepare and --delta-commit require --delta.'
+            if (options[:delta_prepare] || options[:delta_commit] || options[:delta_cleanup]) && !options[:delta]
+                raise '--delta-prepare, --delta-commit, and --delta-cleanup require --delta.'
             end
-            if options[:delta_prepare] && options[:delta_commit]
-                raise '--delta-prepare cannot be combined with --delta-commit.'
+            delta_phase_count = [options[:delta_prepare], options[:delta_commit], options[:delta_cleanup]].count {|v| v }
+            if delta_phase_count > 1
+                raise '--delta-prepare, --delta-commit, and --delta-cleanup cannot be combined.'
             end
-            if options[:dry_run] && (options[:delta_prepare] || options[:delta_commit])
-                raise '--dry-run cannot be combined with --delta-prepare or --delta-commit.'
+            if options[:dry_run] && (options[:delta_prepare] || options[:delta_commit] || options[:delta_cleanup])
+                raise '--dry-run cannot be combined with --delta-prepare, --delta-commit, or --delta-cleanup.'
+            end
+            if options[:benchmark_import] && !(options[:dry_run] && options[:delta])
+                raise '--benchmark-import requires --dry-run --delta.'
             end
 
             if options[:delta]
@@ -768,6 +789,9 @@ CommandParser::CmdParser.new(ARGV) do
             options[:dry_run_source_export_mib_s] ||= 80
             options[:dry_run_qcow2_conversion_mib_s] ||= 120
             options[:dry_run_target_import_mib_s] ||= 80
+            options[:dry_run_delta_os_morph_seconds] ||= 480
+            options[:dry_run_guest_customization_seconds] ||= 180
+            options[:dry_run_import_benchmark_size_mib] ||= 4096
 
             if options[:http_transfer]
                 options[:http_host] ||= Socket.ip_address_list.detect do |addrinfo|
@@ -837,7 +861,7 @@ CommandParser::CmdParser.new(ARGV) do
             end
 
             options[:config_file] ||= '/etc/one/oneswap.yaml'
-            cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
+            cfg_file = normalize_config.call(YAML.load_file(options[:config_file])) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
 
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?

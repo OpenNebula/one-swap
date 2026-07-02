@@ -81,7 +81,7 @@ OpenNebula templates, and it does not modify the source VM.
 
 ### Delta Dry-run Workflow
 
-For delta migrations, run the base phase first:
+For delta migrations, you can stage the online base phase first:
 
 ```
 oneswap convert <vm> --delta --delta-prepare
@@ -100,12 +100,50 @@ oneswap convert <vm> --dry-run --delta
 ```
 
 This reads the prepared state, checks the current snapshot delta extent size
-on ESXi, and estimates downtime from the current delta size. When available,
-it prefers the measured base transfer throughput stored during prepare; if
-that data is missing, it falls back to the configured dry-run throughput
-values.
+on ESXi, and estimates the final downtime/import-ready phase. It reports the
+current delta copy estimate, delta apply estimate, OpenNebula image import/copy
+estimate, virt-v2v-in-place / OS morph estimate, guest customization estimate,
+and template creation as negligible. When available, it prefers measured base
+transfer/conversion throughput stored during prepare and measured OpenNebula
+import/customization metrics from previous runs. If that data is missing, it
+falls back to configured values such as `dry_run_target_import_mib_s`,
+`dry_run_delta_os_morph_seconds`, and
+`dry_run_guest_customization_seconds`. Set `dry_run_target_import_mib_s` to
+match the full OpenNebula frontend/datastore import path, not only network
+bandwidth.
 
-Finally, run the downtime phase:
+The delta dry-run report includes an estimate basis section showing whether
+each phase comes from prepare measurements, an import benchmark, previous full
+import metrics, or configured fallbacks. Confidence is `high` when prepare
+transfer/conversion are measured and target import comes from a previous full
+import or a benchmark of at least 4 GiB, and OS morph/customization timings
+come from a previous successful run. It is `medium` when prepare metrics are
+available but target import uses configured fallback or a small benchmark, or
+when OS morph/customization still use configured fallback values. It is `low`
+when prepare metrics are missing or an important phase cannot be accounted for.
+
+To measure the OpenNebula frontend/datastore import path before commit, run:
+
+```
+oneswap convert <vm> --dry-run --delta --benchmark-import
+```
+
+This requires prepared delta state from `--delta --delta-prepare`. When
+`http_transfer` is enabled, OneSwap creates a temporary non-sparse raw test
+file under the VM work directory, serves it through the configured
+`http_host`/`http_port`, allocates a temporary OpenNebula image, waits for it
+to become `READY`, records the measured import rate in the VM metrics file,
+deletes the temporary image, and then runs the normal delta dry-run estimate.
+The test file size defaults to `dry_run_import_benchmark_size_mib: 4096` and
+is configurable. Small benchmark files can be dominated by fixed OpenNebula
+allocation, datastore, and polling overhead, so files below 1024 MiB are
+reported with a warning and can produce pessimistic linear estimates. If a
+previous full import metric is available, it is preferred over a small
+benchmark because it is more representative. If the benchmark cannot run or
+fails, the estimate falls back to previous import metrics or
+`dry_run_target_import_mib_s`.
+
+If you want to continue immediately, run the downtime phase:
 
 ```
 oneswap convert <vm> --delta --delta-commit
@@ -113,9 +151,22 @@ oneswap convert <vm> --delta --delta-commit
 
 This shuts down the source VM, copies and applies the remaining delta, and
 then creates OpenNebula images/templates through the existing migration flow.
+This is the real migration completion step, not a dry-run. If OneSwap runs on
+a worker host that is not the OpenNebula frontend, enable `http_transfer` and
+set `http_host`/`http_port` so the frontend can fetch the committed disk files
+over HTTP instead of trying to read worker-local paths.
 
-For backward compatibility, the original command still performs the full delta
-migration in one shot:
+If you only wanted timing data and will migrate later, clean up the prepared
+snapshot and state:
+
+```
+oneswap convert <vm> --delta --delta-cleanup
+```
+
+This removes the VMware snapshot created by prepare, the temporary ESXi clone
+directory, and the local prepared transfer/conversion/state directory. Later,
+during the chosen maintenance window, run a normal full delta migration with
+the same backward-compatible command:
 
 ```
 oneswap convert <vm> --delta
@@ -128,8 +179,8 @@ interactive prompt. A single `esxi_user`/`esxi_pass` pair applies to the
 discovered ESXi host; per-host credential mapping is not implemented.
 
 Do not leave the VMware snapshot created by `--delta --delta-prepare` active
-indefinitely. Either finish with `--delta --delta-commit` or remove/clean up
-the snapshot if aborting the migration.
+indefinitely. Either finish with `--delta --delta-commit` or run
+`--delta-cleanup` if aborting or postponing the migration.
 
 ## vCenter Permissions Requirements
 
