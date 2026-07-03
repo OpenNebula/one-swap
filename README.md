@@ -68,155 +68,48 @@ variable.
 
 ## Dry-run Estimates
 
-To estimate a regular conversion without running the migration:
+OneSwap can estimate migration time without running the full conversion. Dry-run
+reports estimate basis, rates, phase durations, and confidence.
+
+Regular dry-run:
 
 ```
 oneswap convert <vm> --dry-run
 ```
 
-This reads VM and disk metadata, estimates export, qcow2 conversion, and
-OpenNebula import time. It reports estimate basis, rates, phase durations, and
-confidence. Source export and conversion use configured fallback values unless
-matching regular conversion metrics are available. Target import can reuse
-matching previous OpenNebula import metrics or a benchmark metric for the
-current transfer mode. Without `--benchmark-import`, it does not create VMware
-snapshots, OpenNebula images, or OpenNebula templates, and it does not modify
-the source VM.
-
-To benchmark the OpenNebula image import path before a regular dry-run:
+Optional OpenNebula import benchmark:
 
 ```
 oneswap convert <vm> --dry-run --benchmark-import
 ```
 
-With `http_transfer` enabled, this creates a temporary non-sparse raw test
-file, imports it as a temporary OpenNebula image, records the measured import
-rate, deletes the temporary image/file, and then runs the dry-run estimate.
-When `http_transfer` is disabled, local-path benchmarking is skipped; the
-estimate uses matching local-path full import metrics or
-`dry_run_target_import_mib_s`.
+`--benchmark-import` measures the OpenNebula image import path using a
+temporary image and stores transfer-mode-specific metrics for future estimates.
 
 ### Delta Dry-run Workflow
 
-For delta migrations, you can stage the online base phase first:
+Staged delta migration can prepare the base disks while the source VM keeps
+running, estimate the final phase, and then commit during the downtime window.
 
 ```
 oneswap convert <vm> --delta --delta-prepare
-```
-
-This creates a VMware snapshot while the source VM keeps running, then
-clones, transfers, and converts the base disks. It writes prepared state under
-the VM work directory and does not shut down the VM, apply the final delta, or
-create OpenNebula images/templates. The VMware snapshot remains active after
-prepare, so the delta can continue growing.
-
-Then estimate downtime from the prepared state:
-
-```
 oneswap convert <vm> --dry-run --delta
-```
-
-This reads the prepared state, checks the current snapshot delta extent size
-on ESXi, and estimates the final downtime/import-ready phase. It reports the
-current delta copy estimate, delta apply estimate, OpenNebula image import/copy
-estimate, virt-v2v-in-place / OS morph estimate, guest customization estimate,
-and template creation as negligible. When available, it prefers measured base
-transfer/conversion throughput stored during prepare and measured OpenNebula
-import/customization metrics from previous runs. If that data is missing, it
-falls back to configured values such as `dry_run_target_import_mib_s`,
-`dry_run_delta_os_morph_seconds`, and
-`dry_run_guest_customization_seconds`. Set `dry_run_target_import_mib_s` to
-match the full OpenNebula frontend/datastore import path, not only network
-bandwidth.
-
-Each delta dry-run refreshes the live snapshot extent size from ESXi using the
-prepared state. If that refresh fails, OneSwap warns and falls back to the
-prepare-time stored value with lower confidence.
-
-The delta dry-run report includes an estimate basis section showing whether
-each phase comes from prepare measurements, an import benchmark, previous full
-import metrics, or configured fallbacks. Confidence is `high` when prepare
-transfer/conversion are measured and target import comes from a previous full
-import or a benchmark of at least 4 GiB, and OS morph/customization timings
-come from a previous successful run. It is `medium` when prepare metrics are
-available but target import uses configured fallback or a small benchmark, or
-when OS morph/customization still use configured fallback values. It is `low`
-when prepare metrics are missing or an important phase cannot be accounted for.
-
-To measure the OpenNebula frontend/datastore import path before commit, run:
-
-```
 oneswap convert <vm> --dry-run --delta --benchmark-import
-```
-
-This requires prepared delta state from `--delta --delta-prepare`. When
-`http_transfer` is enabled, OneSwap creates a temporary non-sparse raw test
-file under the VM work directory, serves it through the configured
-`http_host`/`http_port`, allocates a temporary OpenNebula image, waits for it
-to become `READY`, records the measured import rate in the VM metrics file,
-deletes the temporary image, and then runs the normal delta dry-run estimate.
-The test file size defaults to `dry_run_import_benchmark_size_mib: 4096` and
-is configurable. Small benchmark files can be dominated by fixed OpenNebula
-allocation, datastore, and polling overhead, so files below 1024 MiB are
-reported with a warning and can produce pessimistic linear estimates. If a
-previous full import metric is available, it is preferred over a small
-benchmark because it is more representative. If the benchmark cannot run or
-fails, the estimate falls back to previous import metrics or
-`dry_run_target_import_mib_s`.
-
-Import metrics are transfer-mode specific. HTTP benchmark/import metrics are
-used only when the current run has `http_transfer` enabled; local-path imports
-use local-path metrics or the configured fallback. This avoids applying a
-previous HTTP measurement to a commit that will allocate images from local
-filesystem paths.
-
-If you want to continue immediately, run the downtime phase:
-
-```
 oneswap convert <vm> --delta --delta-commit
-```
-
-This shuts down the source VM, copies and applies the remaining delta, and
-then creates OpenNebula images/templates through the existing migration flow.
-This is the real migration completion step, not a dry-run. If OneSwap runs on
-a worker host that is not the OpenNebula frontend, enable `http_transfer` and
-set `http_host`/`http_port` so the frontend can fetch the committed disk files
-over HTTP instead of trying to read worker-local paths.
-
-When `http_transfer` is disabled, OpenNebula image `PATH` values are local
-filesystem paths resolved by the OpenNebula frontend/oned host. In local PATH
-mode, run OneSwap on the OpenNebula frontend or make sure `work_dir` is shared
-at the same absolute path on the frontend. Delta commit preflights this before
-shutting down the source VM; if the OpenNebula endpoint appears remote, it
-aborts and preserves the prepared state. Use `http_transfer` for worker-host
-migrations, or pass `--allow-local-path-remote` only when the path is
-intentionally shared and visible to the frontend.
-
-If you only wanted timing data and will migrate later, clean up the prepared
-snapshot and state:
-
-```
 oneswap convert <vm> --delta --delta-cleanup
 ```
 
-This removes the VMware snapshot created by prepare, the temporary ESXi clone
-directory, and the local prepared transfer/conversion/state directory. Later,
-during the chosen maintenance window, run a normal full delta migration with
-the same backward-compatible command:
-
-```
-oneswap convert <vm> --delta
-```
-
-Delta migration discovers the ESXi host from vCenter `runtime.host`. ESXi SSH
-authentication tries passwordless SSH first, then uses `esxi_user`/`esxi_pass`
-from CLI options or `oneswap.yaml`, and finally falls back to a limited
-interactive prompt. A single `esxi_user`/`esxi_pass` pair applies to the
-discovered ESXi host; per-host credential mapping is not implemented.
+When OneSwap runs on a worker host, enable `http_transfer` so the OpenNebula
+frontend can fetch images over HTTP. Local-path mode requires OneSwap to run on
+the OpenNebula frontend, or `work_dir` to be shared at the same absolute path
+on the frontend.
 
 Do not leave the VMware snapshot created by `--delta --delta-prepare` active
 indefinitely. Either finish with `--delta --delta-commit` or run
 `--delta-cleanup` if aborting or postponing the migration.
+
+For detailed behavior, metric selection, confidence levels, and examples, see
+the official OpenNebula documentation.
 
 ## vCenter Permissions Requirements
 
