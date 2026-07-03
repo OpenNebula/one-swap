@@ -210,6 +210,7 @@ class ESXi::VirtualMachine
         transfer_dir = state['transfer_dir']
         convert_dir = state['convert_dir']
         results_dir = state['results_dir']
+        @clone_dir = state['clone_dir'] || @clone_dir
 
         t0 = Time.now
         @logger.warn "Shutting down VM #{@name}. Downtime begins"
@@ -287,6 +288,14 @@ class ESXi::VirtualMachine
         @logger.info "Migrated VM #{@name} to KVM with downtime #{t_downtime_formatted}. VM disks at #{results_dir}"
         @logger.info "VM disks at #{results_dir}"
 
+        state_file = live2kvm_state_file(target_dir)
+        snapshot_removed = cleanup_snapshot(state)
+        vmx_verified = verify_vmx_base_disks(state, state_file)
+        if !snapshot_removed || !vmx_verified
+            snapshot_name = state['snapshot_name']
+            puts "Warning: failed to fully clean up VMware snapshot #{snapshot_name}; prepared state was #{state_file}."
+        end
+
         live_storage_transfer_cleanup(transfer_dir)
 
         results_dir
@@ -356,7 +365,7 @@ class ESXi::VirtualMachine
         state = read_live2kvm_state(target_dir)
         if state.nil?
             puts "No prepared delta state found at #{live2kvm_state_file(target_dir)}."
-            return false
+            return cleanup_leftover_oneswap_snapshots(live2kvm_state_file(target_dir))
         end
 
         cleanup_snapshot(state)
@@ -502,21 +511,88 @@ class ESXi::VirtualMachine
         snapshot_name = state['snapshot_name']
         if snapshot_name.to_s.empty?
             puts 'Snapshot name is missing from prepared state; automatic snapshot cleanup is unavailable.'
-            return
+            return false
         end
 
         puts "Removing VMware snapshot #{snapshot_name}..."
         snapshot_id = @client.snapshot_id_by_name(@id, snapshot_name)
         if snapshot_id.nil?
             puts "Warning: VMware snapshot #{snapshot_name} was not found; continuing cleanup."
-            return
+            return true
         end
 
         if @client.remove_snapshot_vm(@id, snapshot_id)
             puts "Removed VMware snapshot #{snapshot_name}."
+            return true
         else
             puts "Warning: failed to remove VMware snapshot #{snapshot_name}; continuing cleanup."
+            return false
         end
+    end
+
+    def cleanup_leftover_oneswap_snapshots(state_file)
+        snapshots = @client.snapshots(@id).select {|snapshot| oneswap_snapshot?(snapshot) }
+        if snapshots.empty?
+            puts "Warning: no snapshots with a OneSwap marker were found for VM #{@name}; not removing any snapshots without prepared state."
+            return true
+        end
+
+        all_removed = true
+        snapshots.each do |snapshot|
+            snapshot_info = "#{snapshot[:name]} (id #{snapshot[:id]}, description: #{snapshot[:description]})"
+            puts "Removing leftover OneSwap snapshot #{snapshot_info}..."
+            if @client.remove_snapshot_vm(@id, snapshot[:id])
+                puts "Removed leftover OneSwap snapshot #{snapshot_info}."
+            else
+                all_removed = false
+                puts "Warning: failed to remove leftover OneSwap snapshot for VM #{@name}: #{snapshot_info}."
+            end
+        end
+
+        vmx_verified = verify_vmx_base_disks({}, state_file)
+        if all_removed && vmx_verified
+            puts 'Leftover OneSwap snapshot cleanup completed.'
+            return true
+        end
+
+        puts "Warning: leftover OneSwap snapshot cleanup for VM #{@name} did not fully complete."
+        false
+    end
+
+    def oneswap_snapshot?(snapshot)
+        snapshot[:description].to_s == ESXi::Client.default_snapshot_options[:description] ||
+            snapshot[:name].to_s.start_with?('OneSwap ')
+    end
+
+    def verify_vmx_base_disks(state, state_file)
+        snapshot_disks = state['disks'].to_a.map {|disk| disk['active_snapshot_descriptor'] }.compact
+        still_active = []
+
+        12.times do |attempt|
+            refresh_vmx
+            active_disks = self.class.active_vmdks(@vmx)
+            still_active = active_disks & snapshot_disks
+            still_active += active_disks.select {|disk| snapshot_descriptor?(disk) }
+            still_active.uniq!
+            if still_active.empty?
+                puts 'Verified VMX disk backing no longer points to the OneSwap snapshot descriptor.'
+                return true
+            end
+
+            sleep 5 if attempt < 11
+        end
+
+        puts "Warning: VMX still points to snapshot descriptor(s): #{still_active.join(', ')}."
+        puts "Warning: prepared state was #{state_file}."
+        false
+    rescue StandardError => e
+        puts "Warning: unable to verify VMX disk backing after snapshot cleanup: #{e.message}."
+        puts "Warning: prepared state was #{state_file}."
+        false
+    end
+
+    def snapshot_descriptor?(disk)
+        disk.to_s =~ /-\d{6}\.vmdk$/
     end
 
     def cleanup_clone_dir(state)

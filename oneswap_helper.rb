@@ -1922,6 +1922,7 @@ _EOF_"
         source_info = source_export_estimate
         source_rate = source_info[:rate]
         convert_rate = positive_float_option(:dry_run_qcow2_conversion_mib_s)
+        convert_rate_source = :configured_fallback
         convert_rate_label = 'configured fallback, not measured'
         convert_basis = "configured fallback, not measured, #{convert_rate.round(2)} MiB/s"
         import_info = target_import_estimate(:prefer_previous_full => true)
@@ -1962,8 +1963,14 @@ _EOF_"
         puts "  import: #{format_duration(import_time)}"
         puts "  total: #{format_duration(export_time + conversion_time + import_time)}"
         puts "  confidence: #{confidence}"
-        puts
-        puts 'Warning: source export and conversion use configured fallback values unless previous matching regular conversion metrics are available.'
+
+        fallback_phases = []
+        fallback_phases << 'source export' if source_info[:source] == :configured_fallback
+        fallback_phases << 'conversion' if convert_rate_source == :configured_fallback
+        unless fallback_phases.empty?
+            puts
+            puts "Warning: #{fallback_phases.join(' and ')} #{fallback_phases.length == 1 ? 'uses' : 'use'} configured fallback values unless previous matching regular conversion metrics are available."
+        end
     end
 
     def run_delta_dry_run_estimate
@@ -2253,7 +2260,9 @@ _EOF_"
         measured_import_seconds = metrics['opennebula_import_seconds'].to_f
         benchmark_import_mib = metrics['opennebula_import_benchmark_bytes'].to_i.to_f / (1024 * 1024)
         benchmark_import_seconds = metrics['opennebula_import_benchmark_seconds'].to_f
-        measured_import_matches = measured_import_rate > 0 && measured_import_mode == import_mode
+        measured_import_matches = measured_import_rate > 0 &&
+            measured_import_mode == import_mode &&
+            measured_import_mode != 'http'
         benchmark_import_matches = benchmark_import_rate > 0 && benchmark_import_mode == import_mode
 
         if measured_import_matches && (prefer_previous_full || !benchmark_import_matches || benchmark_import_mib < 1024)
@@ -2399,8 +2408,9 @@ _EOF_"
         {}
     end
 
-    def write_metrics(metrics)
-        File.write(metrics_file, read_metrics.merge(metrics).to_yaml)
+    def write_metrics(metrics, replace: false)
+        data = replace ? metrics : read_metrics.merge(metrics)
+        File.write(metrics_file, data.to_yaml)
     rescue StandardError => e
         @logger.warn "Unable to write metrics file #{metrics_file}: #{e.message}"
     end
@@ -2408,18 +2418,35 @@ _EOF_"
     def persist_opennebula_import_metrics(import_metrics)
         return if import_metrics.empty?
 
-        bytes = import_metrics.sum {|m| m['opennebula_import_bytes'].to_i }
-        seconds = import_metrics.sum {|m| m['opennebula_import_seconds'].to_f }
         customization_seconds = import_metrics.sum {|m| m['customization_seconds'].to_f }
+        metrics = { 'customization_seconds' => customization_seconds }
 
-        write_metrics({
-                          'opennebula_imports' => import_metrics,
-                          'opennebula_import_bytes' => bytes,
-                          'opennebula_import_seconds' => seconds,
-                          'opennebula_import_mib_s' => mib_per_second(bytes, seconds),
-                          'opennebula_import_mode' => opennebula_import_mode,
-                          'customization_seconds' => customization_seconds
-                      })
+        reusable_import_metrics = import_metrics.select {|m| m['opennebula_import_seconds'].to_f > 0 }
+        unless reusable_import_metrics.empty?
+            bytes = reusable_import_metrics.sum {|m| m['opennebula_import_bytes'].to_i }
+            seconds = reusable_import_metrics.sum {|m| m['opennebula_import_seconds'].to_f }
+            metrics.merge!({
+                               'opennebula_imports' => reusable_import_metrics,
+                               'opennebula_import_bytes' => bytes,
+                               'opennebula_import_seconds' => seconds,
+                               'opennebula_import_mib_s' => mib_per_second(bytes, seconds),
+                               'opennebula_import_mode' => opennebula_import_mode
+                           })
+        else
+            current = read_metrics
+            [
+                'opennebula_imports',
+                'opennebula_import_bytes',
+                'opennebula_import_seconds',
+                'opennebula_import_mib_s',
+                'opennebula_import_mode'
+            ].each {|key| current.delete(key) }
+
+            write_metrics(current.merge(metrics), :replace => true)
+            return
+        end
+
+        write_metrics(metrics)
     end
 
     def opennebula_import_mode
@@ -2935,25 +2962,40 @@ _EOF_"
                 puts 'Image Short State: ' + img.short_state_str
             end
 
-            import_seconds = Time.now - import_t0
+            ready_wait_seconds = Time.now - import_t0
+            puts "OpenNebula image #{i} READY wait: #{format_duration(ready_wait_seconds)}"
             import_bytes = File.exist?(d) ? File.size(d) : 0
-            import_mib_s = mib_per_second(import_bytes, import_seconds)
-            if import_mib_s
-                puts "OpenNebula import for image #{i}: #{format_mib(import_bytes.to_f / (1024 * 1024))} " \
-                     "in #{format_duration(import_seconds)} (#{import_mib_s.round(2)} MiB/s)"
-            end
-            import_metrics << {
-                'disk' => d,
-                'opennebula_import_bytes' => import_bytes,
-                'opennebula_import_seconds' => import_seconds,
-                'opennebula_import_mib_s' => import_mib_s,
-                'opennebula_import_mode' => opennebula_import_mode,
-                'customization_seconds' => customization_seconds
-            }
 
             if @options[:http_transfer]
                 server_thread.kill
                 server_thread.join
+            end
+
+            import_seconds = Time.now - import_t0
+            import_mib_s = mib_per_second(import_bytes, import_seconds)
+            if @options[:http_transfer]
+                puts "HTTP transfer/server completion for image #{i}: #{format_duration(import_seconds)}"
+                puts "Observed HTTP import timing for image #{i} is not persisted as a reusable metric; use --dry-run --benchmark-import for trusted HTTP import metrics."
+            end
+            if import_mib_s
+                puts "OpenNebula import for image #{i}: #{format_mib(import_bytes.to_f / (1024 * 1024))} " \
+                     "in #{format_duration(import_seconds)} (#{import_mib_s.round(2)} MiB/s)"
+            end
+            if @options[:http_transfer]
+                import_metrics << {
+                    'disk' => d,
+                    'customization_seconds' => customization_seconds
+                }
+            else
+                import_metrics << {
+                    'disk' => d,
+                    'opennebula_import_bytes' => import_bytes,
+                    'opennebula_import_seconds' => import_seconds,
+                    'opennebula_import_ready_seconds' => ready_wait_seconds,
+                    'opennebula_import_mib_s' => import_mib_s,
+                    'opennebula_import_mode' => opennebula_import_mode,
+                    'customization_seconds' => customization_seconds
+                }
             end
 
             img_ids.append({ :id => img.id, :os => os_name })

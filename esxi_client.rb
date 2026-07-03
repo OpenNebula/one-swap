@@ -96,6 +96,29 @@ class ESXi::Client
         nil
     end
 
+    def snapshots(vm_id)
+        actions = "snapshot.get #{vm_id}"
+        stdout, _stderr, status = vm_cmd(actions)
+        return [] unless status
+
+        snapshots = []
+        current = nil
+        stdout.each_line do |line|
+            if line =~ /Snapshot Id\s*:\s*(\d+)/
+                current = { :id => Regexp.last_match(1) }
+                snapshots << current
+            elsif current && line =~ /Snapshot Name\s*:\s*(.*)$/
+                current[:name] = Regexp.last_match(1).strip
+            elsif current && line =~ /Snapshot Desciption\s*:\s*(.*)$/
+                current[:description] = Regexp.last_match(1).strip
+            elsif current && line =~ /Snapshot Description\s*:\s*(.*)$/
+                current[:description] = Regexp.last_match(1).strip
+            end
+        end
+
+        snapshots
+    end
+
     def remove_snapshot_vm(vm_id, snapshot_id)
         actions = "snapshot.remove #{vm_id} #{snapshot_id} false"
         _, _, s = vm_cmd(actions)
