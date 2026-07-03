@@ -1912,17 +1912,27 @@ _EOF_"
             return run_delta_dry_run_estimate
         end
 
+        run_opennebula_import_benchmark if @options[:benchmark_import]
+
         disks = dry_run_disk_metadata
         total_provisioned_mib = disks.sum {|disk| disk[:provisioned_mib] }
         total_data_mib = disks.sum {|disk| disk[:estimated_data_mib] }
 
         source_rate = positive_float_option(:dry_run_source_export_mib_s)
+        source_rate_label = 'configured fallback, not measured'
+        source_basis = "configured fallback, not measured, #{source_rate.round(2)} MiB/s"
         convert_rate = positive_float_option(:dry_run_qcow2_conversion_mib_s)
-        import_rate = positive_float_option(:dry_run_target_import_mib_s)
+        convert_rate_label = 'configured fallback, not measured'
+        convert_basis = "configured fallback, not measured, #{convert_rate.round(2)} MiB/s"
+        import_info = target_import_estimate(:prefer_previous_full => true)
+        import_rate = import_info[:rate]
 
         export_time = total_data_mib / source_rate
         conversion_time = total_data_mib / convert_rate
         import_time = total_data_mib / import_rate
+        confidence = regular_dry_run_confidence(:configured_fallback,
+                                                :configured_fallback,
+                                                import_info[:source])
 
         puts 'OneSwap dry-run estimate'
         puts "VM: #{@options[:name]}"
@@ -1936,18 +1946,24 @@ _EOF_"
         puts "Total provisioned size: #{format_mib(total_provisioned_mib)}"
         puts "Estimated data size: #{format_mib(total_data_mib)}"
         puts
-        puts 'Throughput assumptions:'
-        puts "  source export: #{source_rate.round(2)} MiB/s"
-        puts "  qcow2 conversion: #{convert_rate.round(2)} MiB/s"
-        puts "  target import: #{import_rate.round(2)} MiB/s"
+        puts 'Estimate basis:'
+        puts "  source export: #{source_basis}"
+        puts "  conversion: #{convert_basis}"
+        puts "  target import: #{import_info[:basis]}"
+        puts
+        puts 'Rates:'
+        puts "  source export: #{source_rate.round(2)} MiB/s (#{source_rate_label})"
+        puts "  conversion: #{convert_rate.round(2)} MiB/s (#{convert_rate_label})"
+        puts "  target import: #{import_rate.round(2)} MiB/s (#{import_info[:label]})"
         puts
         puts 'Estimated phase durations:'
         puts "  export: #{format_duration(export_time)}"
         puts "  conversion: #{format_duration(conversion_time)}"
         puts "  import: #{format_duration(import_time)}"
         puts "  total: #{format_duration(export_time + conversion_time + import_time)}"
+        puts "  confidence: #{confidence}"
         puts
-        puts 'Warning: configured fallback throughput values are used. Actual runtime can differ depending on the selected transfer/conversion mode.'
+        puts 'Warning: source export and conversion use configured fallback values unless previous matching regular conversion metrics are available.'
     end
 
     def run_delta_dry_run_estimate
@@ -2107,38 +2123,11 @@ _EOF_"
 
         base_bytes = prepared_base_bytes(state)
         metrics = read_metrics
-        import_mode = opennebula_import_mode
-        measured_import_rate = metrics['opennebula_import_mib_s'].to_f
-        benchmark_import_rate = metrics['opennebula_import_benchmark_mib_s'].to_f
-        measured_import_mode = metrics['opennebula_import_mode']
-        benchmark_import_mode = metrics['opennebula_import_benchmark_mode']
-        measured_import_mib = metrics['opennebula_import_bytes'].to_i.to_f / (1024 * 1024)
-        measured_import_seconds = metrics['opennebula_import_seconds'].to_f
-        benchmark_import_mib = metrics['opennebula_import_benchmark_bytes'].to_i.to_f / (1024 * 1024)
-        benchmark_import_seconds = metrics['opennebula_import_benchmark_seconds'].to_f
-        measured_import_matches = measured_import_rate > 0 && measured_import_mode == import_mode
-        benchmark_import_matches = benchmark_import_rate > 0 && benchmark_import_mode == import_mode
-        if measured_import_matches && (!benchmark_import_matches || benchmark_import_mib < 1024)
-            import_rate = measured_import_rate
-            import_rate_source = :previous_full_import
-            import_rate_label = previous_import_label(measured_import_mib, measured_import_seconds, import_rate)
-            import_basis = "#{import_rate_label}, #{import_rate.round(2)} MiB/s"
-        elsif benchmark_import_matches
-            import_rate = benchmark_import_rate
-            import_rate_source = benchmark_import_mib >= 4096 ? :large_benchmark : :small_benchmark
-            import_rate_label = benchmark_import_label(benchmark_import_mib, benchmark_import_seconds, import_rate)
-            import_basis = "#{import_rate_label}, #{import_rate.round(2)} MiB/s"
-        elsif measured_import_matches
-            import_rate = measured_import_rate
-            import_rate_source = :previous_full_import
-            import_rate_label = previous_import_label(measured_import_mib, measured_import_seconds, import_rate)
-            import_basis = "#{import_rate_label}, #{import_rate.round(2)} MiB/s"
-        else
-            import_rate = positive_float_option(:dry_run_target_import_mib_s)
-            import_rate_source = :configured_fallback
-            import_rate_label = "configured fallback, not measured for #{import_mode} mode"
-            import_basis = "configured fallback, not measured for #{import_mode} mode, #{import_rate.round(2)} MiB/s"
-        end
+        import_info = target_import_estimate(:metrics => metrics, :prefer_previous_full => false)
+        import_rate = import_info[:rate]
+        import_rate_source = import_info[:source]
+        import_rate_label = import_info[:label]
+        import_basis = import_info[:basis]
 
         measured_os_morph = positive_metric(metrics['delta_os_morph_seconds'])
         if measured_os_morph
@@ -2214,6 +2203,71 @@ _EOF_"
     def positive_metric(value)
         value = value.to_f
         value > 0 ? value : nil
+    end
+
+    def target_import_estimate(metrics: read_metrics, prefer_previous_full: true)
+        import_mode = opennebula_import_mode
+        measured_import_rate = metrics['opennebula_import_mib_s'].to_f
+        benchmark_import_rate = metrics['opennebula_import_benchmark_mib_s'].to_f
+        measured_import_mode = metrics['opennebula_import_mode']
+        benchmark_import_mode = metrics['opennebula_import_benchmark_mode']
+        measured_import_mib = metrics['opennebula_import_bytes'].to_i.to_f / (1024 * 1024)
+        measured_import_seconds = metrics['opennebula_import_seconds'].to_f
+        benchmark_import_mib = metrics['opennebula_import_benchmark_bytes'].to_i.to_f / (1024 * 1024)
+        benchmark_import_seconds = metrics['opennebula_import_benchmark_seconds'].to_f
+        measured_import_matches = measured_import_rate > 0 && measured_import_mode == import_mode
+        benchmark_import_matches = benchmark_import_rate > 0 && benchmark_import_mode == import_mode
+
+        if measured_import_matches && (prefer_previous_full || !benchmark_import_matches || benchmark_import_mib < 1024)
+            label = previous_import_label(measured_import_mib, measured_import_seconds, measured_import_rate)
+            return {
+                :rate => measured_import_rate,
+                :source => :previous_full_import,
+                :label => label,
+                :basis => "#{label}, #{measured_import_rate.round(2)} MiB/s"
+            }
+        end
+
+        if benchmark_import_matches
+            source = benchmark_import_mib >= 4096 ? :large_benchmark : :small_benchmark
+            label = benchmark_import_label(benchmark_import_mib, benchmark_import_seconds, benchmark_import_rate)
+            return {
+                :rate => benchmark_import_rate,
+                :source => source,
+                :label => label,
+                :basis => "#{label}, #{benchmark_import_rate.round(2)} MiB/s"
+            }
+        end
+
+        if measured_import_matches
+            label = previous_import_label(measured_import_mib, measured_import_seconds, measured_import_rate)
+            return {
+                :rate => measured_import_rate,
+                :source => :previous_full_import,
+                :label => label,
+                :basis => "#{label}, #{measured_import_rate.round(2)} MiB/s"
+            }
+        end
+
+        rate = positive_float_option(:dry_run_target_import_mib_s)
+        label = "configured fallback, not measured for #{import_mode} mode"
+        {
+            :rate => rate,
+            :source => :configured_fallback,
+            :label => label,
+            :basis => "#{label}, #{rate.round(2)} MiB/s"
+        }
+    end
+
+    def regular_dry_run_confidence(source_rate_source, convert_rate_source, import_rate_source)
+        source_measured = source_rate_source == :previous_metrics
+        convert_measured = convert_rate_source == :previous_metrics
+        import_measured = [:previous_full_import, :large_benchmark, :small_benchmark].include?(import_rate_source)
+
+        return 'high' if source_measured && convert_measured && import_measured
+        return 'medium' if import_measured
+
+        'low'
     end
 
     def estimate_confidence(source_rate_source, apply_rate_source, import_rate_source,
@@ -2325,7 +2379,7 @@ _EOF_"
     end
 
     def run_opennebula_import_benchmark
-        unless File.exist?(delta_state_file)
+        if @options[:delta] && !File.exist?(delta_state_file)
             puts "Warning: import benchmark skipped because prepared delta state was not found at #{delta_state_file}."
             return
         end

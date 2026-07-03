@@ -75,9 +75,26 @@ oneswap convert <vm> --dry-run
 ```
 
 This reads VM and disk metadata, estimates export, qcow2 conversion, and
-OpenNebula import time, and uses the configured fallback throughput values from
-`oneswap.yaml`. It does not create VMware snapshots, OpenNebula images, or
-OpenNebula templates, and it does not modify the source VM.
+OpenNebula import time. It reports estimate basis, rates, phase durations, and
+confidence. Source export and conversion use configured fallback values unless
+matching regular conversion metrics are available. Target import can reuse
+matching previous OpenNebula import metrics or a benchmark metric for the
+current transfer mode. Without `--benchmark-import`, it does not create VMware
+snapshots, OpenNebula images, or OpenNebula templates, and it does not modify
+the source VM.
+
+To benchmark the OpenNebula image import path before a regular dry-run:
+
+```
+oneswap convert <vm> --dry-run --benchmark-import
+```
+
+With `http_transfer` enabled, this creates a temporary non-sparse raw test
+file, imports it as a temporary OpenNebula image, records the measured import
+rate, deletes the temporary image/file, and then runs the dry-run estimate.
+When `http_transfer` is disabled, local-path benchmarking is skipped; the
+estimate uses matching local-path full import metrics or
+`dry_run_target_import_mib_s`.
 
 ### Delta Dry-run Workflow
 

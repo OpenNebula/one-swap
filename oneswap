@@ -415,7 +415,7 @@ CommandParser::CmdParser.new(ARGV) do
     BENCHMARK_IMPORT = {
         :name => 'benchmark_import',
         :large => '--benchmark-import',
-        :description => 'Benchmark OpenNebula image import during --dry-run --delta using a temporary image.'
+        :description => 'Benchmark OpenNebula image import during --dry-run using a temporary image.'
     }
 
     CUSTOM = { # not sure what to call this actually
@@ -739,8 +739,8 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:dry_run] && (options[:delta_prepare] || options[:delta_commit] || options[:delta_cleanup])
                 raise '--dry-run cannot be combined with --delta-prepare, --delta-commit, or --delta-cleanup.'
             end
-            if options[:benchmark_import] && !(options[:dry_run] && options[:delta])
-                raise '--benchmark-import requires --dry-run --delta.'
+            if options[:benchmark_import] && !options[:dry_run]
+                raise '--benchmark-import requires --dry-run.'
             end
 
             if options[:delta]

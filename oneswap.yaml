@@ -32,7 +32,7 @@
 #:dry_run_target_import_mib_s: 80         # Fallback OpenNebula image import throughput in MiB/s. Tune for the frontend/datastore import path, not only network speed.
 #:dry_run_delta_os_morph_seconds: 480     # Fallback final virt-v2v-in-place / OS morph duration for delta dry-run.
 #:dry_run_guest_customization_seconds: 180  # Fallback guest inspect/customization/qemu-ga/context duration for delta dry-run.
-#:dry_run_import_benchmark_size_mib: 4096 # Temporary non-sparse raw image size for --dry-run --delta --benchmark-import. Small files can be dominated by OpenNebula fixed overhead.
+#:dry_run_import_benchmark_size_mib: 4096 # Temporary non-sparse raw image size for --dry-run --benchmark-import. Small files can be dominated by OpenNebula fixed overhead.
 
 # Import Options
 #:ova: /path/to/ova                       # Path to OVA or folder with OVF files
