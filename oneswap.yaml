@@ -33,6 +33,7 @@
 #:dry_run_delta_os_morph_seconds: 480     # Fallback final virt-v2v-in-place / OS morph duration for delta dry-run.
 #:dry_run_guest_customization_seconds: 180  # Fallback guest inspect/customization/qemu-ga/context duration for delta dry-run.
 #:dry_run_import_benchmark_size_mib: 4096 # Temporary non-sparse raw image size for --dry-run --benchmark-import. Small files can be dominated by OpenNebula fixed overhead.
+#:dry_run_source_benchmark_size_mib: 1024 # Temporary VMware datastore file size for --dry-run --benchmark-export.
 
 # Import Options
 #:ova: /path/to/ova                       # Path to OVA or folder with OVF files

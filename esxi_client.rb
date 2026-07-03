@@ -198,7 +198,7 @@ class ESXi::Client
             return false
         end
 
-        cmd = "rm -r #{target}"
+        cmd = "rm -r #{Shellwords.escape(target)}"
         message = "Failed to remove files at #{target} on ESXi host #{@host}"
         simple_ssh_execution(cmd, message)
     end
@@ -208,6 +208,20 @@ class ESXi::Client
 
         cmd = "mkdir -p #{dir}"
         message = "Failed to create directory #{dir} on ESXi host #{@host}"
+        simple_ssh_execution(cmd, message)
+    end
+
+    def create_zero_file(path, size_mib)
+        if !path.start_with?(DATASTORES_PATH) || path.include?("'")
+            @logger.error "Refusing to create file outside datastore path: #{path}"
+            return false
+        end
+
+        size_mib = size_mib.to_i
+        return false if size_mib <= 0
+
+        cmd = "dd if=/dev/zero of=#{Shellwords.escape(path)} bs=1M count=#{size_mib}"
+        message = "Failed to create benchmark file #{path} on ESXi host #{@host}"
         simple_ssh_execution(cmd, message)
     end
 

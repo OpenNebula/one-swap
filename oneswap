@@ -418,6 +418,12 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'Benchmark OpenNebula image import during --dry-run using a temporary image.'
     }
 
+    BENCHMARK_EXPORT = {
+        :name => 'benchmark_export',
+        :large => '--benchmark-export',
+        :description => 'Benchmark source export during regular --dry-run using a temporary datastore file.'
+    }
+
     CUSTOM = { # not sure what to call this actually
         :name => 'custom_convert',
         :large => '--custom',
@@ -633,7 +639,7 @@ CommandParser::CmdParser.new(ARGV) do
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT, ALLOW_LOCAL_PATH_REMOTE]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE, ACCEPT_CERT] + AUTH_OPTS
-    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, DELTA_PREPARE, DELTA_COMMIT, DELTA_CLEANUP, DRY_RUN, BENCHMARK_IMPORT, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, DELTA_PREPARE, DELTA_COMMIT, DELTA_CLEANUP, DRY_RUN, BENCHMARK_IMPORT, BENCHMARK_EXPORT, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                     CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                     PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
                     SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH, INJECT_DNS, CONTEXT_MIN_FREE, CONTEXT_FAIL_LOW_SPACE, CONTEXT_TIMEOUT,
@@ -742,6 +748,12 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:benchmark_import] && !options[:dry_run]
                 raise '--benchmark-import requires --dry-run.'
             end
+            if options[:benchmark_export] && !options[:dry_run]
+                raise '--benchmark-export requires --dry-run.'
+            end
+            if options[:benchmark_export] && options[:delta]
+                raise '--benchmark-export is only supported for regular non-delta dry-run.'
+            end
 
             if options[:delta]
                 incompatible_delta = []
@@ -798,6 +810,7 @@ CommandParser::CmdParser.new(ARGV) do
             options[:dry_run_delta_os_morph_seconds] ||= 480
             options[:dry_run_guest_customization_seconds] ||= 180
             options[:dry_run_import_benchmark_size_mib] ||= 4096
+            options[:dry_run_source_benchmark_size_mib] ||= 1024
 
             if options[:http_transfer]
                 options[:http_host] ||= Socket.ip_address_list.detect do |addrinfo|

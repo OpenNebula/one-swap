@@ -1912,15 +1912,15 @@ _EOF_"
             return run_delta_dry_run_estimate
         end
 
+        run_source_export_benchmark if @options[:benchmark_export]
         run_opennebula_import_benchmark if @options[:benchmark_import]
 
         disks = dry_run_disk_metadata
         total_provisioned_mib = disks.sum {|disk| disk[:provisioned_mib] }
         total_data_mib = disks.sum {|disk| disk[:estimated_data_mib] }
 
-        source_rate = positive_float_option(:dry_run_source_export_mib_s)
-        source_rate_label = 'configured fallback, not measured'
-        source_basis = "configured fallback, not measured, #{source_rate.round(2)} MiB/s"
+        source_info = source_export_estimate
+        source_rate = source_info[:rate]
         convert_rate = positive_float_option(:dry_run_qcow2_conversion_mib_s)
         convert_rate_label = 'configured fallback, not measured'
         convert_basis = "configured fallback, not measured, #{convert_rate.round(2)} MiB/s"
@@ -1930,7 +1930,7 @@ _EOF_"
         export_time = total_data_mib / source_rate
         conversion_time = total_data_mib / convert_rate
         import_time = total_data_mib / import_rate
-        confidence = regular_dry_run_confidence(:configured_fallback,
+        confidence = regular_dry_run_confidence(source_info[:source],
                                                 :configured_fallback,
                                                 import_info[:source])
 
@@ -1947,12 +1947,12 @@ _EOF_"
         puts "Estimated data size: #{format_mib(total_data_mib)}"
         puts
         puts 'Estimate basis:'
-        puts "  source export: #{source_basis}"
+        puts "  source export: #{source_info[:basis]}"
         puts "  conversion: #{convert_basis}"
         puts "  target import: #{import_info[:basis]}"
         puts
         puts 'Rates:'
-        puts "  source export: #{source_rate.round(2)} MiB/s (#{source_rate_label})"
+        puts "  source export: #{source_rate.round(2)} MiB/s (#{source_info[:label]})"
         puts "  conversion: #{convert_rate.round(2)} MiB/s (#{convert_rate_label})"
         puts "  target import: #{import_rate.round(2)} MiB/s (#{import_info[:label]})"
         puts
@@ -2205,6 +2205,44 @@ _EOF_"
         value > 0 ? value : nil
     end
 
+    def source_export_estimate(metrics: read_metrics)
+        mode = dry_run_conversion_mode
+        previous_rate = metrics['source_export_mib_s'].to_f
+        previous_mode = metrics['source_export_mode']
+        if previous_rate > 0 && previous_mode == mode
+            label = "previous regular conversion: #{previous_rate.round(2)} MiB/s"
+            return {
+                :rate => previous_rate,
+                :source => :previous_metrics,
+                :label => label,
+                :basis => label
+            }
+        end
+
+        benchmark_rate = metrics['source_export_benchmark_mib_s'].to_f
+        benchmark_mode = metrics['source_export_benchmark_mode']
+        if benchmark_rate > 0 && benchmark_mode == mode
+            size_mib = metrics['source_export_benchmark_bytes'].to_i.to_f / (1024 * 1024)
+            seconds = metrics['source_export_benchmark_seconds'].to_f
+            label = source_export_benchmark_label(size_mib, seconds)
+            return {
+                :rate => benchmark_rate,
+                :source => :benchmark,
+                :label => label,
+                :basis => "#{label}, #{benchmark_rate.round(2)} MiB/s"
+            }
+        end
+
+        rate = positive_float_option(:dry_run_source_export_mib_s)
+        label = 'configured fallback, not measured'
+        {
+            :rate => rate,
+            :source => :configured_fallback,
+            :label => label,
+            :basis => "#{label}, #{rate.round(2)} MiB/s"
+        }
+    end
+
     def target_import_estimate(metrics: read_metrics, prefer_previous_full: true)
         import_mode = opennebula_import_mode
         measured_import_rate = metrics['opennebula_import_mib_s'].to_f
@@ -2260,12 +2298,12 @@ _EOF_"
     end
 
     def regular_dry_run_confidence(source_rate_source, convert_rate_source, import_rate_source)
-        source_measured = source_rate_source == :previous_metrics
+        source_measured = [:previous_metrics, :benchmark].include?(source_rate_source)
         convert_measured = convert_rate_source == :previous_metrics
         import_measured = [:previous_full_import, :large_benchmark, :small_benchmark].include?(import_rate_source)
 
         return 'high' if source_measured && convert_measured && import_measured
-        return 'medium' if import_measured
+        return 'medium' if [source_measured, convert_measured, import_measured].any?
 
         'low'
     end
@@ -2311,6 +2349,16 @@ _EOF_"
                     "measured benchmark: #{format_mib(size_mib)}"
                 else
                     "measured benchmark: #{rate.round(2)} MiB/s"
+                end
+        label += " in #{format_duration(seconds)}" if seconds > 0
+        label
+    end
+
+    def source_export_benchmark_label(size_mib, seconds)
+        label = if size_mib > 0
+                    "measured VMware datastore download benchmark: #{format_mib(size_mib)}"
+                else
+                    'measured VMware datastore download benchmark'
                 end
         label += " in #{format_duration(seconds)}" if seconds > 0
         label
@@ -2459,6 +2507,78 @@ _EOF_"
             end
             FileUtils.rm_f(test_file)
         end
+    end
+
+    def run_source_export_benchmark
+        datastore_info = source_benchmark_datastore
+        unless datastore_info
+            puts 'Warning: source export benchmark skipped because no VM source datastore was found.'
+            puts 'The dry-run estimate will use previous matching source metrics or dry_run_source_export_mib_s.'
+            return
+        end
+
+        size_mib = positive_float_option(:dry_run_source_benchmark_size_mib).to_i
+        remote_file = ".oneswap-source-benchmark-#{safe_benchmark_name(@options[:name])}-#{Time.now.to_i}.bin"
+        remote_path = "#{ESXi::Client::DATASTORES_PATH}/#{datastore_info[:name]}/#{remote_file}"
+        local_dir = File.join(@options[:work_dir], 'dry-run-source-benchmark')
+        FileUtils.mkdir_p(local_dir)
+        local_file = File.join(local_dir, remote_file)
+        esxi_client = nil
+
+        puts "Running source export benchmark for #{dry_run_conversion_mode} with #{format_mib(size_mib.to_f)} VMware datastore file."
+        begin
+            esxi_client = ESXi::Client.new(get_esxi_host, @logger, esxi_client_options(:non_interactive => true))
+            unless esxi_client.create_zero_file(remote_path, size_mib)
+                raise "unable to create temporary benchmark file on datastore #{datastore_info[:name]}"
+            end
+
+            t0 = Time.now
+            datastore_info[:object].download(remote_file, local_file)
+            seconds = Time.now - t0
+            bytes = File.exist?(local_file) ? File.size(local_file) : 0
+            mib_s = mib_per_second(bytes, seconds)
+            raise 'source export benchmark downloaded no data' unless mib_s
+
+            write_metrics({
+                              'source_export_benchmark_bytes' => bytes,
+                              'source_export_benchmark_seconds' => seconds,
+                              'source_export_benchmark_mib_s' => mib_s,
+                              'source_export_benchmark_mode' => dry_run_conversion_mode,
+                              'source_export_benchmark_at' => Time.now.utc.iso8601,
+                              'source_export_benchmark_datastore' => datastore_info[:name]
+                          })
+
+            puts "Source export benchmark: #{format_mib(bytes.to_f / (1024 * 1024))} in " \
+                 "#{format_duration(seconds)} (#{mib_s.round(2)} MiB/s)"
+        rescue StandardError => e
+            puts "Warning: source export benchmark failed: #{e.message}"
+            puts 'The dry-run estimate will use previous matching source metrics or dry_run_source_export_mib_s.'
+        ensure
+            FileUtils.rm_f(local_file)
+            begin
+                esxi_client.remove_files(remote_path) if esxi_client
+            rescue StandardError => e
+                @logger.warn "Unable to remove source benchmark file #{remote_path}: #{e.message}"
+            end
+        end
+    end
+
+    def source_benchmark_datastore
+        disk = @props['config'][:hardware][:device].grep(RbVmomi::VIM::VirtualDisk).sort_by(&:key).first
+        return nil unless disk && disk.respond_to?(:backing)
+
+        datastore_name = disk.backing.fileName.to_s[/^\[(.+?)\]/, 1]
+        datastore_obj = disk.backing.respond_to?(:datastore) ? disk.backing.datastore : nil
+        return nil unless datastore_name && datastore_obj
+
+        {
+            :name => datastore_name,
+            :object => datastore_obj
+        }
+    end
+
+    def safe_benchmark_name(name)
+        name.to_s.gsub(/[^A-Za-z0-9_.-]/, '_')
     end
 
     def start_http_transfer_server(document_root)

@@ -83,8 +83,16 @@ Optional OpenNebula import benchmark:
 oneswap convert <vm> --dry-run --benchmark-import
 ```
 
+Optional source export benchmark:
+
+```
+oneswap convert <vm> --dry-run --benchmark-export
+```
+
 `--benchmark-import` measures the OpenNebula image import path using a
-temporary image and stores transfer-mode-specific metrics for future estimates.
+temporary image. `--benchmark-export` creates a temporary file on the VM's
+source datastore and measures the VMware datastore download path. Both store
+mode-specific metrics for future estimates.
 
 ### Delta Dry-run Workflow
 
