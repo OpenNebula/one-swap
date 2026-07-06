@@ -2,6 +2,7 @@
 #:http_transfer: false                    # Enable HTTP transfer
 #:http_host: '192.168.0.10'               # Hostname of this server
 #:http_port: 29869                        # HTTP Port to transfer over
+#:allow_local_path_remote: false          # Allow local PATH image allocation with a remote OpenNebula endpoint only when work_dir is shared at the same path.
 
 # vCenter Authentication
 #:vcenter: '172.20.0.123'                 # vCenter hostname or IP
@@ -12,8 +13,8 @@
 
 # ESXi Authentication
 #:esxi_ip: '172.20.0.123'                 # ESXi hostname or IP
-#:esxi_user: 'root'                       # ESXi username
-#:esxi_pass: 'changeme123'                # ESXi password
+#:esxi_user: 'root'                       # ESXi username. Also used by delta prepare/commit when passwordless SSH is not available.
+#:esxi_pass: 'changeme123'                # ESXi password. Also used by delta prepare/commit when passwordless SSH is not available.
 
 # Transfer Options
 #:custom_convert:                         # Uses OpenNebula's custom conversion process, useful for distributions which are not supported or fail to convert
@@ -24,6 +25,15 @@
 # single-stream download behavior.
 #:download_stripes: 1
 #:img_wait:                               # Amount of time to wait in seconds for image to be created in OpenNebula, default: 120
+
+# Dry-run Estimator Options
+#:dry_run_source_export_mib_s: 80         # Fallback source/export throughput in MiB/s. Delta dry-run prefers measured prepare transfer throughput when available.
+#:dry_run_qcow2_conversion_mib_s: 120     # Fallback qcow2 conversion/delta-apply throughput in MiB/s when measured prepare conversion is unavailable.
+#:dry_run_target_import_mib_s: 80         # Fallback OpenNebula image import throughput in MiB/s. Tune for the frontend/datastore import path, not only network speed.
+#:dry_run_delta_os_morph_seconds: 480     # Fallback final virt-v2v-in-place / OS morph duration for delta dry-run.
+#:dry_run_guest_customization_seconds: 180  # Fallback guest inspect/customization/qemu-ga/context duration for delta dry-run.
+#:dry_run_import_benchmark_size_mib: 4096 # Temporary non-sparse raw image size for --dry-run --benchmark-import. Small files can be dominated by OpenNebula fixed overhead.
+#:dry_run_source_benchmark_size_mib: 1024 # Temporary VMware datastore file size for --dry-run --benchmark-export.
 
 # Import Options
 #:ova: /path/to/ova                       # Path to OVA or folder with OVF files

@@ -66,6 +66,59 @@ and copies only the VDDK plugin into nbdkit's plugin directory. It requires
 internet access, or an internal mirror via the `NBDKIT_REPO_URL` environment
 variable.
 
+## Dry-run Estimates
+
+OneSwap can estimate migration time without running the full conversion. Dry-run
+reports estimate basis, rates, phase durations, and confidence.
+
+Regular dry-run:
+
+```
+oneswap convert <vm> --dry-run
+```
+
+Optional OpenNebula import benchmark:
+
+```
+oneswap convert <vm> --dry-run --benchmark-import
+```
+
+Optional source export benchmark:
+
+```
+oneswap convert <vm> --dry-run --benchmark-export
+```
+
+`--benchmark-import` measures the OpenNebula image import path using a
+temporary image. `--benchmark-export` creates a temporary file on the VM's
+source datastore and measures the VMware datastore download path. Both store
+mode-specific metrics for future estimates.
+
+### Delta Dry-run Workflow
+
+Staged delta migration can prepare the base disks while the source VM keeps
+running, estimate the final phase, and then commit during the downtime window.
+
+```
+oneswap convert <vm> --delta --delta-prepare
+oneswap convert <vm> --dry-run --delta
+oneswap convert <vm> --dry-run --delta --benchmark-import
+oneswap convert <vm> --delta --delta-commit
+oneswap convert <vm> --delta --delta-cleanup
+```
+
+When OneSwap runs on a worker host, enable `http_transfer` so the OpenNebula
+frontend can fetch images over HTTP. Local-path mode requires OneSwap to run on
+the OpenNebula frontend, or `work_dir` to be shared at the same absolute path
+on the frontend.
+
+Do not leave the VMware snapshot created by `--delta --delta-prepare` active
+indefinitely. Either finish with `--delta --delta-commit` or run
+`--delta-cleanup` if aborting or postponing the migration.
+
+For detailed behavior, metric selection, confidence levels, and examples, see
+the official OpenNebula documentation.
+
 ## vCenter Permissions Requirements
 
 OneSwap requires specific vCenter permissions depending on the conversion mode used. Below are the required privileges for vCenter 8.

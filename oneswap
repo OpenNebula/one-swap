@@ -71,6 +71,11 @@ CommandParser::CmdParser.new(ARGV) do
     version OpenNebulaHelper::ONE_VERSION
 
     helper = OneSwapHelper.new
+    normalize_config = lambda do |cfg|
+        next cfg unless cfg.respond_to?(:transform_keys)
+
+        cfg.transform_keys {|key| key.to_s.sub(/^:/, '').to_sym }
+    end
 
     before_proc do
         helper.set_client(options)
@@ -383,6 +388,42 @@ CommandParser::CmdParser.new(ARGV) do
         :description => 'Convert the VM with reduced downtime using snapshots. Requires ESXi host paswordless root SSH access.'
     }
 
+    DELTA_PREPARE = {
+        :name => 'delta_prepare',
+        :large => '--delta-prepare',
+        :description => 'Run only the delta base phase and persist state for a later dry-run or commit.'
+    }
+
+    DELTA_COMMIT = {
+        :name => 'delta_commit',
+        :large => '--delta-commit',
+        :description => 'Run only the delta final phase from prepared state.'
+    }
+
+    DELTA_CLEANUP = {
+        :name => 'delta_cleanup',
+        :large => '--delta-cleanup',
+        :description => 'Clean up prepared delta state, snapshot, and temporary files.'
+    }
+
+    DRY_RUN = {
+        :name => 'dry_run',
+        :large => '--dry-run',
+        :description => 'Estimate conversion time without creating snapshots, images, or templates.'
+    }
+
+    BENCHMARK_IMPORT = {
+        :name => 'benchmark_import',
+        :large => '--benchmark-import',
+        :description => 'Benchmark OpenNebula image import during --dry-run using a temporary image.'
+    }
+
+    BENCHMARK_EXPORT = {
+        :name => 'benchmark_export',
+        :large => '--benchmark-export',
+        :description => 'Benchmark source export during regular --dry-run using a temporary datastore file.'
+    }
+
     CUSTOM = { # not sure what to call this actually
         :name => 'custom_convert',
         :large => '--custom',
@@ -490,6 +531,12 @@ CommandParser::CmdParser.new(ARGV) do
         :format => Integer
     }
 
+    ALLOW_LOCAL_PATH_REMOTE = {
+        :name => 'allow_local_path_remote',
+        :large => '--allow-local-path-remote',
+        :description => 'Allow local PATH image allocation when OpenNebula endpoint appears remote. Use only when work_dir is shared at the same path.'
+    }
+
     CONF_FILE = {
         :name => 'config_file',
         :large => '--config-file /path/to/custom/config.yaml',
@@ -589,10 +636,10 @@ CommandParser::CmdParser.new(ARGV) do
 
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
     V2V_OPTS = [V2V_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY, ROOT]
-    HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT]
+    HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT, ALLOW_LOCAL_PATH_REMOTE]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE, ACCEPT_CERT] + AUTH_OPTS
-    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
+    CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, DELTA_PREPARE, DELTA_COMMIT, DELTA_CLEANUP, DRY_RUN, BENCHMARK_IMPORT, BENCHMARK_EXPORT, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                     CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                     PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
                     SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH, INJECT_DNS, CONTEXT_MIN_FREE, CONTEXT_FAIL_LOW_SPACE, CONTEXT_TIMEOUT,
@@ -629,7 +676,7 @@ CommandParser::CmdParser.new(ARGV) do
                 raise "Unable to find the config file at #{options[:config_file]}"
             end
 
-            cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
+            cfg_file = normalize_config.call(YAML.load_file(options[:config_file])) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
             options[:object] = args[0]
             helper.parse_opts(options)
@@ -681,11 +728,44 @@ CommandParser::CmdParser.new(ARGV) do
                 puts "Unable to find the config file at #{options[:config_file]}"
             end
             options[:config_file] ||= '/etc/one/oneswap.yaml'
-            cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
+            cfg_file = normalize_config.call(YAML.load_file(options[:config_file])) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
 
             if (options[:download_stripes] || 1).to_i > 1 && !options[:hybrid]
                 raise '--download-stripes N > 1 requires --hybrid.'
+            end
+
+            if (options[:delta_prepare] || options[:delta_commit] || options[:delta_cleanup]) && !options[:delta]
+                raise '--delta-prepare, --delta-commit, and --delta-cleanup require --delta.'
+            end
+            delta_phase_count = [options[:delta_prepare], options[:delta_commit], options[:delta_cleanup]].count {|v| v }
+            if delta_phase_count > 1
+                raise '--delta-prepare, --delta-commit, and --delta-cleanup cannot be combined.'
+            end
+            if options[:dry_run] && (options[:delta_prepare] || options[:delta_commit] || options[:delta_cleanup])
+                raise '--dry-run cannot be combined with --delta-prepare, --delta-commit, or --delta-cleanup.'
+            end
+            if options[:benchmark_import] && !options[:dry_run]
+                raise '--benchmark-import requires --dry-run.'
+            end
+            if options[:benchmark_export] && !options[:dry_run]
+                raise '--benchmark-export requires --dry-run.'
+            end
+            if options[:benchmark_export] && options[:delta]
+                raise '--benchmark-export is only supported for regular non-delta dry-run.'
+            end
+
+            if options[:delta]
+                incompatible_delta = []
+                incompatible_delta << '--custom' if options[:custom_convert]
+                incompatible_delta << '--hybrid' if options[:hybrid]
+                incompatible_delta << '--fallback' if options[:fallback]
+                incompatible_delta << '--vddk' if options[:vddk_path]
+                incompatible_delta << '--esxi' if options[:esxi_ip]
+
+                if !incompatible_delta.empty?
+                    raise "--delta cannot be combined with #{incompatible_delta.join(', ')}."
+                end
             end
 
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
@@ -724,6 +804,13 @@ CommandParser::CmdParser.new(ARGV) do
             options[:context_min_free] ||= 1024
             options[:context_timeout]  ||= 600
             options[:download_stripes] ||= 1
+            options[:dry_run_source_export_mib_s] ||= 80
+            options[:dry_run_qcow2_conversion_mib_s] ||= 120
+            options[:dry_run_target_import_mib_s] ||= 80
+            options[:dry_run_delta_os_morph_seconds] ||= 480
+            options[:dry_run_guest_customization_seconds] ||= 180
+            options[:dry_run_import_benchmark_size_mib] ||= 4096
+            options[:dry_run_source_benchmark_size_mib] ||= 1024
 
             if options[:http_transfer]
                 options[:http_host] ||= Socket.ip_address_list.detect do |addrinfo|
@@ -735,7 +822,7 @@ CommandParser::CmdParser.new(ARGV) do
 
                 options[:http_port] ||= 29869
             else
-                if options[:endpoint]
+                if options[:endpoint] && !options[:allow_local_path_remote]
                     raise 'Using alternative OpenNebula endpoint requires HTTP Transfer'
                 end
             end
@@ -793,7 +880,7 @@ CommandParser::CmdParser.new(ARGV) do
             end
 
             options[:config_file] ||= '/etc/one/oneswap.yaml'
-            cfg_file = YAML.load_file(options[:config_file]) if File.exist?(options[:config_file])
+            cfg_file = normalize_config.call(YAML.load_file(options[:config_file])) if File.exist?(options[:config_file])
             options.merge!(cfg_file) if cfg_file
 
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
