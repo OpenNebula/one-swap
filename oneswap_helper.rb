@@ -138,6 +138,15 @@ end
 class ConversionError < StandardError; end
 
 class OneSwapHelper < OpenNebulaHelper::OneHelper
+    VSAN_VDDK_REQUIRED_MESSAGE = 'vSAN-backed VMDK conversion requires VDDK. ' \
+                                 'Please configure :vddk_path in the OneSwap config file ' \
+                                 'or pass --vddk /path/to/vmware-vix-disklib-distrib/.'
+    VSAN_DELTA_UNSUPPORTED_MESSAGE = 'Delta mode is not currently supported for vSAN-backed disks. ' \
+                                     'Please use full conversion with VDDK.'
+    VSAN_HYBRID_UNSUPPORTED_MESSAGE = 'Hybrid mode is not currently supported for vSAN-backed disks ' \
+                                      'because it uses vCenter datastore VMDK downloads. ' \
+                                      'Please use full conversion with VDDK.'
+
     include WindowsTuner
 
     ONE_LOGS = '/var/log/one'
@@ -1547,6 +1556,34 @@ _EOF_"
                   ' --root first'\
                   " -os #{@options[:work_dir]}/conversions/"\
                   " -of #{@options[:format]}"
+    end
+
+    def vc_virtual_disks
+        @props['config'][:hardware][:device].grep(RbVmomi::VIM::VirtualDisk)
+    end
+
+    def vsan_backed_disks
+        vc_virtual_disks.select {|disk| vsan_backed_disk?(disk) }
+    end
+
+    def vsan_backed_disk?(disk)
+        backing = disk.backing
+        datastore = backing.respond_to?(:datastore) ? backing.datastore : nil
+        type = datastore&.summary&.type.to_s.downcase
+        return true if type == 'vsan'
+
+        datastore_name = backing.fileName.to_s[/^\[(.+?)\]/, 1]
+        datastore_name.to_s.downcase == 'vsandatastore'
+    rescue StandardError
+        false
+    end
+
+    def validate_vsan_conversion!
+        return if vsan_backed_disks.empty?
+
+        raise VSAN_DELTA_UNSUPPORTED_MESSAGE.red if @options[:delta]
+        raise VSAN_HYBRID_UNSUPPORTED_MESSAGE.red if @options[:hybrid]
+        raise VSAN_VDDK_REQUIRED_MESSAGE.red unless @options[:vddk_path]
     end
 
     def build_v2v_vc_cmd
@@ -4052,6 +4089,7 @@ GUESTFISH
         end
 
         @props = vm.to_hash
+        validate_vsan_conversion!
 
         if @options[:dry_run]
             if @props['config'][:guestFullName].include?('Windows') && @options[:custom_convert]
