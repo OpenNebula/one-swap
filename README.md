@@ -66,6 +66,16 @@ and copies only the VDDK plugin into nbdkit's plugin directory. It requires
 internet access, or an internal mirror via the `NBDKIT_REPO_URL` environment
 variable.
 
+VDDK mode is also required for VMware vSAN-backed VMDKs. vSAN disks are
+object-backed and are not available through the classic vCenter datastore
+`*-flat.vmdk` download path used by the non-VDDK and hybrid transfer modes.
+
+To convert VMs stored on a vSAN datastore, configure VDDK:
+
+```yaml
+:vddk_path: '/opt/vmware-vix-disklib-distrib/'
+```
+
 ## Dry-run Estimates
 
 OneSwap can estimate migration time without running the full conversion. Dry-run
