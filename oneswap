@@ -511,6 +511,13 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
+    LIBGUESTFS_PATH = {
+        :name => 'libguestfs_path',
+        :large => '--libguestfs-path /path/to/libguestfs-appliance',
+        :description => 'Path to prebuilt libguestfs appliance for non-root execution',
+        :format => String
+    }
+
     HTTP_TRANSFER = {
         :name => 'http_transfer',
         :large => '--http-transfer',
@@ -635,7 +642,7 @@ CommandParser::CmdParser.new(ARGV) do
     }
 
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
-    V2V_OPTS = [V2V_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY, ROOT]
+    V2V_OPTS = [V2V_PATH, LIBGUESTFS_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY, ROOT]
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT, ALLOW_LOCAL_PATH_REMOTE]
 
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE, ACCEPT_CERT] + AUTH_OPTS
