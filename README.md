@@ -26,6 +26,15 @@ The following packages must be installed on the conversion host:
 
 When installing OneSwap via the provided packages all dependencies are installed automatically. If deploying from source, the dependencies listed in the table above must be installed manually using the system package manager.
 
+### Non-root libguestfs
+
+When OneSwap is executed as a non-root user, libguestfs/supermin may fail if
+the user cannot read the host kernel image under `/boot/vmlinuz-*`. In that
+case, configure a prebuilt libguestfs appliance with `:libguestfs_path:` or
+pass `--libguestfs-path`.
+
+Detailed setup steps are documented in the OpenNebula documentation.
+
 ## Windows CompactOS Support
 
 Windows guests that use NTFS system compression (CompactOS / WOF) fail

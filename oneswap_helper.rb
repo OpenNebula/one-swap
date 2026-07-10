@@ -1762,6 +1762,25 @@ _EOF_"
                   " --root=#{@options[:root]}"
     end
 
+    def v2v_env
+        libguestfs_path = @options[:libguestfs_path].to_s.strip
+        return {} if libguestfs_path.empty?
+
+        { 'LIBGUESTFS_PATH' => libguestfs_path }
+    end
+
+    def warn_unreadable_kernel_for_libguestfs(env)
+        return if Process.uid == 0 || env.key?('LIBGUESTFS_PATH')
+
+        kernel = "/boot/vmlinuz-#{`uname -r`.strip}"
+        return if File.readable?(kernel)
+
+        STDERR.puts "Warning: #{kernel} is not readable by the current user. "\
+                    'libguestfs/supermin may fail while building its appliance. '\
+                    'Configure :libguestfs_path: to use a prebuilt libguestfs appliance, '\
+                    'or run OneSwap as root.'
+    end
+
     # Create and run the virt-v2v conversion
     # This uses virt-v2v to connect to vCenter/ESXi, create an overlay on the remote disk,
     #   and convert it before using qemu-img convert over nbdkit connection.  Outputs a
@@ -1785,10 +1804,12 @@ _EOF_"
         end
 
         puts "Running: #{command}"
+        env = v2v_env
+        warn_unreadable_kernel_for_libguestfs(env)
 
         begin
             error_check = nil
-            _stdin, stdout, stderr, wait_thr = Open3.popen3(command)
+            _stdin, stdout, stderr, wait_thr = Open3.popen3(env, command)
 
             # Handle each std pipe as a separate thread
             stdout_thread = Thread.new do
