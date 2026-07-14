@@ -113,4 +113,58 @@ class DryRunSafetyTest < Minitest::Test
 
         assert_nil h.send(:local_path_image_allocation_preflight!)
     end
+
+    def test_windows_vd_without_virtio_path_warns_and_continues
+        h = helper
+
+        out, = capture_io do
+            assert h.send(:warn_if_windows_virtio_iso_missing, 'windows')
+        end
+
+        assert_includes out, 'Windows guest will use VirtIO block devices'
+        assert_includes out, 'no VirtIO driver ISO is configured'
+        assert_includes out, 'may fail to boot'
+        assert_includes out, 'virtio_path in oneswap.yaml'
+    end
+
+    def test_windows_vd_with_valid_virtio_path_does_not_warn
+        h = helper(:virtio_path => __FILE__)
+
+        out, = capture_io do
+            refute h.send(:warn_if_windows_virtio_iso_missing, 'windows')
+        end
+
+        refute_includes out, 'no VirtIO driver ISO is configured'
+    end
+
+    def test_windows_non_vd_device_prefix_does_not_warn
+        h = helper(:dev_prefix => 'sd')
+
+        out, = capture_io do
+            refute h.send(:warn_if_windows_virtio_iso_missing, 'windows')
+        end
+
+        refute_includes out, 'no VirtIO driver ISO is configured'
+    end
+
+    def test_non_windows_vd_does_not_warn
+        h = helper(:dev_prefix => 'vd')
+
+        out, = capture_io do
+            refute h.send(:warn_if_windows_virtio_iso_missing, 'linux')
+        end
+
+        refute_includes out, 'no VirtIO driver ISO is configured'
+    end
+
+    def test_nonempty_virtio_path_suppresses_missing_configuration_warning
+        h = helper(:virtio_path => '/nonexistent/virtio-win.iso')
+
+        out, = capture_io do
+            refute h.send(:warn_if_windows_virtio_iso_missing, 'windows')
+        end
+
+        assert h.send(:virtio_path_configured?)
+        refute_includes out, 'no VirtIO driver ISO is configured'
+    end
 end

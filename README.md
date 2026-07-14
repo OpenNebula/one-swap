@@ -60,6 +60,10 @@ appliance rebuild includes it automatically (no fixed appliance or
 `LIBGUESTFS_PATH` needed). It requires internet access, or an internal mirror
 via the `NTFS_WOF_REPO_URL` environment variable.
 
+Windows guests using the `vd` device prefix require VirtIO block drivers to
+boot. OneSwap warns before conversion when no `virtio_path` is configured for
+that case; configure it in `oneswap.yaml` or pass the existing VirtIO CLI option.
+
 ## VDDK Transfer Support
 
 `--vddk` transfers require the nbdkit VDDK plugin, which Debian/Ubuntu
