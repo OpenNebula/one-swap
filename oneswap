@@ -780,7 +780,7 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:hybrid] && (options[:custom_convert] || options[:esxi_ip] || options[:vddk_path])
                 raise 'Cannot use Hybrid option with Custom, ESXi, or VDDK options.'
             end
-            if options[:virtio_path] && !File.exist?(options[:virtio_path])
+            if options[:virtio_path] && !options[:virtio_path].to_s.strip.empty? && !File.exist?(options[:virtio_path])
                 raise "Windows VirtIO ISO cannot be found at #{options[:virtio_path]}"
             end
             if options[:qemu_ga_win] && !File.exist?(options[:qemu_ga_win])
@@ -895,7 +895,7 @@ CommandParser::CmdParser.new(ARGV) do
             if options[:hybrid] && (options[:custom_convert] || options[:esxi_ip] || options[:vddk_path])
                 raise 'Cannot use Hybrid option with Custom, ESXi, or VDDK options.'
             end
-            if options[:virtio_path] && !File.exist?(options[:virtio_path])
+            if options[:virtio_path] && !options[:virtio_path].to_s.strip.empty? && !File.exist?(options[:virtio_path])
                 raise "Windows VirtIO ISO cannot be found at #{options[:virtio_path]}"
             end
             if options[:qemu_ga_win] && !File.exist?(options[:qemu_ga_win])

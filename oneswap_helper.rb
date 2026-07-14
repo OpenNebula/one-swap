@@ -3633,6 +3633,30 @@ GUESTFISH
         raise(msg.red)
     end
 
+    def effective_dev_prefix(os_name)
+        if @options[:dev_prefix]
+            @options[:dev_prefix].to_s
+        elsif os_name == 'windows'
+            'vd'
+        end
+    end
+
+    def virtio_path_configured?
+        return false unless @options[:virtio_path]
+
+        !@options[:virtio_path].to_s.strip.empty?
+    end
+
+    def warn_if_windows_virtio_iso_missing(os_name)
+        return false unless os_name == 'windows'
+        return false unless effective_dev_prefix(os_name) == 'vd'
+        return false if virtio_path_configured?
+
+        puts 'Warning: Windows guest will use VirtIO block devices, but no VirtIO driver ISO is configured.'.brown
+        puts 'The converted VM may fail to boot. Configure virtio_path in oneswap.yaml or provide the existing VirtIO CLI option.'.brown
+        true
+    end
+
     # Run a OpenNebula system prechecks:
     #
     # - Check if there is enough space in the datastore
@@ -3645,6 +3669,7 @@ GUESTFISH
         config = @props.to_h['config']
         if config && config[:guestFullName].to_s.include?('Windows')
             warn_if_wof_support_missing
+            warn_if_windows_virtio_iso_missing('windows')
         end
         check_nbdkit_vddk_plugin! if @options[:vddk_path]
         ## Precheck datastore space (check if it will be enough space for the image)
@@ -4029,12 +4054,9 @@ GUESTFISH
 
         img_ids.each do |i|
             img_hash = { 'IMAGE_ID' => "#{i[:id]}" }
-            if @options[:dev_prefix]
-                img_hash['DEV_PREFIX'] = "#{@options[:dev_prefix]}"
-            elsif i[:os]
-                if i[:os] == 'windows'
-                    img_hash['DEV_PREFIX'] = 'vd'
-                end
+            dev_prefix = effective_dev_prefix(i[:os])
+            unless dev_prefix.nil?
+                img_hash['DEV_PREFIX'] = dev_prefix
             end
             vm_template.add_element('//VMTEMPLATE', { 'DISK' => img_hash })
         end
@@ -4185,12 +4207,9 @@ GUESTFISH
 
         img_ids.each do |i|
             img_hash = { 'IMAGE_ID' => "#{i[:id]}" }
-            if @options[:dev_prefix]
-                img_hash['DEV_PREFIX'] = "#{@options[:dev_prefix]}"
-            elsif i[:os]
-                if i[:os] == 'windows'
-                    img_hash['DEV_PREFIX'] = 'vd'
-                end
+            dev_prefix = effective_dev_prefix(i[:os])
+            unless dev_prefix.nil?
+                img_hash['DEV_PREFIX'] = dev_prefix
             end
             vm_template.add_element('//VMTEMPLATE', { 'DISK' => img_hash })
         end
