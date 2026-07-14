@@ -2988,8 +2988,9 @@ _EOF_"
                 path = d
             end
 
+            img_name = "#{@options[:name]}_#{i}"
             img.add_element('//IMAGE', {
-                                'NAME' => "#{@options[:name]}_#{i}",
+                                'NAME' => img_name,
                 'TYPE' => guest_info ? 'OS' : 'DATABLOCK',
                 'PATH' => path,
                 'PERSISTENT' => persistent_image
@@ -3002,11 +3003,8 @@ _EOF_"
             import_t0 = Time.now
             rc = img.allocate(img.to_xml, ds_id)
 
-            if rc.class == OpenNebula::Error
-                puts 'Failed to create image. Image Definition:'.red
-                puts img.to_xml
-                puts "OpenNebula error: #{rc.message}".red
-                next
+            if OpenNebula.is_error?(rc)
+                raise "Failed to create OpenNebula image '#{img_name}':\n#{rc.message}"
             end
 
             chown_one_object(img, *resolve_one_ownership)
@@ -4070,14 +4068,13 @@ GUESTFISH
 
         rc = vm_template.allocate(vm_template.to_xml)
 
-        if rc.nil?
-            puts 'Success'.green
-            puts "VM Template ID: #{vm_template.id}\n"
-            chown_one_object(vm_template, *resolve_one_ownership)
-        else
-            puts 'Failed'.red
-            puts "\nVM Template:\n#{vm_template.to_xml}\n"
+        if OpenNebula.is_error?(rc)
+            raise "Failed to create OpenNebula VM template '#{@options[:name]}':\n#{rc.message}"
         end
+
+        puts 'Success'.green
+        puts "VM Template ID: #{vm_template.id}\n"
+        chown_one_object(vm_template, *resolve_one_ownership)
     end
 
     # Import Image
@@ -4246,14 +4243,13 @@ GUESTFISH
 
         rc = vm_template.allocate(vm_template.to_xml)
 
-        if rc.nil?
-            puts 'Success'.green
-            puts "VM Template ID: #{vm_template.id}\n"
-            chown_one_object(vm_template, *resolve_one_ownership)
-        else
-            puts 'Failed'.red
-            puts "\nVM Template:\n#{vm_template.to_xml}\n"
+        if OpenNebula.is_error?(rc)
+            raise "Failed to create OpenNebula VM template '#{@options[:name]}':\n#{rc.message}"
         end
+
+        puts 'Success'.green
+        puts "VM Template ID: #{vm_template.id}\n"
+        chown_one_object(vm_template, *resolve_one_ownership)
 
         set_sunstone_labels(tags, vm_template.id) unless tags.empty?
     end
