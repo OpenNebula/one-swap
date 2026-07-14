@@ -6,6 +6,9 @@ OneSwap is a command-line tool designed to simplify converting Virtual Machines 
 
 OneSwap has been used in the field with a 96% success rate in converting VMs automatically, greatly simplifying and speeding up the migration process.
 
+When OpenNebula Image or VM Template allocation fails, OneSwap reports the
+OpenNebula API error directly and stops the current conversion.
+
 The full documentation is available in the in the [OpenNebula documentation](https://docs.opennebula.io/stable/):
 
   - For guide on converting Virtual Machines from vCenter to OpenNebula, see [Migrating VMs with OneSwap](https://docs.opennebula.io/stable/software/migration_from_vmware/oneswap/)
