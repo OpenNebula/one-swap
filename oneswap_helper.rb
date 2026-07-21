@@ -1042,6 +1042,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         distro_info['distro']  = disk_xml["#{xprefix}/distro"].text
         distro_info['name']    = disk_xml["#{xprefix}/name"].text
         distro_info['os']      = disk_xml["#{xprefix}/osinfo"].text
+        major_version = disk_xml["#{xprefix}/major_version"]
+        distro_info['major_version'] = major_version.text if major_version
         if distro_info['distro'] != 'windows'
             distro_info['pkg'] = disk_xml["#{xprefix}/package_format"].text
         end
@@ -1061,6 +1063,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             c_files = Dir.glob("#{@options[:context]}/one-context*el8*rpm")
         when 'rhel9'
             c_files = Dir.glob("#{@options[:context]}/one-context*el9*rpm")
+        when 'rhel10'
+            c_files = Dir.glob("#{@options[:context]}/one-context*el10*rpm")
         when 'fedora'
             c_files = Dir.glob("#{@options[:context]}/one-context*fc*rpm")
         when 'debian'
@@ -1141,12 +1145,19 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         end
 
         # os gives versions, so check that instead of distro
-        if osinfo['os'] =~ /^(redhat-based|rhel|fedora|ubuntu|debian)/ # start_with any of these
+        guest_os = osinfo['os'].to_s
+        if ['', 'unknown', 'redhat-based'].include?(guest_os) &&
+           osinfo['distro'] == 'redhat-based' &&
+           osinfo['major_version'].to_s == '10'
+            guest_os = 'rhel10'
+        end
+
+        if guest_os =~ /^(redhat-based|rhel|fedora|ubuntu|debian|almalinux(8|9|10)|rocky(8|9|10)|ol(8|9|10)|centos-stream[89])/ # start_with any of these
             os = nil
             opts = []
             fallback_opts = []
 
-            case osinfo['os']
+            case guest_os
             when /^fedora/
                 os = 'fedora'
                 opts = [
@@ -1164,7 +1175,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                     " --run-command 'systemctl disable systemd-networkd-wait-online'",
                     " --run-command 'sed -i \"s/SELINUX=enforcing/SELINUX=disabled/\" /etc/selinux/config || exit 0'"
                 ]
-            when /^redhat-based8/, /^rhel8/
+            when /^redhat-based8/, /^rhel8/, /^almalinux8/, /^rocky8/, /^ol8/, /^centos-stream8/
                 os = 'rhel8'
                 opts = [
                     " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-8-$(arch)-rpms'",
@@ -1180,7 +1191,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                     ' --firstboot-install /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
                 ]
-            when /^redhat-based9/, /^rhel9/
+            when /^redhat-based9/, /^rhel9/, /^almalinux9/, /^rocky9/, /^ol9/, /^centos-stream9/
                 os = 'rhel9'
                 opts = [
                     " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms'",
@@ -1192,6 +1203,19 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 ]
                 fallback_opts = [
                     ' --firstboot-install epel-release',
+                    ' --copy-in %<context>s:/tmp',
+                    ' --firstboot-install /tmp/%<basename>s',
+                    " --run-command 'systemctl enable NetworkManager.service || exit 0'"
+                ]
+            when /^redhat-based10(?:\.|$)/, /^rhel10/, /^almalinux10/, /^rocky10/, /^ol10/
+                os = 'rhel10'
+                opts = [
+                    ' --copy-in %<context>s:/tmp',
+                    ' --install /tmp/%<basename>s',
+                    ' --delete /tmp/%<basename>s',
+                    " --run-command 'systemctl enable NetworkManager.service || exit 0'"
+                ]
+                fallback_opts = [
                     ' --copy-in %<context>s:/tmp',
                     ' --firstboot-install /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
@@ -1213,6 +1237,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 ]
             end
 
+            return false unless os
+
             context_fullpath = detect_context_package(os)
             return false unless context_fullpath
 
@@ -1225,8 +1251,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             cmd = base_cmd + opts.map {|c| c % vars }.join
             fallback_cmd = base_cmd + fallback_opts.map {|c| c % vars }.join
 
-        elsif osinfo['os'].start_with?('alt', 'opensuse', 'sles')
-            os = osinfo['os'].start_with?('alt') ? 'alt' : 'opensuse'
+        elsif guest_os.start_with?('alt', 'opensuse', 'sles', 'sled')
+            os = guest_os.start_with?('alt') ? 'alt' : 'opensuse'
             context_fullpath = detect_context_package(os)
             return false unless context_fullpath
 
@@ -1239,7 +1265,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                             " --copy-in #{context_fullpath}:/tmp"\
                             " --firstboot-install /tmp/#{context_basename}"
 
-        elsif osinfo['os'].start_with?('freebsd')
+        elsif guest_os.start_with?('freebsd')
             # may not mount properly sometimes due to internal fs
             context_fullpath = detect_context_package('freebsd')
             return false unless context_fullpath
@@ -1255,7 +1281,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                             " --copy-in #{context_fullpath}:/tmp"\
                             " --firstboot-install /tmp/#{context_basename}"
 
-        elsif osinfo['os'].start_with?('alpine')
+        elsif guest_os.start_with?('alpine')
             puts 'Alpine is not compatible with offline install, please install context manually.'.brown
             return false
         end
