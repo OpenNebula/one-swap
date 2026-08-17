@@ -130,6 +130,17 @@ OS=[
 `cpu_features` can be provided either as a YAML array or as a comma-separated
 string and requires `cpu_model` to be set.
 
+VDDK can also be used with `--delta` for the initial/base disk transfer on
+non-vSAN VMware datastores:
+
+```
+oneswap convert <vm> --delta --vddk /opt/vmware-vix-disklib-distrib/
+```
+
+The `:vddk_path:` setting in `oneswap.yaml` can be used instead of the CLI
+option. vSAN-backed disks still do not support `--delta`; use full VDDK
+conversion for vSAN.
+
 ## Dry-run Estimates
 
 OneSwap can estimate migration time without running the full conversion. Dry-run
