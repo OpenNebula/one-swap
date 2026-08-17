@@ -32,6 +32,7 @@ class ESXi::VirtualMachine
 
         file = getallvms_info[:file]
         @datastore = file.split(' ').first.slice(1..-2)
+        @vm_storage_relative = File.dirname(file.split('] ', 2)[1])
         @vm_storage = "#{ESXi::Client::DATASTORES_PATH}/#{@datastore}/#{@name}"
         @clone_dir = "#{@vm_storage}/vmkfstools_output"
         @vmx_file = "#{@vm_storage}/#{@name}.vmx"
@@ -69,6 +70,7 @@ class ESXi::VirtualMachine
         live_storage_transfer_cleanup(transfer_dir)
 
         results_dir = live2kvm_results_dir(target_dir)
+        convert_dir = "#{transfer_dir}/convert"
         FileUtils.rm_r(results_dir) if Dir.exist?(results_dir)
         puts 'Previous delta work directories cleaned.'
 
@@ -89,7 +91,7 @@ class ESXi::VirtualMachine
         puts "Snapshot created in #{format_elapsed(Time.now - t0)}."
 
         FileUtils.mkdir_p(transfer_dir) unless Dir.exist?(transfer_dir)
-        if !@client.create_dir(@clone_dir)
+        if !block_given? && !@client.create_dir(@clone_dir)
             message = "Aborting live storage transfer. Cannot create remote clone directory #{@clone_dir}"
             @logger.error message
             return false
@@ -100,12 +102,38 @@ class ESXi::VirtualMachine
         refresh_vmx # snapshots created new active disks
         detected_disks = active_disks
         puts "Detected #{detected_disks.length} active disk(s) in #{format_elapsed(Time.now - t0)}."
+
+        base_convert_seconds = 0.0
+        base_convert_bytes = 0
         disks = []
         detected_disks.each do |disk|
             vmdk_data = vmdk_info(disk)
             parent_disk = vmdk_data['parentFileNameHint']
             disk_name = disk.chomp('.vmdk')
             parent_disk_name = parent_disk.chomp('.vmdk')
+
+            if block_given?
+                begin
+                    Dir.mkdir(convert_dir) unless Dir.exist?(convert_dir)
+                    output_path = "#{convert_dir}/disk#{disks.length}.raw"
+                    t0 = Time.now
+                    converted_raw_base_path = yield(parent_disk, output_path)
+                    elapsed = Time.now - t0
+                    base_convert_seconds += elapsed
+                    base_convert_bytes += File.size(output_path) if File.exist?(output_path)
+                    disks << {
+                        'active_snapshot_descriptor' => disk,
+                        'active_snapshot_extent' => "#{disk_name}-sesparse.vmdk",
+                        'parent_base_descriptor' => parent_disk,
+                        'converted_raw_base_path' => converted_raw_base_path
+                    }
+                    next
+                rescue StandardError
+                    message = "failed disk #{parent_disk} VDDK conversion"
+                    live_storage_transfer_cleanup(transfer_dir, message)
+                    return false
+                end
+            end
 
             clone_source = storage_path(parent_disk)
             clone_target = "#{@clone_dir}/#{parent_disk}"
@@ -129,6 +157,11 @@ class ESXi::VirtualMachine
             return false
         end
 
+        if block_given?
+            base_transfer_seconds = base_convert_seconds
+            base_transfer_bytes = local_tree_size(convert_dir)
+            base_transfer_mib_s = mib_per_second(base_transfer_bytes, base_transfer_seconds)
+        else
         @logger.info "Transferring VM #{@name} storage to #{transfer_dir}"
         puts "Transferring base disk files to local work dir #{transfer_dir}..."
         t0 = Time.now
@@ -144,11 +177,7 @@ class ESXi::VirtualMachine
 
         cloned_vmdk_list = Dir.children(transfer_dir)
 
-        convert_dir = "#{transfer_dir}/convert"
         Dir.mkdir(convert_dir) unless Dir.exist?(convert_dir)
-
-        base_convert_seconds = 0.0
-        base_convert_bytes = 0
         cloned_vmdk_list.each do |file|
             next if file.end_with?('-flat.vmdk')
 
@@ -169,6 +198,7 @@ class ESXi::VirtualMachine
             message = "failed disk #{source} conversion"
             live_storage_transfer_cleanup(transfer_dir, message)
             return false
+        end
         end
         base_convert_mib_s = mib_per_second(base_convert_bytes, base_convert_seconds)
 
@@ -405,6 +435,11 @@ class ESXi::VirtualMachine
 
     def running?
         state == STATES[:RUNNING]
+    end
+
+    def vddk_path(fileName)
+        relative_path = File.expand_path(fileName, "/#{@vm_storage_relative}").sub(%r{\A/}, '')
+        "[#{@datastore}] #{relative_path}"
     end
 
     def poweroff?

@@ -963,17 +963,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     # @param cmd [String] The command to be executed.
     # @param out [Boolean] (optional) Whether to return the output or not.
     # @param timeout [Integer, nil] (optional) Abort the command if it runs longer than this specified number of seconds, 0 disables timeout.
+    # @param env [Hash] (optional) Environment variables to pass to the command.
     # @return [Array] Returns an array containing the stdout and status if out is true.
-    def run_cmd_report(cmd, out = false, timeout: nil)
+    def run_cmd_report(cmd, out = false, timeout: nil, env: {})
         t0 = Time.now
         stdout, stderr, status = nil
         timed_out = false
         puts "Running: #{cmd}"
         show_wait_spinner do
             if timeout && timeout.to_i > 0
-                stdout, stderr, status, timed_out = run_cmd_with_timeout(cmd, timeout.to_i)
+                stdout, stderr, status, timed_out = run_cmd_with_timeout(cmd, timeout.to_i, env)
             else
-                stdout, stderr, status = Open3.capture3(cmd)
+                stdout, stderr, status = Open3.capture3(env, cmd)
             end
         end
         t1 = (Time.now - t0).round(2)
@@ -991,12 +992,12 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     # Runs a command, terminating it if exceeds the given amount of seconds
     #
     # @return [Array] [stdout, stderr, status, timed_out]
-    def run_cmd_with_timeout(cmd, timeout)
+    def run_cmd_with_timeout(cmd, timeout, env = {})
         timed_out = false
         stdout = stderr = ''
         status = nil
 
-        Open3.popen3(cmd, :pgroup => true) do |stdin, out_io, err_io, wait_thr|
+        Open3.popen3(env, cmd, :pgroup => true) do |stdin, out_io, err_io, wait_thr|
             stdin.close
             out_reader = Thread.new { out_io.read }
             err_reader = Thread.new { err_io.read }
@@ -1031,7 +1032,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             '--no-applications --no-icon'
         disk_xml = nil
         show_wait_spinner do
-            stdout, _status = Open3.capture2(inspector_cmd)
+            stdout, _status = Open3.capture2(v2v_env, inspector_cmd)
             disk_xml = REXML::Document.new(stdout).root.elements
         end
         xprefix = '//operatingsystems/operatingsystem'
@@ -1402,9 +1403,9 @@ _EOF_"
               " --install #{pkg}"
     end
 
-    def install_pkg(disk, pkg, timeout: nil)
+    def install_pkg(disk, pkg, timeout: nil, env: {})
         print "Installing #{pkg}..."
-        run_cmd_report(pkg_install_command(disk, pkg), false, timeout: timeout)
+        run_cmd_report(pkg_install_command(disk, pkg), false, timeout: timeout, env: env)
     end
 
     # Returns the free space (in MB) on the guest root filesystem, or nil if it cannot be determined
@@ -1486,11 +1487,11 @@ _EOF_"
             return
         elsif ensure_guest_free_space(disk, osinfo)
             print 'Injecting one-context...'
-            _stdout, status = run_cmd_report(injector_cmd, true, timeout: ctx_timeout)
+            _stdout, status = run_cmd_report(injector_cmd, true, timeout: ctx_timeout, env: v2v_env)
             if !status.success?
                 if fallback_cmd
                     print 'Context injection command appears to have failed. Attempting fallback'.brown
-                    _stdout, status = run_cmd_report(fallback_cmd, true, timeout: ctx_timeout)
+                    _stdout, status = run_cmd_report(fallback_cmd, true, timeout: ctx_timeout, env: v2v_env)
                 end
                 if !status.success?
                     puts 'Context injection failed, please install context manually.'.red
@@ -1503,18 +1504,18 @@ _EOF_"
         if osinfo['name'] == 'windows' && @options[:virtio_path]
             injector_cmd = win_virtio_command(disk)
             print 'Injecting VirtIO to Windows...'
-            run_cmd_report(injector_cmd, false, timeout: ctx_timeout)
+            run_cmd_report(injector_cmd, false, timeout: ctx_timeout, env: v2v_env)
         end
 
         if @options[:qemu_ga_win] && osinfo['name'] == 'windows'
             injector_cmd = qemu_ga_command(disk)
             print 'Injecting QEMU Guest Agent...'
-            run_cmd_report(injector_cmd, false, timeout: ctx_timeout)
+            run_cmd_report(injector_cmd, false, timeout: ctx_timeout, env: v2v_env)
         end
 
         return unless @options[:qemu_ga_linux] && osinfo['name'] != 'windows'
 
-        install_pkg(disk, 'qemu-guest-agent', timeout: ctx_timeout)
+        install_pkg(disk, 'qemu-guest-agent', timeout: ctx_timeout, env: v2v_env)
     end
 
     def get_objects(vim, type, properties, folder = nil)
@@ -1698,10 +1699,29 @@ _EOF_"
                   " -of #{@options[:format]}"
     end
 
-    def build_v2v_vddk_cmd
-        # openssl s_client -connect 147.75.45.11:443 </dev/null 2>/dev/null |
-        # openssl x509 -in /dev/stdin -fingerprint -sha1 -noout 2>/dev/null
+    def vddk_thumbprint
+        return @options[:vddk_thumb] if @options[:vddk_thumb]
 
+        tcp_client = TCPSocket.new(@options[:vcenter], 443)
+        ssl_context = OpenSSL::SSL::SSLContext.new
+        ssl_client = OpenSSL::SSL::SSLSocket.new(tcp_client, ssl_context)
+        ssl_client.connect
+
+        ssl_client.puts("GET / HTTP/1.0\r\n\r\n")
+        ssl_client.read
+
+        ssl_client.sysclose
+        tcp_client.close
+
+        cert = ssl_client.peer_cert
+        @options[:vddk_thumb] = OpenSSL::Digest::SHA1.new(cert.to_der).to_s.scan(/../).join(':')
+
+        puts "Certificate thumbprint: #{@options[:vddk_thumb]}"
+
+        @options[:vddk_thumb]
+    end
+
+    def build_v2v_vddk_cmd
         # virt-v2v
         #   -ic 'vpx://UserName@vCenter.Host.FQDN/Datacenter/Cluster/Host?no_verify=1'
         #   -ip password_file.txt ### Should be a 0600 file with only the password, no newline
@@ -1735,21 +1755,7 @@ _EOF_"
             raise err_msg if pobj.nil?
         end
 
-        tcp_client = TCPSocket.new(@options[:vcenter], 443)
-        ssl_context = OpenSSL::SSL::SSLContext.new
-        ssl_client = OpenSSL::SSL::SSLSocket.new(tcp_client, ssl_context)
-        ssl_client.connect
-
-        ssl_client.puts("GET / HTTP/1.0\r\n\r\n")
-        ssl_client.read
-
-        ssl_client.sysclose
-        tcp_client.close
-
-        cert = ssl_client.peer_cert
-        @options[:vddk_thumb] = OpenSSL::Digest::SHA1.new(cert.to_der).to_s.scan(/../).join(':')
-
-        puts "Certificate thumbprint: #{@options[:vddk_thumb]}"
+        vddk_thumbprint
 
         no_verify = @options[:accept_cert] ? '?no_verify=1' : ''
         enc = ->(s) { CGI.escape(s.to_s).gsub('+', '%20') }
@@ -1770,6 +1776,22 @@ _EOF_"
                   " -os #{@options[:work_dir]}/conversions/"\
                   " -of #{@options[:format]}"\
                   " '#{@props['name']}'"
+    end
+
+    def convert_vddk_disk(vddk_file, output_path)
+        cmd = 'nbdkit -r -U - vddk'\
+              " libdir=#{Shellwords.escape(@options[:vddk_path])}"\
+              " server=#{Shellwords.escape(@options[:vcenter])}"\
+              " user=#{Shellwords.escape(@options[:vuser])}"\
+              " password=+#{Shellwords.escape("#{@options[:work_dir]}/vpassfile")}"\
+              " thumbprint=#{Shellwords.escape(vddk_thumbprint)}"\
+              " vm=moref=#{Shellwords.escape(@vm_moref)}"\
+              " file=#{Shellwords.escape(vddk_file)}"\
+              " --run 'qemu-img convert -O raw -p -S 4k -W \"$uri\" #{Shellwords.escape(output_path)}'"
+        success = system(cmd)
+        raise "Failed to convert #{vddk_file} with VDDK" unless success
+
+        output_path
     end
 
     def build_v2v_ova
@@ -1905,7 +1927,14 @@ _EOF_"
         conversion_dir = if @options[:delta_commit]
                              vm.live2kvm_commit(@options[:work_dir])
                          else
-                             vm.live2kvm(@options[:work_dir])
+                             if @options[:vddk_path]
+                                 prepared = vm.live2kvm_prepare(@options[:work_dir]) do |parent_disk, output_path|
+                                     convert_vddk_disk(vm.vddk_path(parent_disk), output_path)
+                                 end
+                                 prepared && vm.live2kvm_commit(@options[:work_dir])
+                             else
+                                 vm.live2kvm(@options[:work_dir])
+                             end
                          end
 
         raise 'Failed to perform delta migration' unless conversion_dir
@@ -2724,7 +2753,8 @@ _EOF_"
     def esxi_client_options(extra = {})
         {
             :user => @options[:esxi_user] || 'root',
-            :password => @options[:esxi_pass]
+            :password => @options[:esxi_pass],
+            :v2v_env => v2v_env
         }.merge(extra)
     end
 
@@ -4155,6 +4185,7 @@ GUESTFISH
         end
 
         @props = vm.to_hash
+        @vm_moref = vm.obj._ref
         validate_vsan_conversion!
 
         if @options[:dry_run]
@@ -4176,6 +4207,7 @@ GUESTFISH
             begin
                 cloned_vm = clone_vm(@vi_client, properties, vm)
                 @props = cloned_vm.to_hash
+                @vm_moref = cloned_vm.obj._ref
             rescue RbVmomi::Fault => e
                 raise "Failed to clone VM #{@options[:name]}: #{e.message}"
             end
