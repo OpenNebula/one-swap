@@ -32,19 +32,21 @@ REPO_URL="${NTFS_WOF_REPO_URL:-https://github.com/ebiggers/ntfs-3g-system-compre
 PLUGIN_NAME="ntfs-plugin-80000017.so"
 OVERLAY_NAME="zz-ntfs-wof.tar.gz"
 FORCE="no"
+PLUGIN_PATH=""
 VERIFY="yes"
 
 usage() {
     cat <<'EOF'
-Usage: setup_ntfs_wof.sh [--force] [--no-verify] [-h|--help]
+Usage: setup_ntfs_wof.sh [--force] [--plugin PATH] [--no-verify] [-h|--help]
 
 Enables CompactOS (WOF-compressed NTFS) support for Windows VM conversions.
 Run once, as root, on the migration host.
 
 Options:
-  --force      redo the setup even if it looks already configured
-  --no-verify  skip the appliance rebuild + verification step
-  -h, --help   show this help
+  --force        redo the setup even if it looks already configured
+  --plugin PATH  use an existing ntfs-plugin-80000017.so instead of building
+  --no-verify    skip the appliance rebuild + verification step
+  -h, --help     show this help
 
 Environment overrides:
   NTFS_WOF_REPO_URL   git URL of the plugin source (default: upstream GitHub)
@@ -60,6 +62,8 @@ die() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --force) FORCE="yes"; shift ;;
+        --plugin) [ $# -ge 2 ] || die "--plugin requires a path"; PLUGIN_PATH="$2"; shift 2 ;;
+        --plugin=*) PLUGIN_PATH="${1#--plugin=}"; shift ;;
         --no-verify) VERIFY="no"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) usage; die "unknown option: $1" ;;
@@ -67,11 +71,9 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" -eq 0 ] || die "this script must be run as root"
-command -v apt-get >/dev/null 2>&1 || \
-    die "apt-get not found: only Debian/Ubuntu migration hosts are supported"
 
 # Locate the supermin input dir and derive the ntfs-3g plugin dir from it
-supermin_dir=$(ls -d /usr/lib/*/guestfs/supermin.d 2>/dev/null | head -n 1 || true)
+supermin_dir=$(ls -d /usr/lib64/guestfs/supermin.d /usr/lib/*/guestfs/supermin.d 2>/dev/null | head -n 1 || true)
 [ -n "$supermin_dir" ] || \
     die "supermin.d not found: install virt-v2v / libguestfs-tools first"
 
@@ -81,23 +83,12 @@ plugin_dir="$libdir/ntfs-3g"
 echo "ntfs-3g plugin dir: $plugin_dir"
 echo "supermin input dir: $supermin_dir"
 
-if [ "$FORCE" = "no" ] && [ -f "$plugin_dir/$PLUGIN_NAME" ] \
+if [ -z "$PLUGIN_PATH" ] && [ "$FORCE" = "no" ] && [ -f "$plugin_dir/$PLUGIN_NAME" ] \
        && [ -f "$supermin_dir/$OVERLAY_NAME" ]; then
     echo "Already configured. Use --force to redo the setup."
     exit 0
 fi
 
-# Build dependencies
-echo "Installing build dependencies..."
-# non-fatal on purpose: cached package lists are usually good enough
-apt-get update || \
-    echo "WARNING: apt-get update failed, continuing with cached package lists"
-DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    build-essential git pkg-config autoconf automake libtool \
-    ntfs-3g-dev ntfs-3g libguestfs-tools \
-    || die "failed to install build dependencies"
-
-# Build the plugin from source
 if [ -n "${NTFS_WOF_BUILD_DIR:-}" ]; then
     build_dir="$NTFS_WOF_BUILD_DIR"
     mkdir -p "$build_dir"
@@ -106,18 +97,43 @@ else
     trap 'rm -rf "$build_dir"' EXIT
 fi
 
-echo "Building ntfs-3g-system-compression in $build_dir..."
-src_dir="$build_dir/ntfs-3g-system-compression"
-rm -rf "$src_dir"
-git clone "$REPO_URL" "$src_dir" || die "git clone failed: $REPO_URL"
-cd "$src_dir"
-autoreconf -i
-./configure --libdir="$libdir"
-make
-make install
+if [ -n "$PLUGIN_PATH" ]; then
+    [ -f "$PLUGIN_PATH" ] || die "plugin not found: $PLUGIN_PATH"
+    mkdir -p "$plugin_dir"
+    if [ "$PLUGIN_PATH" != "$plugin_dir/$PLUGIN_NAME" ]; then
+        install -m 0644 "$PLUGIN_PATH" "$plugin_dir/$PLUGIN_NAME"
+    fi
+    echo "Plugin installed: $plugin_dir/$PLUGIN_NAME"
+elif [ "$FORCE" = "no" ] && [ -f "$plugin_dir/$PLUGIN_NAME" ]; then
+    echo "Using existing plugin: $plugin_dir/$PLUGIN_NAME"
+else
+    command -v apt-get >/dev/null 2>&1 || \
+        die "plugin not found and apt-get not found: provide --plugin $PLUGIN_NAME"
+
+    # Build dependencies
+    echo "Installing build dependencies..."
+    # non-fatal on purpose: cached package lists are usually good enough
+    apt-get update || \
+        echo "WARNING: apt-get update failed, continuing with cached package lists"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        build-essential git pkg-config autoconf automake libtool \
+        ntfs-3g-dev ntfs-3g libguestfs-tools \
+        || die "failed to install build dependencies"
+
+    # Build the plugin from source
+    echo "Building ntfs-3g-system-compression in $build_dir..."
+    src_dir="$build_dir/ntfs-3g-system-compression"
+    rm -rf "$src_dir"
+    git clone "$REPO_URL" "$src_dir" || die "git clone failed: $REPO_URL"
+    cd "$src_dir"
+    autoreconf -i
+    ./configure --libdir="$libdir"
+    make
+    make install
+fi
+
 [ -f "$plugin_dir/$PLUGIN_NAME" ] || \
-    die "build finished but $plugin_dir/$PLUGIN_NAME is missing"
-echo "Plugin installed: $plugin_dir/$PLUGIN_NAME"
+    die "plugin setup finished but $plugin_dir/$PLUGIN_NAME is missing"
 
 # supermin.d overlay so every appliance rebuild includes the plugin
 echo "Creating supermin overlay $supermin_dir/$OVERLAY_NAME..."
