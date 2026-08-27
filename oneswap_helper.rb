@@ -16,8 +16,10 @@
 
 require 'one_helper'
 require 'opennebula'
+require 'json'
 require 'logger'
 require 'fileutils'
+require 'rexml/document'
 require 'shellwords'
 require 'socket'
 require 'tempfile'
@@ -30,6 +32,7 @@ require_relative 'vsphere_client'
 require_relative 'esxi_vm'
 require_relative 'windows_tuner'
 require_relative 'oneswap_logger'
+require_relative 'netapp_shift_helper'
 
 class String
 
@@ -188,6 +191,10 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         VM         = 1
         DATACENTER = 2
         CLUSTER    = 3
+        # Listed from a NetApp Shift blueprint rather than vCenter, so they
+        # carry a different (much smaller) set of columns.
+        SHIFT_VM   = 4
+        BLUEPRINT  = 5
 
     end
 
@@ -232,6 +239,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             :columns => { :NAME => 30, :VMCOUNT => 35 },
             :cli     => [],
             :dialgoue => ->(arg) {}
+        },
+        VOBJECT::SHIFT_VM => {
+            :struct  => ['VM_LIST', 'VM'],
+            :columns => { :NAME => 40, :RESOURCE_GROUP => 30 },
+            :cli     => [],
+            :dialogue => ->(arg) {}
+        },
+        VOBJECT::BLUEPRINT => {
+            :struct  => ['BLUEPRINT_LIST', 'BLUEPRINT'],
+            :columns => { :NAME => 30, :RESOURCE_GROUP => 30, :VMCOUNT => 7 },
+            :cli     => [],
+            :dialogue => ->(arg) {}
         }
     }
 
@@ -269,9 +288,11 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             @vobject = VOBJECT::CLUSTER
         when 'vms'
             @vobject = VOBJECT::VM
+        when 'blueprints'
+            @vobject = VOBJECT::BLUEPRINT
         else
             raise 'Invalid object type, must be any of: '\
-                  '[ networks, datacenters, clusters, vms ]'
+                  '[ networks, datacenters, clusters, vms, blueprints ]'
         end
     end
 
@@ -394,6 +415,11 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             column :VMCOUNT, '# VMS', :left, :expand,
                    :size=>config[:PATH] || 7 do |d|
                 d[:vm_count]
+            end
+
+            column :RESOURCE_GROUP, 'RESOURCE GROUP', :left, :expand,
+                   :size=>config[:RESOURCE_GROUP] || 25 do |d|
+                d[:resource_group]
             end
 
             column :STATE, 'STATE', :left, :expand,
@@ -1351,7 +1377,7 @@ _EOF_"
     #   - /path/to/qemu-ga-x86_64.msi         direct MSI file
     #   - /path/to/mounted-virtio-win/        directory already mounted
     #   - /path/to/virtio-win.iso             ISO file (mounted temporarily)
-     def resolve_qemu_ga_msi(path)
+    def resolve_qemu_ga_msi(path)
         if path.end_with?('.msi') && File.exist?(path)
             path
         elsif File.directory?(path)
@@ -1915,10 +1941,132 @@ _EOF_"
         create_one_images(disks_on_file)
     end
 
+    # NetApp Shift conversion. The blueprint execution (triggered once per
+    # invocation, before the per-VM loop) already wrote the converted qcow2
+    # disks to the source NFS datastore, so this only morphs and imports.
+    #
+    # The morph runs virt-v2v-in-place directly against the files on the
+    # mount -- no local copy, since guest disks can exceed the worker's local
+    # storage. That mutates Shift's output: regenerating a disk means
+    # re-running the blueprint.
+    def run_shift_conversion
+        local_path_image_allocation_preflight!
+
+        disk_count = vc_virtual_disks.length
+        raise "vCenter reports no virtual disks for #{@options[:name]}" if disk_count.zero?
+
+        shift = new_netapp_shift(@options)
+        disks = shift.converted_disks(@options[:name], @options[:shift_mount], disk_count)
+
+        if @options[:shift_skip_morph]
+            puts 'Skipping virt-v2v-in-place; importing the converted disks unmodified.'.brown
+            puts 'The guest must already boot under KVM (virtio drivers present).'.brown
+        end
+
+        morph_shift_disks(disks) unless @options[:shift_skip_morph]
+
+        create_one_images(disks)
+    end
+
+    # Run the OS morph (virtio drivers, initramfs, bootloader) against the
+    # converted disks, in place on the mount.
+    def morph_shift_disks(disks)
+        env = v2v_env
+        warn_unreadable_kernel_for_libguestfs(env)
+        env_prefix = env.map {|k, v| "#{k}=#{Shellwords.escape(v)} " }.join
+
+        # -i disk only accepts a single disk; multi-disk guests go through a
+        # minimal libvirt domain XML so inspection sees the whole guest.
+        input = if disks.length == 1
+                    "-i disk #{Shellwords.escape(disks.first)}"
+                else
+                    "-i libvirtxml #{Shellwords.escape(write_shift_domain_xml(disks))}"
+                end
+
+        stdout, status = run_cmd_report(
+            "#{env_prefix}virt-v2v-in-place #{input} -v --machine-readable", true
+        )
+
+        return if status.success?
+
+        reason = v2v_failure_reason(stdout)
+
+        # virt-v2v only morphs guests it recognises. Plenty of minimal
+        # distributions do not need it -- they already carry virtio -- so
+        # point at the flag instead of just failing.
+        if reason.include?('unable to convert this guest type')
+            raise "virt-v2v-in-place cannot convert this guest: #{reason}\n"\
+                  'If it already boots under KVM (minimal distributions such as Alpine '\
+                  'usually do, having virtio built in), re-run with --shift-skip-morph '\
+                  'to import the converted disks without the OS morph.'
+        end
+
+        raise "virt-v2v-in-place failed for #{@options[:name]}: #{reason}"
+    end
+
+    # Pull the real reason out of a failed virt-v2v run.
+    #
+    # --machine-readable makes virt-v2v emit JSON objects on stdout, so the
+    # error it actually hit is in there. Without this the caller only sees
+    # whatever libguestfs left on the terminal, which is usually teardown
+    # noise (failing fsyncs as the appliance is destroyed) rather than the
+    # first failure.
+    def v2v_failure_reason(output)
+        messages = output.to_s.each_line.filter_map do |line|
+            parsed = begin
+                JSON.parse(line)
+            rescue JSON::ParserError
+                nil
+            end
+
+            next unless parsed.is_a?(Hash) && parsed['type'] == 'error'
+
+            parsed['message']
+        end
+
+        return messages.uniq.join('; ') unless messages.empty?
+
+        tail = output.to_s.each_line.map(&:chomp).reject(&:empty?).last(5)
+
+        tail.empty? ? 'no output captured, re-run with -v for the full log' : tail.join(' | ')
+    end
+
+    # Minimal libvirt domain definition referencing the converted disks in
+    # order, written into work_dir for virt-v2v-in-place -i libvirtxml.
+    def write_shift_domain_xml(disks)
+        doc = REXML::Document.new
+        doc << REXML::XMLDecl.new
+
+        domain = doc.add_element('domain', 'type' => 'kvm')
+        domain.add_element('name').text = @options[:name]
+        # 'config' is an RbVmomi VirtualMachineConfigInfo, which supports []
+        # but not #dig. Chain [] the way the rest of the template code does.
+        hardware = @props['config'][:hardware]
+        domain.add_element('memory', 'unit' => 'MiB').text = (hardware[:memoryMB] || 1024).to_s
+        domain.add_element('vcpu').text = (hardware[:numCPU] || 1).to_s
+        domain.add_element('os').add_element('type').text = 'hvm'
+
+        devices = domain.add_element('devices')
+        disks.each_with_index do |path, i|
+            disk = devices.add_element('disk', 'type' => 'file', 'device' => 'disk')
+            disk.add_element('driver', 'name' => 'qemu', 'type' => 'qcow2')
+            disk.add_element('source', 'file' => path)
+            disk.add_element('target', 'dev' => "sd#{('a'.ord + i).chr}", 'bus' => 'scsi')
+        end
+
+        xml_path = File.join(@options[:work_dir], "#{@options[:name]}-shift-domain.xml")
+        # Write unformatted. REXML's indent argument pads every text node with
+        # newlines, and virt-v2v reads /domain/memory/text() as an integer --
+        # "\n    4096\n  " makes it bail before it ever looks at the disks.
+        File.open(xml_path, 'w') {|f| doc.write(f) }
+
+        xml_path
+    end
+
     def local_path_image_allocation_preflight!
         return if @options[:http_transfer]
 
-        puts 'Local PATH mode requires OneSwap to run on the OpenNebula frontend or work_dir to be shared at the same path.'
+        @logger.debug 'Local PATH mode requires OneSwap to run on the OpenNebula frontend or work_dir to be shared at the same path.'
 
         endpoint_host = opennebula_endpoint_host
         return if endpoint_host.nil? || local_opennebula_endpoint?(endpoint_host)
@@ -3762,11 +3910,78 @@ GUESTFISH
             list_datacenters(options)
         when 'clusters'
             list_clusters(options)
+        when 'blueprints'
+            list_shift_blueprints(options)
         when 'vms'
-            list_vms(options)
+            # With Shift configured, "vms" means the VMs a blueprint would
+            # convert. Datacenters and clusters are vCenter concepts and stay
+            # on the vCenter path either way.
+            if options[:shift]
+                list_shift_vms(options)
+            else
+                list_vms(options)
+            end
         else
             raise 'Invalid object type for listing'.brown
         end
+    end
+
+    # List the VMs a Shift blueprint covers -- everything one execution of it
+    # would convert, and therefore everything importable from it.
+    #
+    # @param options [Hash] User CLI options
+    def list_shift_vms(options)
+        require_shift_listing_options!(options, :shift_blueprint)
+
+        @vobject = VOBJECT::SHIFT_VM
+
+        vms = new_netapp_shift(options).blueprint_vms(options[:shift_blueprint])
+
+        if options[:name]
+            vms = vms.select {|vm| vm[:name].to_s.include?(options[:name]) }
+        end
+
+        format_list.show(vms, options)
+    rescue NetAppShift::Error => e
+        raise e.message
+    end
+
+    # List the blueprints on the appliance, so the right one can be picked
+    # before committing to a conversion.
+    #
+    # @param options [Hash] User CLI options
+    def list_shift_blueprints(options)
+        require_shift_listing_options!(options)
+
+        @vobject = VOBJECT::BLUEPRINT
+
+        blueprints = new_netapp_shift(options).blueprint_summaries
+
+        if options[:name]
+            blueprints = blueprints.select {|bp| bp[:name].to_s.include?(options[:name]) }
+        end
+
+        list = blueprints.map do |bp|
+            {
+                :name           => bp[:name],
+                :resource_group => bp[:resource_groups].join(', '),
+                :vm_count       => bp[:vms].length
+            }
+        end
+
+        format_list.show(list, options)
+    rescue NetAppShift::Error => e
+        raise e.message
+    end
+
+    # Shift listings need credentials but none of the conversion-side options
+    # (mount, work dir), so they are checked here rather than in the CLI.
+    def require_shift_listing_options!(options, *extra)
+        missing = ([:shift, :shift_user, :shift_pass] + extra).reject {|key| options[key] }
+
+        return if missing.empty?
+
+        raise "Listing from NetApp Shift requires #{missing.map {|m| "--#{m.to_s.tr('_', '-')}" }.join(', ')}."
     end
 
     # General wrapper to fix options and handle fatal errors
@@ -3809,6 +4024,110 @@ GUESTFISH
             password_file.close unless password_file.nil? or password_file.closed?
             cleanup_all
         end
+    end
+
+    # VM names a Shift blueprint would convert, straight from the appliance.
+    # Used to default the batch to "everything in the blueprint" and to
+    # validate requested names before triggering a long conversion.
+    #
+    # @param options [Hash] CLI options (shift server/credentials/blueprint)
+    # @return [Array<String>]
+    def shift_blueprint_vm_names(options)
+        apply_verbosity(options)
+
+        new_netapp_shift(options).blueprint_vm_names(options[:shift_blueprint])
+    rescue NetAppShift::Error => e
+        raise e.message
+    end
+
+    # Trigger the Shift blueprint execution and block until it completes.
+    # Called once per invocation, before the per-VM import loop: one
+    # execution converts every VM in the blueprint's resource group(s).
+    #
+    # @param options [Hash] CLI options (shift server/credentials/blueprint)
+    def shift_execute_blueprint(options)
+        apply_verbosity(options)
+        @options = options
+        check_one_connectivity
+        # Fail before hours of conversion if the frontend could not import
+        # the disks afterwards.
+        local_path_image_allocation_preflight!
+
+        shift = new_netapp_shift(options)
+        bp    = options[:shift_blueprint]
+
+        # A blueprint that has already executed cannot be executed again until
+        # its prior executions are cleared, and one execution converts every VM
+        # in the resource group anyway. So importing more VMs from the same
+        # blueprint is the normal case, not a re-conversion.
+        state = shift.blueprint_execution_state(bp)
+
+        if state && state[:complete]
+            shift_already_converted(bp, options)
+            return
+        elsif state && state[:running] && state[:execution_id]
+            puts "Blueprint '#{bp}' is already executing (#{state[:status]}); waiting for it."
+            shift.wait_for_completion(bp, state[:execution_id],
+                                      :timeout => options[:shift_wait_timeout])
+            puts "Shift blueprint '#{bp}' finished.".green
+            return
+        elsif state && state[:failed]
+            raise "Blueprint '#{bp}' last execution failed (#{state[:status]}). "\
+                  'Inspect and clear it in the Shift UI before retrying.'
+        end
+
+        if options[:shift_skip_compliance]
+            puts 'Skipping Shift compliance check.'
+        else
+            puts "Running Shift compliance check for blueprint '#{bp}'..."
+            shift.run_compliance_check(bp)
+        end
+
+        puts 'Triggering Shift blueprint execution (convert)...'
+        begin
+            exec_id = shift.trigger_conversion(
+                bp, :ignore_powered_on => options[:shift_ignore_running_vms] ? true : false
+            )
+        rescue NetAppShift::AlreadyExecuted
+            # Shift refuses a second execution of a blueprint that already
+            # converted. The disks are on the datastore, so that is a no-op
+            # for us, not an error.
+            shift_already_converted(bp, options)
+            return
+        rescue NetAppShift::PoweredOnVms => e
+            # Recoverable, and the fix is a flag away -- say so rather than
+            # leaving the operator to work it out from an error code.
+            running = e.vm_names.empty? ? '' : " (#{e.vm_names.join(', ')})"
+            raise "#{e.message}\n"\
+                  "Power off the listed VMs#{running} and re-run, or pass "\
+                  '--shift-ignore-running-vms to convert from a point-in-time snapshot '\
+                  'while they keep running (crash-consistent, not quiesced).'
+        end
+
+        puts "Waiting for Shift execution #{exec_id} to complete (Ctrl+C to abort)..."
+        shift.wait_for_completion(bp, exec_id, :timeout => options[:shift_wait_timeout])
+        puts "Shift blueprint '#{bp}' finished.".green
+    rescue NetAppShift::Error => e
+        raise e.message
+    end
+
+    # Report that a blueprint's conversion is already done and its disks are
+    # being reused rather than regenerated.
+    def shift_already_converted(blueprint, options)
+        puts "Blueprint '#{blueprint}' has already been converted.".green
+        puts "Reusing the existing qcow2 disks on #{options[:shift_mount]}."
+        puts 'To convert again, clear the blueprint execution in the Shift UI '\
+             '(or with removeBpJobs.ps1) and re-run.'
+    end
+
+    # Shared NetAppShift::Helper constructor for the shift_* entry points.
+    def new_netapp_shift(options)
+        NetAppShift::Helper.new(
+            :server   => options[:shift],
+            :username => options[:shift_user],
+            :password => options[:shift_pass],
+            :logger   => @logger
+        )
     end
 
     # Read and parse a VM list file for batch conversion.
@@ -4181,7 +4500,11 @@ GUESTFISH
             end
         end
 
-        if !@options[:delta]
+        # These guard virt-v2v reading the live VMDKs. Shift mode never touches
+        # them -- the disks were already converted on the storage side and are
+        # read from the NFS mount -- and Shift's own clone leaves a snapshot
+        # behind, which would trip the second check on every run.
+        if !@options[:delta] && !@options[:shift]
             # Some basic preliminary checks
             if @props['summary.runtime.powerState'] != 'poweredOff'
                 raise "Virtual Machine #{@options[:name]} is not Powered Off.".red
@@ -4220,6 +4543,8 @@ GUESTFISH
                       run_custom_conversion
                   elsif @options[:delta]
                       run_delta_conversion
+                  elsif @options[:shift]
+                      run_shift_conversion
                   else
                       run_v2v_conversion
                   end

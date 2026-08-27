@@ -1,3 +1,6 @@
+# Values here are defaults. Anything passed on the command line overrides
+# them, so per-VM customisations do not require editing this file.
+
 # OpenNebula Transfer Options, required for remote OpenNebula server
 #:http_transfer: false                    # Enable HTTP transfer
 #:http_host: '192.168.0.10'               # Hostname of this server
@@ -15,6 +18,19 @@
 #:esxi_ip: '172.20.0.123'                 # ESXi hostname or IP
 #:esxi_user: 'root'                       # ESXi username. Also used by delta prepare/commit when passwordless SSH is not available.
 #:esxi_pass: 'changeme123'                # ESXi password. Also used by delta prepare/commit when passwordless SSH is not available.
+
+# NetApp Shift Options
+# Note: an uncommented :shift: puts every convert run into Shift mode.
+#:shift: 'https://172.20.0.124'           # Shift Toolkit appliance URL (scheme and host, no port)
+#:shift_user: 'admin'                     # Shift username
+#:shift_pass: 'changeme123'               # Shift password
+#:shift_mount: '/mnt/shift'               # Local mount of the source NFS datastore holding the converted qcow2 disks
+#:shift_blueprint: 'bp-name'              # Pre-created blueprint (DR plan) to execute; one run converts every VM in it
+#:shift_skip_conversion: false            # Skip compliance/trigger/wait and import qcow2 disks already on the mount
+#:shift_skip_compliance: false            # Skip the compliance check but still trigger the blueprint
+#:shift_skip_morph: false                 # Import the converted disks without virt-v2v-in-place (guest must already boot on KVM)
+#:shift_ignore_running_vms: false         # Convert even if blueprint VMs are powered on (crash-consistent snapshot)
+#:shift_wait_timeout: 0                   # Max seconds to wait for the blueprint execution (0 waits until Ctrl+C)
 
 # Transfer Options
 #:custom_convert:                         # Uses OpenNebula's custom conversion process, useful for distributions which are not supported or fail to convert
@@ -72,7 +88,7 @@
 #:uefi_sec_path: '/usr/share/OVMF/OVMF_CODE.secboot.fd'     # Path to the UEFI Secure file to be configured in the VM template.
 
 # Logging Options
-#:verbose: true                           # Verbose mode: log at DEBUG and echo diagnostics to the terminal (STDERR) as well as /var/log/one/oneswap.log. Equivalent to the -v/--verbose flag or the ONE_SWAP_DEBUG env var. Note: like every option here, an uncommented value takes precedence over the command line.
+#:verbose: true                           # Verbose mode: log at DEBUG and echo diagnostics to the terminal (STDERR) as well as /var/log/one/oneswap.log. Equivalent to the -v/--verbose flag or the ONE_SWAP_DEBUG env var.
 
 # OpenNebula Placement Options
 #:one_cluster:                            # ID of the OpenNebula Cluster

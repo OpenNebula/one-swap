@@ -97,6 +97,7 @@ INSTALL_FILES=(
 BIN_FILES="oneswap sesparse"
 ONE_CLI_LIB_FILES="esxi_client.rb \
                    esxi_vm.rb \
+                   netapp_shift_helper.rb \
                    oneswap_helper.rb \
                    oneswap_logger.rb \
                    vsphere_client.rb \

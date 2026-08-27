@@ -641,16 +641,96 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
+    SHIFT = {
+        :name  => 'shift',
+        :large => '--shift server',
+        :description => 'NetApp Shift Toolkit appliance URL (scheme and host, no port). '\
+                        'Converts disks through a pre-created Shift blueprint instead of virt-v2v. '\
+                        'Without a VM name, --vms or --vm-list, every VM in the blueprint is imported.',
+        :format => String
+    }
+
+    SHIFT_USER = {
+        :name  => 'shift_user',
+        :large => '--shift-user username',
+        :description => 'NetApp Shift username.',
+        :format => String
+    }
+
+    SHIFT_PASS = {
+        :name  => 'shift_pass',
+        :large => '--shift-pass password',
+        :description => 'NetApp Shift password.',
+        :format => String
+    }
+
+    SHIFT_MOUNT = {
+        :name  => 'shift_mount',
+        :large => '--shift-mount /path/to/mount',
+        :description => 'Local mount point of the source NFS datastore where Shift '\
+                        'writes the converted qcow2 disks.',
+        :format => String
+    }
+
+    SHIFT_BLUEPRINT = {
+        :name  => 'shift_blueprint',
+        :large => '--shift-blueprint name',
+        :description => 'Name of the pre-created Shift blueprint (DR plan) to execute. '\
+                        'One execution converts every VM in its resource group(s).',
+        :format => String
+    }
+
+    SHIFT_SKIP_CONVERSION = {
+        :name  => 'shift_skip_conversion',
+        :large => '--shift-skip-conversion',
+        :description => 'Skip the Shift compliance check, trigger and wait; import qcow2 '\
+                        'disks already present on --shift-mount (re-runs and recovery).'
+    }
+
+    SHIFT_SKIP_COMPLIANCE = {
+        :name  => 'shift_skip_compliance',
+        :large => '--shift-skip-compliance',
+        :description => 'Skip the Shift compliance check but still trigger the blueprint. '\
+                        'Useful when it has already been checked, or when resuming.'
+    }
+
+    SHIFT_SKIP_MORPH = {
+        :name  => 'shift_skip_morph',
+        :large => '--shift-skip-morph',
+        :description => 'Import the converted disks without running virt-v2v-in-place. '\
+                        'For guests virt-v2v cannot convert (Alpine and other minimal '\
+                        'distributions) that already carry virtio drivers and boot under KVM.'
+    }
+
+    SHIFT_IGNORE_RUNNING_VMS = {
+        :name  => 'shift_ignore_running_vms',
+        :large => '--shift-ignore-running-vms',
+        :description => 'Convert even if VMs in the blueprint are still powered on. '\
+                        'Shift takes a point-in-time snapshot, so the resulting disks are '\
+                        'crash-consistent rather than quiesced.'
+    }
+
+    SHIFT_OPTS = [SHIFT, SHIFT_USER, SHIFT_PASS, SHIFT_MOUNT, SHIFT_BLUEPRINT,
+                  SHIFT_SKIP_CONVERSION, SHIFT_SKIP_COMPLIANCE, SHIFT_SKIP_MORPH,
+                  SHIFT_IGNORE_RUNNING_VMS]
+
     ESXI_OPTS = [ESXI, ESXI_USER, ESXI_PASS]
     V2V_OPTS = [V2V_PATH, LIBGUESTFS_PATH, WORK_DIR, FORMAT, VIRTIO, WIN_GA, LNX_GA, DELETE, VDDK, RHSRVANY, ROOT]
     HTTP_OPTS = [HTTP_TRANSFER, HTTP_HOST, HTTP_PORT, ALLOW_LOCAL_PATH_REMOTE]
 
-    LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE, ACCEPT_CERT] + AUTH_OPTS
+    # Listing from Shift needs the appliance and a blueprint, but none of the
+    # conversion-side options (mount, skip-conversion).
+    SHIFT_LIST_OPTS = [SHIFT, SHIFT_USER, SHIFT_PASS, SHIFT_BLUEPRINT]
+
+    # CLIHelper::SIZE is deliberately left out: its short flag is -s, which is
+    # already the short flag for --state above.
+    LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE, ACCEPT_CERT,
+                    CLIHelper::EXPAND, CLIHelper::NO_EXPAND] + AUTH_OPTS + SHIFT_LIST_OPTS
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, DELTA_PREPARE, DELTA_COMMIT, DELTA_CLEANUP, DRY_RUN, BENCHMARK_IMPORT, BENCHMARK_EXPORT, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
                     CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                     PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
                     SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH, INJECT_DNS, CONTEXT_MIN_FREE, CONTEXT_FAIL_LOW_SPACE, CONTEXT_TIMEOUT,
-                    ACCEPT_CERT, ONE_USER, ONE_GROUP, VM_LIST, VMS] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS
+                    ACCEPT_CERT, ONE_USER, ONE_GROUP, VM_LIST, VMS] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS + SHIFT_OPTS
     IMPORT_OPTS = [OVA, VMDK, DATASTORE, NETWORK, SKIP_CONTEXT, REMOVE_VMTOOLS, UEFI_PATH,
                    UEFI_SEC_PATH, INJECT_DNS, CONTEXT_MIN_FREE, CONTEXT_FAIL_LOW_SPACE, CONTEXT_TIMEOUT,
                    ONE_USER, ONE_GROUP] + V2V_OPTS
@@ -674,6 +754,15 @@ CommandParser::CmdParser.new(ARGV) do
 
              oneswap list vms --datacenter DCName --cluster Cluster2
 
+           - listing the NetApp Shift blueprints available to convert:
+
+             SOPTS='--shift https://12.34.56.80 --shift-user admin --shift-pass changeme123'
+             oneswap list blueprints $SOPTS
+
+           - listing the VMs a blueprint covers, which is what it will convert:
+
+             oneswap list vms $SOPTS --shift-blueprint bp1
+
     EOT
 
     command :list, list_desc, :object, :options => LIST_OPTS do
@@ -684,7 +773,11 @@ CommandParser::CmdParser.new(ARGV) do
             end
 
             cfg_file = normalize_config.call(YAML.load_file(options[:config_file])) if File.exist?(options[:config_file])
-            options.merge!(cfg_file) if cfg_file
+            # Config file supplies defaults; anything given on the command
+            # line wins. `replace` keeps the same Hash object because later
+            # code mutates it in place (convert appends the VM name to
+            # :work_dir).
+            options.replace(cfg_file.merge(options)) if cfg_file
             options[:object] = args[0]
             helper.parse_opts(options)
             helper.list(options)
@@ -727,6 +820,11 @@ CommandParser::CmdParser.new(ARGV) do
 
             oneswap convert --vms vm-web-01,vm-db-01,vm-app-01 $VOPTS [--fallback|--custom|--hybrid]
 
+            - Convert through a NetApp Shift blueprint (all VMs in the blueprint, or one by name):
+
+            SOPTS='--shift https://12.34.56.80 --shift-user admin --shift-pass changeme123'
+            oneswap convert $VOPTS $SOPTS --shift-blueprint bp1 --shift-mount /mnt/shift [vm-name]
+
     EOT
 
     command :convert, conv_desc, [:vm_name, nil], :options => CONVERT_OPTS do
@@ -736,7 +834,11 @@ CommandParser::CmdParser.new(ARGV) do
             end
             options[:config_file] ||= '/etc/one/oneswap.yaml'
             cfg_file = normalize_config.call(YAML.load_file(options[:config_file])) if File.exist?(options[:config_file])
-            options.merge!(cfg_file) if cfg_file
+            # Config file supplies defaults; anything given on the command
+            # line wins. `replace` keeps the same Hash object because later
+            # code mutates it in place (convert appends the VM name to
+            # :work_dir).
+            options.replace(cfg_file.merge(options)) if cfg_file
 
             if (options[:download_stripes] || 1).to_i > 1 && !options[:hybrid]
                 raise '--download-stripes N > 1 requires --hybrid.'
@@ -798,6 +900,56 @@ CommandParser::CmdParser.new(ARGV) do
                 raise 'Cannot define both --fallback and --custom.'
             end
 
+            if options[:shift_skip_conversion] && !options[:shift]
+                raise '--shift-skip-conversion requires --shift.'
+            end
+
+            if options[:shift]
+                incompatible_shift = []
+                incompatible_shift << '--custom' if options[:custom_convert]
+                incompatible_shift << '--fallback' if options[:fallback]
+                incompatible_shift << '--hybrid' if options[:hybrid]
+                incompatible_shift << '--delta' if options[:delta]
+                incompatible_shift << '--delta-prepare' if options[:delta_prepare]
+                incompatible_shift << '--delta-commit' if options[:delta_commit]
+                incompatible_shift << '--delta-cleanup' if options[:delta_cleanup]
+                incompatible_shift << '--vddk' if options[:vddk_path]
+                incompatible_shift << '--esxi' if options[:esxi_ip]
+                incompatible_shift << '--download-stripes' if (options[:download_stripes] || 1).to_i > 1
+                incompatible_shift << '--clone' if options[:clone]
+                incompatible_shift << '--dry-run' if options[:dry_run]
+
+                if !incompatible_shift.empty?
+                    raise "--shift cannot be combined with #{incompatible_shift.join(', ')}."
+                end
+
+                missing_shift = []
+                missing_shift << '--shift-user' unless options[:shift_user]
+                missing_shift << '--shift-pass' unless options[:shift_pass]
+                missing_shift << '--shift-mount' unless options[:shift_mount]
+                missing_shift << '--shift-blueprint' unless options[:shift_blueprint]
+
+                if !missing_shift.empty?
+                    raise "--shift requires #{missing_shift.join(', ')}."
+                end
+
+                if !Dir.exist?(options[:shift_mount])
+                    raise "--shift-mount #{options[:shift_mount]} does not exist or is not a directory."
+                end
+
+                if !system('which virt-v2v-in-place > /dev/null 2>&1')
+                    raise '--shift requires virt-v2v-in-place; install virt-v2v.'
+                end
+
+                # vCenter still supplies the VM properties, NICs and tags the
+                # template is built from. Check it here rather than letting the
+                # run get all the way past a blueprint execution before failing.
+                if !options[:vcenter] || !options[:vuser]
+                    raise 'Shift conversions still read VM properties from vCenter. '\
+                          'Provide --vcenter and --vuser (and --vpass).'
+                end
+            end
+
             options[:work_dir]         ||= WORK_PATH
             options[:format]           ||= 'qcow2'
             options[:context]          ||= '/usr/share/one/context'
@@ -818,6 +970,16 @@ CommandParser::CmdParser.new(ARGV) do
             options[:dry_run_guest_customization_seconds] ||= 180
             options[:dry_run_import_benchmark_size_mib] ||= 4096
             options[:dry_run_source_benchmark_size_mib] ||= 1024
+
+            if options[:shift]
+                # cleanup (and --delete) remove files under work_dir; the Shift
+                # mount holds the source datastore and must stay out of reach.
+                wd = File.expand_path(options[:work_dir])
+                sm = File.expand_path(options[:shift_mount])
+                if wd == sm || wd.start_with?("#{sm}/") || sm.start_with?("#{wd}/")
+                    raise '--shift-mount and the work directory must not overlap.'
+                end
+            end
 
             if options[:http_transfer]
                 options[:http_host] ||= Socket.ip_address_list.detect do |addrinfo|
@@ -842,9 +1004,41 @@ CommandParser::CmdParser.new(ARGV) do
             if modes.size > 1
                 raise 'Specify only one of: positional VM name, --vms, or --vm-list.'
             end
-            raise 'Provide a VM name, --vms vm1,vm2,..., or --vm-list <file>.' if modes.empty?
+            if modes.empty? && !options[:shift]
+                raise 'Provide a VM name, --vms vm1,vm2,..., or --vm-list <file>.'
+            end
 
-            if vm_list
+            if options[:shift]
+                # The blueprint is the unit of conversion: one execution
+                # converts every VM in its resource group(s), so trigger it
+                # once here and let the loop below only import.
+                blueprint_vms = helper.shift_blueprint_vm_names(options)
+
+                requested = if vm_name
+                                [vm_name]
+                            elsif vm_names
+                                vm_names.split(',').map(&:strip).reject(&:empty?)
+                            elsif vm_list
+                                helper.read_vm_list(vm_list)
+                            else
+                                blueprint_vms
+                            end
+                raise 'No VM names requested.' if requested.empty?
+
+                unknown = requested - blueprint_vms
+                if !unknown.empty?
+                    raise "Not in blueprint '#{options[:shift_blueprint]}': "\
+                          "#{unknown.join(', ')}. Blueprint VMs: #{blueprint_vms.join(', ')}"
+                end
+
+                helper.shift_execute_blueprint(options) unless options[:shift_skip_conversion]
+
+                if requested.size > 1
+                    exit helper.convert_vm_list(requested, options)
+                else
+                    helper.convert(requested.first, options)
+                end
+            elsif vm_list
                 exit helper.convert_batch(vm_list, options)
             elsif vm_names
                 names = vm_names.split(',').map(&:strip).reject(&:empty?)
@@ -888,7 +1082,11 @@ CommandParser::CmdParser.new(ARGV) do
 
             options[:config_file] ||= '/etc/one/oneswap.yaml'
             cfg_file = normalize_config.call(YAML.load_file(options[:config_file])) if File.exist?(options[:config_file])
-            options.merge!(cfg_file) if cfg_file
+            # Config file supplies defaults; anything given on the command
+            # line wins. `replace` keeps the same Hash object because later
+            # code mutates it in place (convert appends the VM name to
+            # :work_dir).
+            options.replace(cfg_file.merge(options)) if cfg_file
 
             raise 'ESXi Transfer requires at least IP and Password' if options[:esxi_ip] && options[:esxi_pass].nil?
             raise 'ESXI and VDDK cannot be used at same time, recommend VDDK.' if options[:esxi_ip] && options[:vddk_path]

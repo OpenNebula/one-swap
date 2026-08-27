@@ -145,6 +145,126 @@ indefinitely. Either finish with `--delta --delta-commit` or run
 For detailed behavior, metric selection, confidence levels, and examples, see
 the official OpenNebula documentation.
 
+## NetApp Shift Conversion
+
+With `--shift`, the VMDK-to-qcow2 disk conversion is delegated to a
+[NetApp Shift Toolkit](https://docs.netapp.com/us-en/netapp-solutions/shift-toolkit/shift-overview.html)
+appliance instead of virt-v2v. Shift converts on the ONTAP storage side
+(FlexClone based), so the disks never travel through the OneSwap worker.
+OneSwap still gathers VM properties from vCenter, runs the guest
+customization (context, VirtIO, QEMU Guest Agent) and creates the OpenNebula
+images and template.
+
+Prerequisites, all created in the Shift UI beforehand:
+
+- A source site (vCenter + ONTAP) and a destination site.
+- One or more resource groups containing the VMs to convert.
+- A blueprint (DR plan) referencing those resource groups.
+- The source NFS datastore mounted locally on the OneSwap host
+  (`--shift-mount`); Shift writes `<vm-name>.qcow2` (plus
+  `<vm-name>_1.qcow2`, ... for additional disks) next to each VM folder.
+- `virt-v2v-in-place` installed on the conversion host.
+- vCenter credentials, same as any other conversion mode: the VM properties,
+  NICs and tags the OpenNebula template is built from still come from vCenter,
+  even though the disks do not.
+
+Power state is awkward, and the two Shift operations disagree about it:
+
+- The **compliance check** wants the VMs powered **on**. With them off it
+  reports them as failed resources (`{"powerState":"POWERED_OFF"}`), even
+  though the conversion then runs perfectly well.
+- The **convert** execution wants them powered **off**, and rejects the
+  trigger otherwise (`ERSCSTEX022`, naming the offenders, and checking every
+  VM in the blueprint rather than just the one being imported). This is the
+  dismissable warning the Shift UI shows with a "Continue" button;
+  `--shift-ignore-running-vms` is the same override, and OneSwap names the
+  flag in the error so a failed run tells you how to retry.
+
+Converting a running VM uses a point-in-time snapshot, so the resulting disks
+are crash-consistent rather than quiesced — fine for most guests, but not for
+a database you care about. Powering the VM down first is still the safer path.
+
+Two workable combinations:
+
+```
+# VMs powered off; the compliance check objects to that, so skip it
+oneswap convert $VOPTS $SOPTS --shift-skip-compliance
+
+# VMs left running; compliance passes, convert needs the override
+oneswap convert $VOPTS $SOPTS --shift-ignore-running-vms
+```
+
+Importing is unaffected by either: once the disks exist, OneSwap only reads
+qcow2 files from the mount, so power state and snapshots are irrelevant. That
+is why the powered-off/no-snapshot preconditions the other modes enforce are
+skipped in Shift mode — and Shift's own clone leaves a snapshot behind anyway.
+
+```
+SOPTS='--shift https://<shift-ip> --shift-user admin --shift-pass ...'
+
+# Which blueprints exist, and how many VMs each covers
+oneswap list blueprints $SOPTS
+
+# Which VMs a blueprint would convert
+oneswap list vms $SOPTS --shift-blueprint bp1
+
+SOPTS="$SOPTS --shift-blueprint bp1 --shift-mount /mnt/shift"
+
+# Convert and import every VM in the blueprint
+oneswap convert $VOPTS $SOPTS
+
+# Convert the blueprint once, but only import selected VMs (in this order)
+oneswap convert $VOPTS $SOPTS --vms vm-web-01,vm-db-01
+
+# Import more VMs later; the blueprint is not executed again
+oneswap convert vm-app-01 $VOPTS $SOPTS
+
+# Import without contacting Shift at all (disks known to be on the mount)
+oneswap convert vm-web-01 $VOPTS $SOPTS --shift-skip-conversion
+
+# Trigger the blueprint but skip the compliance check (already checked, or resuming)
+oneswap convert $VOPTS $SOPTS --shift-skip-compliance
+
+# Import without the OS morph, for guests virt-v2v refuses to convert
+oneswap convert alpine-vm $VOPTS $SOPTS --shift-skip-morph
+```
+
+After the disks are converted, OneSwap runs `virt-v2v-in-place` on them to
+install virtio drivers and fix the initramfs and bootloader for KVM. virt-v2v
+only recognises guests it has support for, and rejects the rest with
+`virt-v2v is unable to convert this guest type` — Alpine among them. Guests
+like that usually boot on KVM unmodified because virtio is already built in,
+so `--shift-skip-morph` imports the converted disks as they are. OneSwap names
+the flag in the error when it hits that case.
+
+Notes:
+
+- A blueprint execution converts **every** VM in its resource group(s), in
+  parallel, regardless of which VMs are then imported. Keep blueprints
+  aligned with what you intend to import — `oneswap list blueprints` and
+  `oneswap list vms --shift-blueprint <name>` show what you are committing to
+  before you run anything.
+- `oneswap list vms` reads from Shift whenever `--shift` (or `:shift:` in the
+  config file) is set, and from vCenter otherwise. `list datacenters` and
+  `list clusters` are vCenter concepts and always use vCenter.
+- One execution serves every later `oneswap convert` against that blueprint.
+  OneSwap checks the blueprint state first and, if it has already converted,
+  reuses the disks on the mount instead of executing again -- Shift rejects a
+  second execution until the previous one is cleared. If an execution is
+  still running, OneSwap attaches to it and waits instead of starting another.
+  To genuinely convert again, clear the blueprint execution in the Shift UI
+  (or with the `removeBpJobs.ps1` script NetApp ships) and re-run.
+  `--shift-skip-conversion` is only needed to skip talking to Shift entirely.
+- The OS morph (`virt-v2v-in-place`) and context injection modify the qcow2
+  files on the datastore in place -- there is no local copy, so terabyte
+  disks work on workers with small local storage. To regenerate a disk,
+  re-run the blueprint in the Shift UI; re-importing an already imported VM
+  without regenerating it is unsupported (the guest would be morphed twice).
+- The wait for the blueprint execution runs until it finishes; interrupt
+  with Ctrl+C or bound it with `:shift_wait_timeout:` in `oneswap.yaml`.
+- `--shift` cannot be combined with `--delta`, `--hybrid`, `--custom`,
+  `--fallback`, `--vddk`, `--esxi`, `--clone` or `--dry-run`.
+
 ## vCenter Permissions Requirements
 
 OneSwap requires specific vCenter permissions depending on the conversion mode used. Below are the required privileges for vCenter 8.
