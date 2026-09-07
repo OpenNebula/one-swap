@@ -75,6 +75,30 @@ class DryRunSafetyTest < Minitest::Test
         })
     end
 
+    def test_delta_prepare_uses_vddk_block_only_when_configured
+        calls = []
+        vm = Object.new
+        vm.define_singleton_method(:live2kvm_prepare) do |work_dir, &block|
+            calls << [:prepare, work_dir, !block.nil?]
+            block&.call('base.vmdk', '/tmp/work/convert/disk0.raw')
+        end
+        vm.define_singleton_method(:vddk_path) {|disk| calls << [:vddk_path, disk]; "[datastore] test-vm/#{disk}" }
+        h = helper(:work_dir => '/tmp/work', :vddk_path => '/opt/vddk')
+        h.define_singleton_method(:convert_vddk_disk) do |vddk_file, output_path|
+            calls << [:convert_vddk, vddk_file, output_path]
+            output_path
+        end
+        h.send(:prepare_delta_conversion, vm)
+        assert_equal [
+            [:prepare, '/tmp/work', true],
+            [:vddk_path, 'base.vmdk'],
+            [:convert_vddk, '[datastore] test-vm/base.vmdk', '/tmp/work/convert/disk0.raw']
+        ], calls
+        calls.clear
+        helper(:work_dir => '/tmp/work').send(:prepare_delta_conversion, vm)
+        assert_equal [[:prepare, '/tmp/work', false]], calls
+    end
+
     def test_http_transfer_bypasses_local_path_guard
         h = helper(:http_transfer => true, :endpoint => 'http://remote.example/RPC2')
 
