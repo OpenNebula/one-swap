@@ -2053,9 +2053,7 @@ _EOF_"
                              vm.live2kvm_commit(@options[:work_dir])
                          else
                              if @options[:vddk_path]
-                                 prepared = vm.live2kvm_prepare(@options[:work_dir]) do |parent_disk, output_path|
-                                     convert_vddk_disk(vm.vddk_path(parent_disk), output_path)
-                                 end
+                                 prepared = prepare_delta_conversion(vm)
                                  prepared && vm.live2kvm_commit(@options[:work_dir])
                              else
                                  vm.live2kvm(@options[:work_dir])
@@ -2188,6 +2186,15 @@ _EOF_"
         File.open(xml_path, 'w') {|f| doc.write(f) }
 
         xml_path
+
+def prepare_delta_conversion(vm)
+        if @options[:vddk_path]
+            return vm.live2kvm_prepare(@options[:work_dir]) do |parent_disk, output_path|
+                convert_vddk_disk(vm.vddk_path(parent_disk), output_path)
+            end
+        end
+
+        vm.live2kvm_prepare(@options[:work_dir])
     end
 
     def local_path_image_allocation_preflight!
@@ -2248,7 +2255,7 @@ _EOF_"
         vm_name = @options[:name]
         vm = client.get_vm_by_name(vm_name)
 
-        state = vm.live2kvm_prepare(@options[:work_dir])
+        state = prepare_delta_conversion(vm)
         raise 'Failed to prepare delta migration' unless state
 
         state_file = File.join(state['transfer_dir'], 'oneswap-delta-state.yaml')
