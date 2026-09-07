@@ -123,6 +123,12 @@ class ESXi::VirtualMachine
         refresh_vmx # snapshots created new active disks
         detected_disks = active_disks
         puts "Detected #{detected_disks.length} active disk(s) in #{format_elapsed(Time.now - t0)}."
+        if detected_disks.empty?
+            message = 'no active disks detected for delta migration'
+            cleanup_snapshot({ 'snapshot_name' => snapshot_name })
+            live_storage_transfer_cleanup(transfer_dir, message)
+            return false
+        end
 
         base_convert_seconds = 0.0
         base_convert_bytes = 0
@@ -262,6 +268,20 @@ class ESXi::VirtualMachine
         convert_dir = state['convert_dir']
         results_dir = state['results_dir']
         @clone_dir = state['clone_dir'] || @clone_dir
+        disks = state['disks']
+        if !disks.is_a?(Array) || disks.empty?
+            @logger.error 'Prepared delta state contains no disks; aborting before VM shutdown'
+            return false
+        end
+        if convert_dir.to_s.empty? || !Dir.exist?(convert_dir)
+            @logger.error "Prepared delta convert directory is missing; aborting before VM shutdown: #{convert_dir}"
+            return false
+        end
+        converted_disks = Dir.children(convert_dir)
+        if converted_disks.empty?
+            @logger.error "Prepared delta convert directory is empty; aborting before VM shutdown: #{convert_dir}"
+            return false
+        end
 
         t0 = Time.now
         @logger.warn "Shutting down VM #{@name}. Downtime begins"
@@ -272,7 +292,7 @@ class ESXi::VirtualMachine
         end
 
         # transfer and apply active snapshot vmdk
-        state['disks'].each do |disk_data|
+        disks.each do |disk_data|
             # alma9-clone_17-000022.vmdk
             # alma9-clone --> vm name
             # _17 --> disk identifier
@@ -302,7 +322,6 @@ class ESXi::VirtualMachine
             return false
         end
 
-        converted_disks = Dir.children(convert_dir)
         os_morph_seconds = 0.0
         os_morph_disks_tried = 0
         converted_disks.each do |disk|
