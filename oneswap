@@ -884,6 +884,7 @@ CommandParser::CmdParser.new(ARGV) do
                 incompatible_delta << '--hybrid' if options[:hybrid]
                 incompatible_delta << '--fallback' if options[:fallback]
                 incompatible_delta << '--esxi' if options[:esxi_ip]
+                incompatible_delta << '--clone' if options[:clone]
 
                 if !incompatible_delta.empty?
                     raise "--delta cannot be combined with #{incompatible_delta.join(', ')}."
