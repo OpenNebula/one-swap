@@ -134,8 +134,9 @@ class ESXi::VirtualMachine
                         'converted_raw_base_path' => converted_raw_base_path
                     }
                     next
-                rescue StandardError
-                    message = "failed disk #{parent_disk} VDDK conversion"
+                rescue StandardError => e
+                    message = "failed disk #{parent_disk} VDDK conversion: #{e.class}: #{e.message}"
+                    @logger.debug e.backtrace.join("\n") if e.backtrace
                     live_storage_transfer_cleanup(transfer_dir, message)
                     return false
                 end
