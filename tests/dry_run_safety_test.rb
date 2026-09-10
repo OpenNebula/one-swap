@@ -3,6 +3,7 @@
 
 require 'logger'
 require 'minitest/autorun'
+require 'stringio'
 require 'tmpdir'
 
 module OpenNebulaHelper
@@ -136,6 +137,31 @@ def delta_vm
         assert_equal false, result
         assert_equal :snapshot, calls[-2][0]
         assert_equal [:cleanup, '/tmp/work/esxi_client-test-vm', 'no active disks detected for delta migration'], calls[-1]
+    end
+
+    def test_delta_prepare_logs_vddk_exception_details
+        Dir.mktmpdir do |dir|
+            log = StringIO.new
+            vm = delta_vm
+            vm.instance_variable_set(:@logger, Logger.new(log, :level => Logger::DEBUG))
+            [:live_storage_transfer_precheck, :vmwaretools?].each {|m| vm.define_singleton_method(m) { true } }
+            vm.define_singleton_method(:create_snapshot) {|*| true }
+            vm.define_singleton_method(:refresh_vmx) { true }
+            vm.define_singleton_method(:active_disks) { ['disk-000001.vmdk'] }
+            vm.define_singleton_method(:vmdk_info) {|_| { 'parentFileNameHint' => 'base.vmdk' } }
+            vm.define_singleton_method(:live_storage_transfer_cleanup) do |_, reason = nil|
+                @cleanup_reason = reason if reason
+            end
+            vm.define_singleton_method(:write_live2kvm_state) { raise 'state should not be written' }
+            error = ArgumentError.new('bad vddk')
+            error.set_backtrace(['controlled-vddk-backtrace:1'])
+
+            result = vm.live2kvm_prepare(dir) { raise error }
+
+            assert_equal false, result
+            assert_includes vm.instance_variable_get(:@cleanup_reason), 'ArgumentError: bad vddk'
+            assert_includes log.string, 'controlled-vddk-backtrace:1'
+        end
     end
 
     def test_delta_commit_rejects_invalid_state_before_shutdown
