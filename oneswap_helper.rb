@@ -138,6 +138,9 @@ end
 class ConversionError < StandardError; end
 
 class OneSwapHelper < OpenNebulaHelper::OneHelper
+
+    VCENTER_SNAPSHOT_LOOKUP_ATTEMPTS = 5
+    VCENTER_SNAPSHOT_LOOKUP_INTERVAL = 1
     VSAN_VDDK_REQUIRED_MESSAGE = 'vSAN-backed VMDK conversion requires VDDK. ' \
                                  'Please configure :vddk_path in the OneSwap config file ' \
                                  'or pass --vddk /path/to/vmware-vix-disklib-distrib/.'
@@ -1778,7 +1781,29 @@ _EOF_"
                   " '#{@props['name']}'"
     end
 
-    def convert_vddk_disk(vddk_file, output_path)
+    def vcenter_snapshot_moref(snapshot_name)
+        vm = RbVmomi::VIM::VirtualMachine.new(@vi_client, @vm_moref)
+
+        VCENTER_SNAPSHOT_LOOKUP_ATTEMPTS.times do |attempt|
+            snapshot_info = vm.collect!('snapshot')['snapshot']
+            snapshots = Array(snapshot_info&.rootSnapshotList)
+
+            until snapshots.empty?
+                snapshot = snapshots.shift
+                return snapshot.snapshot._ref if snapshot.name == snapshot_name
+
+                snapshots.concat(Array(snapshot.childSnapshotList))
+            end
+
+            sleep VCENTER_SNAPSHOT_LOOKUP_INTERVAL if attempt < VCENTER_SNAPSHOT_LOOKUP_ATTEMPTS - 1
+        end
+
+        raise "Unable to find snapshot '#{snapshot_name}' for VM #{@vm_moref} in vCenter"
+    end
+
+    def convert_vddk_disk(vddk_file, output_path, snapshot_moref = nil)
+        snapshot_arg = snapshot_moref.nil? ? '' :
+            " snapshot=#{Shellwords.escape(snapshot_moref)}"
         cmd = 'nbdkit -r -U - vddk'\
               " libdir=#{Shellwords.escape(@options[:vddk_path])}"\
               " server=#{Shellwords.escape(@options[:vcenter])}"\
@@ -1786,6 +1811,7 @@ _EOF_"
               " password=+#{Shellwords.escape("#{@options[:work_dir]}/vpassfile")}"\
               " thumbprint=#{Shellwords.escape(vddk_thumbprint)}"\
               " vm=moref=#{Shellwords.escape(@vm_moref)}"\
+              "#{snapshot_arg}"\
               " file=#{Shellwords.escape(vddk_file)}"\
               " --run 'qemu-img convert -O raw -p -S 4k -W \"$uri\" #{Shellwords.escape(output_path)}'"
         success = system(cmd)
@@ -1944,8 +1970,10 @@ _EOF_"
 
     def prepare_delta_conversion(vm)
         if @options[:vddk_path]
+            snapshot_moref = nil
             return vm.live2kvm_prepare(@options[:work_dir]) do |parent_disk, output_path|
-                convert_vddk_disk(vm.vddk_path(parent_disk), output_path)
+                snapshot_moref ||= vcenter_snapshot_moref(vm.live2kvm_snapshot_name)
+                convert_vddk_disk(vm.vddk_path(parent_disk), output_path, snapshot_moref)
             end
         end
 
