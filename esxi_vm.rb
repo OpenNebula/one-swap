@@ -143,6 +143,7 @@ class ESXi::VirtualMachine
                     message = "failed disk #{parent_disk} VDDK conversion: #{e.class}: #{e.message}"
                     @logger.debug e.backtrace.join("\n") if e.backtrace
                     live_storage_transfer_cleanup(transfer_dir, message)
+                    puts "Warning: VM snapshot #{snapshot_name} remains active. Run --delta-cleanup before retrying."
                     return false
                 end
             end
