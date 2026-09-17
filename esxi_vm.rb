@@ -10,6 +10,8 @@ module ESXi; end
 #
 class ESXi::VirtualMachine
 
+    attr_reader :live2kvm_snapshot_name
+
     # output from vim-cmd vmsvc/getallvms
     VM_INFO_KEYS = [:vmid, :name, :file, :guest_os, :version, :annotation]
 
@@ -99,6 +101,7 @@ class ESXi::VirtualMachine
         @logger.info "Creating premigrate snapshot for VM #{@name}"
         t0 = Time.now
         snapshot_name = ESXi::Client.default_snapshot_name
+        @live2kvm_snapshot_name = snapshot_name
         snapshot_options = ESXi::Client.default_snapshot_options
         if !vmwaretools?
             snapshot_options = snapshot_options.merge({ :quiesce => true })

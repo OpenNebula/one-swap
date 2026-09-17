@@ -10,6 +10,12 @@ module OpenNebulaHelper
     class OneHelper; end
 end
 
+module RbVmomi
+    module VIM
+        class VirtualMachine; end
+    end
+end
+
 module Kernel
     alias oneswap_test_original_require require
 
@@ -103,29 +109,84 @@ def delta_vm
         vm.define_singleton_method(:live2kvm_prepare) do |work_dir, &block|
             calls << [:prepare, work_dir, !block.nil?]
             block&.call('base.vmdk', '/tmp/work/convert/disk0.raw')
+            block&.call('data.vmdk', '/tmp/work/convert/disk1.raw')
         end
+        vm.define_singleton_method(:live2kvm_snapshot_name) { 'VM Snapshot test' }
         vm.define_singleton_method(:vddk_path) {|disk| calls << [:vddk_path, disk]; "[datastore] test-vm/#{disk}" }
         h = helper(:work_dir => '/tmp/work', :vddk_path => '/opt/vddk')
-        h.define_singleton_method(:convert_vddk_disk) do |vddk_file, output_path|
-            calls << [:convert_vddk, vddk_file, output_path]
+        h.define_singleton_method(:vcenter_snapshot_moref) do |snapshot_name|
+            calls << [:snapshot_moref, snapshot_name]
+            'snapshot-42'
+        end
+        h.define_singleton_method(:convert_vddk_disk) do |vddk_file, output_path, snapshot_moref|
+            calls << [:convert_vddk, vddk_file, output_path, snapshot_moref]
             output_path
         end
         h.send(:prepare_delta_conversion, vm)
         assert_equal [
             [:prepare, '/tmp/work', true],
+            [:snapshot_moref, 'VM Snapshot test'],
             [:vddk_path, 'base.vmdk'],
-            [:convert_vddk, '[datastore] test-vm/base.vmdk', '/tmp/work/convert/disk0.raw']
+            [:convert_vddk, '[datastore] test-vm/base.vmdk', '/tmp/work/convert/disk0.raw', 'snapshot-42'],
+            [:vddk_path, 'data.vmdk'],
+            [:convert_vddk, '[datastore] test-vm/data.vmdk', '/tmp/work/convert/disk1.raw', 'snapshot-42']
         ], calls
         calls.clear
         helper(:work_dir => '/tmp/work').send(:prepare_delta_conversion, vm)
         assert_equal [[:prepare, '/tmp/work', false]], calls
     end
 
+    def test_vcenter_snapshot_moref_retries_and_finds_nested_snapshot
+        ref = Struct.new(:_ref)
+        node = Struct.new(:name, :snapshot, :childSnapshotList)
+        expected = node.new('VM Snapshot test', ref.new('snapshot-42'), [])
+        root = node.new('older snapshot', ref.new('snapshot-1'), [expected])
+        snapshot_info = Struct.new(:rootSnapshotList).new([root])
+        calls = 0
+        vc_vm = Object.new
+        vc_vm.define_singleton_method(:collect!) do |_property|
+            calls += 1
+            { 'snapshot' => calls == 1 ? nil : snapshot_info }
+        end
+        h = helper
+        h.instance_variable_set(:@vi_client, Object.new)
+        h.instance_variable_set(:@vm_moref, 'vm-42')
+
+        RbVmomi::VIM::VirtualMachine.stub(:new, vc_vm) do
+            h.stub(:sleep, nil) do
+                assert_equal 'snapshot-42', h.send(:vcenter_snapshot_moref, 'VM Snapshot test')
+            end
+        end
+        assert_equal 2, calls
+    end
+
+    def test_convert_vddk_disk_adds_snapshot_only_when_provided
+        commands = []
+        h = helper(
+            :vddk_path => '/opt/vddk',
+            :vcenter => 'vcenter.example',
+            :vuser => 'user',
+            :work_dir => '/tmp/work'
+        )
+        h.instance_variable_set(:@vm_moref, 'vm-42')
+        h.define_singleton_method(:vddk_thumbprint) { 'AA:BB' }
+        h.define_singleton_method(:system) {|cmd| commands << cmd; true }
+
+        h.send(:convert_vddk_disk, '[ds] base.vmdk', '/tmp/base.raw')
+        h.send(:convert_vddk_disk, '[ds] base.vmdk', '/tmp/base.raw', 'snapshot-42')
+
+        refute_includes commands[0], ' snapshot='
+        assert_includes commands[1], ' snapshot=snapshot-42'
+    end
+
     def test_delta_prepare_with_zero_disks_cleans_snapshot_and_does_not_write_state
         calls = []
         vm = delta_vm
         [:live_storage_transfer_precheck, :vmwaretools?].each {|m| vm.define_singleton_method(m) { true } }
-        vm.define_singleton_method(:create_snapshot) {|*| true }
+        vm.define_singleton_method(:create_snapshot) do |name, *|
+            @created_snapshot_name = name
+            true
+        end
         vm.define_singleton_method(:refresh_vmx) { true }
         vm.define_singleton_method(:active_disks) { [] }
         vm.define_singleton_method(:cleanup_snapshot) {|state| calls << [:snapshot, state['snapshot_name']] }
@@ -135,6 +196,7 @@ def delta_vm
         result = vm.live2kvm_prepare('/tmp/work') { raise 'no disks should be converted' }
 
         assert_equal false, result
+        assert_equal vm.instance_variable_get(:@created_snapshot_name), vm.live2kvm_snapshot_name
         assert_equal :snapshot, calls[-2][0]
         assert_equal [:cleanup, '/tmp/work/esxi_client-test-vm', 'no active disks detected for delta migration'], calls[-1]
     end
