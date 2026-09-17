@@ -2216,6 +2216,7 @@ _EOF_"
 
 def prepare_delta_conversion(vm)
         if @options[:vddk_path]
+            validate_delta_vddk_prerequisites!
             puts 'Using VDDK transport for delta prepare.'
             snapshot_moref = nil
             return vm.live2kvm_prepare(@options[:work_dir]) do |parent_disk, output_path|
@@ -3966,6 +3967,32 @@ GUESTFISH
               "  /usr/lib/one/oneswap/scripts/setup_nbdkit_vddk.sh\n" \
               'or pass --skip-prechecks to bypass this check.'
         raise(msg.red)
+    end
+
+    def validate_delta_vddk_prerequisites!
+        unless ESXi::Client.command_exists?('nbdkit')
+            raise 'nbdkit is required for delta VDDK conversion'
+        end
+
+        vddk_path = @options[:vddk_path]
+        unless File.directory?(vddk_path)
+            raise "Configured VDDK path is not a directory: #{vddk_path}"
+        end
+
+        stdout, stderr, status = Open3.capture3(
+            'nbdkit',
+            'vddk',
+            '--dump-plugin',
+            "libdir=#{vddk_path}"
+        )
+        loaded = stdout.each_line.any? do |line|
+            line.start_with?('vddk_library_version=', 'vddk_dll=')
+        end
+        return if status.success? && loaded
+
+        message = "nbdkit VDDK plugin could not load VDDK from #{vddk_path}"
+        message += ": #{stderr.strip}" unless stderr.to_s.strip.empty?
+        raise message
     end
 
     def effective_dev_prefix(os_name)

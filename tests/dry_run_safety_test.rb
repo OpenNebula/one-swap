@@ -113,7 +113,10 @@ def delta_vm
         end
         vm.define_singleton_method(:live2kvm_snapshot_name) { 'VM Snapshot test' }
         vm.define_singleton_method(:vddk_path) {|disk| calls << [:vddk_path, disk]; "[datastore] test-vm/#{disk}" }
-        h = helper(:work_dir => '/tmp/work', :vddk_path => '/opt/vddk')
+        h = helper(:work_dir => '/tmp/work', :vddk_path => '/opt/vddk', :skip_prechecks => true)
+        h.define_singleton_method(:validate_delta_vddk_prerequisites!) do
+            calls << [:vddk_prerequisites]
+        end
         h.define_singleton_method(:vcenter_snapshot_moref) do |snapshot_name|
             calls << [:snapshot_moref, snapshot_name]
             'snapshot-42'
@@ -125,6 +128,7 @@ def delta_vm
         stdout, = capture_io { h.send(:prepare_delta_conversion, vm) }
         assert_includes stdout, 'Using VDDK transport for delta prepare.'
         assert_equal [
+            [:vddk_prerequisites],
             [:prepare, '/tmp/work', true],
             [:snapshot_moref, 'VM Snapshot test'],
             [:vddk_path, 'base.vmdk'],
@@ -135,6 +139,51 @@ def delta_vm
         calls.clear
         helper(:work_dir => '/tmp/work').send(:prepare_delta_conversion, vm)
         assert_equal [[:prepare, '/tmp/work', false]], calls
+    end
+
+    def test_delta_vddk_prerequisite_validation
+        status_class = Struct.new(:ok) do
+            def success?
+                ok
+            end
+        end
+        cases = [
+            ['missing nbdkit', false, true, '', '', true, /nbdkit is required/],
+            ['invalid VDDK path', true, false, '', '', true, /not a directory/],
+            ['failed dump-plugin', true, true, '', 'plugin failed', false, /plugin failed/],
+            ['marker-less dump-plugin', true, true, "name=vddk\n", '', true, /could not load VDDK/],
+            ['library version marker', true, true, "vddk_library_version=8\n", '', true, nil]
+        ]
+
+        cases.each do |name, nbdkit, directory, stdout, stderr, command_ok, error|
+            h = helper(:vddk_path => '/opt/vddk')
+            argv = nil
+            capture = lambda do |*args|
+                argv = args
+                [stdout, stderr, status_class.new(command_ok)]
+            end
+
+            ESXi::Client.stub(:command_exists?, nbdkit) do
+                File.stub(:directory?, directory) do
+                    Open3.stub(:capture3, capture) do
+                        if error
+                            exception = assert_raises(RuntimeError, name) do
+                                h.send(:validate_delta_vddk_prerequisites!)
+                            end
+                            assert_match error, exception.message, name
+                        else
+                            assert_nil h.send(:validate_delta_vddk_prerequisites!), name
+                        end
+                    end
+                end
+            end
+
+            next unless nbdkit && directory
+
+            assert_equal [
+                'nbdkit', 'vddk', '--dump-plugin', 'libdir=/opt/vddk'
+            ], argv, name
+        end
     end
 
     def test_vcenter_snapshot_moref_retries_and_finds_nested_snapshot
@@ -214,7 +263,10 @@ def delta_vm
             vm = delta_vm
             vm.instance_variable_set(:@logger, Logger.new(log, :level => Logger::DEBUG))
             [:live_storage_transfer_precheck, :vmwaretools?].each {|m| vm.define_singleton_method(m) { true } }
-            vm.define_singleton_method(:create_snapshot) {|*| true }
+            vm.define_singleton_method(:create_snapshot) do |name, *|
+                @created_snapshot_name = name
+                true
+            end
             vm.define_singleton_method(:refresh_vmx) { true }
             vm.define_singleton_method(:active_disks) { ['disk-000001.vmdk'] }
             vm.define_singleton_method(:vmdk_info) {|_| { 'parentFileNameHint' => 'base.vmdk' } }
@@ -225,11 +277,17 @@ def delta_vm
             error = ArgumentError.new('bad vddk')
             error.set_backtrace(['controlled-vddk-backtrace:1'])
 
-            result = vm.live2kvm_prepare(dir) { raise error }
+            result = nil
+            stdout, = capture_io do
+                result = vm.live2kvm_prepare(dir) { raise error }
+            end
 
             assert_equal false, result
             assert_includes vm.instance_variable_get(:@cleanup_reason), 'ArgumentError: bad vddk'
             assert_includes log.string, 'controlled-vddk-backtrace:1'
+            warning = "Warning: VM snapshot #{vm.instance_variable_get(:@created_snapshot_name)} " \
+                      'remains active. Run --delta-cleanup before retrying.'
+            assert_includes stdout, warning
         end
     end
 
