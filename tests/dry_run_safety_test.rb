@@ -122,7 +122,8 @@ def delta_vm
             calls << [:convert_vddk, vddk_file, output_path, snapshot_moref]
             output_path
         end
-        h.send(:prepare_delta_conversion, vm)
+        stdout, = capture_io { h.send(:prepare_delta_conversion, vm) }
+        assert_includes stdout, 'Using VDDK transport for delta prepare.'
         assert_equal [
             [:prepare, '/tmp/work', true],
             [:snapshot_moref, 'VM Snapshot test'],
@@ -166,17 +167,23 @@ def delta_vm
             :vddk_path => '/opt/vddk',
             :vcenter => 'vcenter.example',
             :vuser => 'user',
+            :vpass => 'plaintext-password',
             :work_dir => '/tmp/work'
         )
         h.instance_variable_set(:@vm_moref, 'vm-42')
         h.define_singleton_method(:vddk_thumbprint) { 'AA:BB' }
         h.define_singleton_method(:system) {|cmd| commands << cmd; true }
 
-        h.send(:convert_vddk_disk, '[ds] base.vmdk', '/tmp/base.raw')
-        h.send(:convert_vddk_disk, '[ds] base.vmdk', '/tmp/base.raw', 'snapshot-42')
+        stdout, = capture_io do
+            h.send(:convert_vddk_disk, '[ds] base.vmdk', '/tmp/base.raw')
+            h.send(:convert_vddk_disk, '[ds] base.vmdk', '/tmp/base.raw', 'snapshot-42')
+        end
 
         refute_includes commands[0], ' snapshot='
         assert_includes commands[1], ' snapshot=snapshot-42'
+        assert_includes stdout, 'Running: nbdkit'
+        assert_includes stdout, 'password=+/tmp/work/vpassfile'
+        refute_includes stdout, 'plaintext-password'
     end
 
     def test_delta_prepare_with_zero_disks_cleans_snapshot_and_does_not_write_state

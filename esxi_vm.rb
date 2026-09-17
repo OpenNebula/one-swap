@@ -146,9 +146,11 @@ class ESXi::VirtualMachine
                 begin
                     Dir.mkdir(convert_dir) unless Dir.exist?(convert_dir)
                     output_path = "#{convert_dir}/disk#{disks.length}.raw"
+                    puts "Copying base disk via VDDK: #{parent_disk}..."
                     t0 = Time.now
                     converted_raw_base_path = yield(parent_disk, output_path)
                     elapsed = Time.now - t0
+                    puts "Copied base disk #{parent_disk} via VDDK in #{format_elapsed(elapsed)}."
                     base_convert_seconds += elapsed
                     base_convert_bytes += File.size(output_path) if File.exist?(output_path)
                     disks << {

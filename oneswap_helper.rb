@@ -1937,6 +1937,7 @@ _EOF_"
               "#{snapshot_arg}"\
               " file=#{Shellwords.escape(vddk_file)}"\
               " --run 'qemu-img convert -O raw -p -S 4k -W \"$uri\" #{Shellwords.escape(output_path)}'"
+        puts "Running: #{cmd}"
         success = system(cmd)
         raise "Failed to convert #{vddk_file} with VDDK" unless success
 
@@ -2215,6 +2216,7 @@ _EOF_"
 
 def prepare_delta_conversion(vm)
         if @options[:vddk_path]
+            puts 'Using VDDK transport for delta prepare.'
             snapshot_moref = nil
             return vm.live2kvm_prepare(@options[:work_dir]) do |parent_disk, output_path|
                 snapshot_moref ||= vcenter_snapshot_moref(vm.live2kvm_snapshot_name)
