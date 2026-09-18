@@ -92,6 +92,37 @@ To convert VMs stored on a vSAN datastore, configure VDDK:
 :vddk_path: '/opt/vmware-vix-disklib-distrib/'
 ```
 
+## VM Hardware Profile Options
+
+OneSwap can override the target KVM machine type and CPU model settings used in
+the generated OpenNebula VM template.
+
+Example:
+
+```yaml
+:cpu_model: 'Skylake-Server-noTSX-IBRS'
+:cpu_features:
+  - arch-capabilities
+  - ssbd
+  - stibp
+  - md-clear
+:machine: 'q35'
+```
+
+The generated template contains:
+
+```text
+CPU_MODEL=[
+  MODEL="Skylake-Server-noTSX-IBRS",
+  FEATURES="arch-capabilities,ssbd,stibp,md-clear" ]
+
+OS=[
+  MACHINE="q35" ]
+```
+
+`cpu_features` can be provided either as a YAML array or as a comma-separated
+string and requires `cpu_model` to be set.
+
 ## Dry-run Estimates
 
 OneSwap can estimate migration time without running the full conversion. Dry-run

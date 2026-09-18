@@ -275,6 +275,20 @@ CommandParser::CmdParser.new(ARGV) do
         :format => String
     }
 
+    CPU_FEATURES = {
+        :name => 'cpu_features',
+        :large => '--cpu-features features',
+        :description => 'Comma-separated CPU model features to require in OpenNebula. Requires --cpu-model.',
+        :format => String
+    }
+
+    MACHINE = {
+        :name => 'machine',
+        :large => '--machine machine_type',
+        :description => 'Set the KVM machine type in OpenNebula.',
+        :format => String
+    }
+
     DATASTORE = {
         :name => 'datastore',
         :large => '--datastore id',
@@ -727,7 +741,7 @@ CommandParser::CmdParser.new(ARGV) do
     LIST_OPTS    = [NAME, DATACENTER, CLUSTER, STATE, ACCEPT_CERT,
                     CLIHelper::EXPAND, CLIHelper::NO_EXPAND] + AUTH_OPTS + SHIFT_LIST_OPTS
     CONVERT_OPTS = [NETWORK, NO_IP, NO_MAC, DATASTORE, CONTEXT, FALLBACK, CUSTOM, HYBRID, DOWNLOAD_STRIPES, DELTA, DELTA_PREPARE, DELTA_COMMIT, DELTA_CLEANUP, DRY_RUN, BENCHMARK_IMPORT, BENCHMARK_EXPORT, V2V_PATH, CONF_FILE, IMG_WAIT, DEV_PREFIX,
-                    CPU_MODEL, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
+                    CPU_MODEL, CPU_FEATURES, MACHINE, GRAPHICS_TYPE, GRAPHICS_LISTEN, GRAPHICS_PORT, GRAPHICS_KEYMAP, GRAPHICS_PASSWORD, GRAPHICS_COMMAND, DISABLE_CONTEXTUALIZATION,
                     PERSISTENT_IMG, MEMORY_MAX, VCPU_MAX, CPU, VCPU, ONE_DS, ONE_DS_CLUSTER, ONE_CLUSTER, ONE_HOST, CLONE, REMOVE_VMTOOLS,
                     SKIP_PRECHEKS, UEFI_PATH, UEFI_SEC_PATH, INJECT_DNS, CONTEXT_MIN_FREE, CONTEXT_FAIL_LOW_SPACE, CONTEXT_TIMEOUT,
                     ACCEPT_CERT, ONE_USER, ONE_GROUP, VM_LIST, VMS] + AUTH_OPTS + ESXI_OPTS + V2V_OPTS + HTTP_OPTS + SHIFT_OPTS
