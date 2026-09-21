@@ -754,6 +754,24 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         vmt
     end
 
+    def template_cpu_model(options = @options)
+        cpu_model = options[:cpu_model].to_s.strip
+        cpu_features = Array(options[:cpu_features])
+                       .flat_map {|value| value.to_s.split(',') }
+                       .map(&:strip)
+                       .reject(&:empty?)
+
+        if !cpu_features.empty? && cpu_model.empty?
+            raise 'cpu_features requires a non-empty cpu_model'
+        end
+
+        return nil if cpu_model.empty?
+
+        config = { 'MODEL' => cpu_model }
+        config['FEATURES'] = cpu_features.join(',') unless cpu_features.empty?
+        config
+    end
+
     def create_base_template
         vm_template_config = {
             'NAME' => "#{@options[:name]}",
@@ -763,9 +781,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             'HYPERVISOR' => 'kvm'
         }
 
-        if @options[:cpu_model]
-            vm_template_config['CPU_MODEL'] = { 'MODEL' => "#{@options[:cpu_model]}" }
-        end
+        cpu_model = template_cpu_model
+        vm_template_config['CPU_MODEL'] = cpu_model if cpu_model
 
         if !@options[:disable_contextualization]
             vm_template_config['CONTEXT'] = {
@@ -854,6 +871,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
     def template_firmware
         fw = { 'OS' => { 'FIRMWARE' => 'BIOS' } }
+        machine = @options[:machine].to_s.strip
+        fw['OS']['MACHINE'] = machine unless machine.empty?
 
         return fw unless @props['config'][:firmware] == 'efi'
 
@@ -875,7 +894,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
         fw['OS']['FIRMWARE'] = local_uefi_path
         fw['OS']['FIRMWARE_SECURE'] = 'YES' if secure_boot
-        fw['OS']['MACHINE'] = 'q35'
+        fw['OS']['MACHINE'] ||= 'q35'
 
         fw
     end
@@ -3987,6 +4006,7 @@ GUESTFISH
     # @param options [Hash] User CLI options
     def convert(name, options)
         apply_verbosity(options)
+        template_cpu_model(options)
         check_one_connectivity
         if !Dir.exist?(options[:work_dir])
             raise 'Provided working directory '\

@@ -30,6 +30,18 @@ class DryRunSafetyTest < Minitest::Test
         end
     end
 
+    def firmware_template(options = {}, firmware = 'bios')
+        h = helper({ :uefi_path => '/tmp/OVMF_CODE.fd' }.merge(options))
+        h.instance_variable_set(:@props, {
+            'config' => {
+                :firmware => firmware,
+                :bootOptions => {}
+            }
+        })
+
+        h.send(:template_firmware)['OS']
+    end
+
     def test_http_real_import_metrics_are_ignored_when_benchmark_exists
         h = helper(:http_transfer => true)
         result = h.send(:target_import_estimate, :metrics => {
@@ -166,5 +178,55 @@ class DryRunSafetyTest < Minitest::Test
 
         assert h.send(:virtio_path_configured?)
         refute_includes out, 'no VirtIO driver ISO is configured'
+    end
+
+    def test_configured_machine_is_used_for_bios_and_efi
+        {
+            'bios' => 'BIOS',
+            'efi' => '/tmp/OVMF_CODE.fd'
+        }.each do |firmware, expected_path|
+            os = firmware_template({ :machine => 'pc-q35-rhel9.4.0' }, firmware)
+
+            assert_equal expected_path, os['FIRMWARE']
+            assert_equal 'pc-q35-rhel9.4.0', os['MACHINE']
+        end
+    end
+
+    def test_machine_defaults_remain_unchanged
+        refute firmware_template.key?('MACHINE')
+        assert_equal 'q35', firmware_template({}, 'efi')['MACHINE']
+    end
+
+    def test_cpu_model_without_features_remains_supported
+        assert_nil helper.send(:template_cpu_model)
+        assert_equal({ 'MODEL' => 'host-passthrough' },
+                     helper.send(:template_cpu_model, { :cpu_model => 'host-passthrough' }))
+    end
+
+    def test_cpu_features_accept_yaml_array
+        cpu = helper.send(:template_cpu_model, {
+            :cpu_model => 'Skylake-Server-noTSX-IBRS',
+            :cpu_features => ['arch-capabilities', 'ssbd', 'stibp', 'md-clear']
+        })
+
+        assert_equal 'Skylake-Server-noTSX-IBRS', cpu['MODEL']
+        assert_equal 'arch-capabilities,ssbd,stibp,md-clear', cpu['FEATURES']
+    end
+
+    def test_cpu_features_accept_comma_separated_input
+        cpu = helper.send(:template_cpu_model, {
+            :cpu_model => 'Skylake-Server-noTSX-IBRS',
+            :cpu_features => 'arch-capabilities, ssbd,stibp, md-clear'
+        })
+
+        assert_equal 'arch-capabilities,ssbd,stibp,md-clear', cpu['FEATURES']
+    end
+
+    def test_cpu_features_require_cpu_model
+        error = assert_raises(RuntimeError) do
+            helper.send(:template_cpu_model, { :cpu_features => ['ssbd'] })
+        end
+
+        assert_equal 'cpu_features requires a non-empty cpu_model', error.message
     end
 end
