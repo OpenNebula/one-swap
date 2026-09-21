@@ -99,6 +99,17 @@ To convert VMs stored on a vSAN datastore, configure VDDK:
 :vddk_path: '/opt/vmware-vix-disklib-distrib/'
 ```
 
+VDDK can also be used with `--delta` for the initial/base disk transfer on
+non-vSAN VMware datastores:
+
+```
+oneswap convert <vm> --delta --vddk /opt/vmware-vix-disklib-distrib/
+```
+
+The `:vddk_path:` setting in `oneswap.yaml` can be used instead of the CLI
+option. vSAN-backed disks still do not support `--delta`; use full VDDK
+conversion for vSAN.
+
 ## Dry-run Estimates
 
 OneSwap can estimate migration time without running the full conversion. Dry-run

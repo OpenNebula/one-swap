@@ -22,6 +22,7 @@ class ESXi::Client
         @user = options[:user] || USER
         @password = options[:password]
         @non_interactive = options[:non_interactive] || false
+        @v2v_env = options[:v2v_env] || {}
         @ssh_options = ''
         @ssh_env = {}
 
@@ -279,7 +280,7 @@ class ESXi::Client
         cmd = "virt-v2v-in-place -i disk #{root_image} #{options}"
         message = "Failed to convert Guest OS at #{root_image}"
 
-        live_execution(cmd, message)
+        live_execution(cmd, message, @v2v_env)
     end
 
     def file_size_bytes(path)

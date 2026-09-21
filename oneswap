@@ -869,7 +869,6 @@ CommandParser::CmdParser.new(ARGV) do
                 incompatible_delta << '--custom' if options[:custom_convert]
                 incompatible_delta << '--hybrid' if options[:hybrid]
                 incompatible_delta << '--fallback' if options[:fallback]
-                incompatible_delta << '--vddk' if options[:vddk_path]
                 incompatible_delta << '--esxi' if options[:esxi_ip]
 
                 if !incompatible_delta.empty?
