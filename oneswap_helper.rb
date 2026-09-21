@@ -3766,18 +3766,15 @@ GUESTFISH
 
     # Warn when the conversion host cannot read CompactOS/WOF-compressed NTFS
     #
-    # @param plugin_globs  [Array<String>] globs for the ntfs-3g plugin .so
     # @param overlay_globs [Array<String>] globs for the supermin.d overlay
     # @param env           [Hash] environment (injectable for tests)
     # @return [Boolean] true when a warning was printed
     def warn_if_wof_support_missing(
-        plugin_globs: ['/usr/lib/*/ntfs-3g/ntfs-plugin-80000017.so',
-                       '/usr/lib64/ntfs-3g/ntfs-plugin-80000017.so'],
-        overlay_globs: ['/usr/lib/*/guestfs/supermin.d/zz-ntfs-wof.tar.gz'],
+        overlay_globs: ['/usr/lib/*/guestfs/supermin.d/zz-ntfs-wof.tar.gz',
+                        '/usr/lib64/guestfs/supermin.d/zz-ntfs-wof.tar.gz'],
         env: ENV
     )
         return false unless env['LIBGUESTFS_PATH'].to_s.empty?
-        return false if plugin_globs.any? {|g| !Dir.glob(g).empty? }
         return false if overlay_globs.any? {|g| !Dir.glob(g).empty? }
 
         puts 'Warning: this host cannot read CompactOS-compressed NTFS. Windows'.brown
