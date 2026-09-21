@@ -1018,7 +1018,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             if timeout && timeout.to_i > 0
                 stdout, stderr, status, timed_out = run_cmd_with_timeout(cmd, timeout.to_i)
             else
-                stdout, stderr, status = Open3.capture3(cmd)
+                stdout, stderr, status = Open3.capture3(v2v_env, cmd)
             end
         end
         t1 = (Time.now - t0).round(2)
@@ -1041,7 +1041,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         stdout = stderr = ''
         status = nil
 
-        Open3.popen3(cmd, :pgroup => true) do |stdin, out_io, err_io, wait_thr|
+        Open3.popen3(v2v_env, cmd, :pgroup => true) do |stdin, out_io, err_io, wait_thr|
             stdin.close
             out_reader = Thread.new { out_io.read }
             err_reader = Thread.new { err_io.read }
@@ -1076,8 +1076,27 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             '--no-applications --no-icon'
         disk_xml = nil
         show_wait_spinner do
-            stdout, _status = Open3.capture2(inspector_cmd)
-            disk_xml = REXML::Document.new(stdout).root.elements
+            stdout, stderr, status = Open3.capture3(v2v_env, inspector_cmd)
+            unless status.success?
+                reason = status.signaled? ? "signal #{status.termsig}" : "exit status #{status.exitstatus}"
+                raise ConversionError, "virt-inspector failed for #{disk} (#{reason}): #{stderr.to_s.strip}"
+            end
+            if stdout.to_s.strip.empty?
+                raise ConversionError, "virt-inspector returned empty output for #{disk}"
+            end
+
+            begin
+                root = REXML::Document.new(stdout).root
+            rescue REXML::ParseException => e
+                raise ConversionError, "virt-inspector returned invalid XML for #{disk}: #{e.message}"
+            end
+            unless root
+                raise ConversionError, "virt-inspector returned XML without a root for #{disk}"
+            end
+            unless root.name == 'operatingsystems'
+                raise ConversionError, "virt-inspector returned unexpected XML root '#{root.name}' for #{disk}"
+            end
+            disk_xml = root.elements
         end
         xprefix = '//operatingsystems/operatingsystem'
         if !disk_xml[xprefix]
@@ -1460,7 +1479,7 @@ _EOF_"
         cmd = 'guestfish --ro'\
               " -a #{disk}"\
               " run : mount-ro #{root_dev} / : statvfs /"
-        stdout, stderr, status = Open3.capture3(cmd)
+        stdout, stderr, status = Open3.capture3(v2v_env, cmd)
         unless status.success?
             @logger.debug("Could not stat guest root filesystem: #{stderr}")
             return nil
@@ -1514,7 +1533,7 @@ _EOF_"
               ' -i'\
               " #{cmd}"
         puts "Running: #{cmd}"
-        _stdout, _stderr, _status = Open3.capture3(cmd)
+        _stdout, _stderr, _status = Open3.capture3(v2v_env, cmd)
     end
 
     def package_injection(disk, osinfo)
@@ -2891,7 +2910,8 @@ _EOF_"
     def esxi_client_options(extra = {})
         {
             :user => @options[:esxi_user] || 'root',
-            :password => @options[:esxi_pass]
+            :password => @options[:esxi_pass],
+            :v2v_env => v2v_env
         }.merge(extra)
     end
 
@@ -3602,7 +3622,7 @@ _EOF_"
 
     def windows_control_sets_for_disk(disk)
         cmd = "virt-win-reg #{disk} 'HKLM\\SYSTEM\\Select'"
-        stdout, stderr, status = Open3.capture3(cmd)
+        stdout, stderr, status = Open3.capture3(v2v_env, cmd)
 
         unless status.success?
             @logger.warn("Could not read HKLM\\SYSTEM\\Select, using fallback control sets: #{stderr.to_s.strip}")
@@ -3671,7 +3691,7 @@ _EOF_"
                 cmd = "virt-win-reg --merge #{disk} #{Shellwords.escape(f.path)}"
                 @logger.debug("virt-win-reg command: #{cmd}")
 
-                stdout, stderr, status = Open3.capture3(cmd)
+                stdout, stderr, status = Open3.capture3(v2v_env, cmd)
 
                 @logger.debug("virt-win-reg stdout (#{control_set}): #{stdout}")
                 @logger.debug("virt-win-reg stderr (#{control_set}): #{stderr}")
@@ -3720,7 +3740,7 @@ GUESTFISH
             @logger.info("Running guestfish + hivexregedit to disable services: #{VMTOOLS_SERVICES_TO_DISABLE.join(', ')}")
             @logger.debug("guestfish command: #{cmd}")
             
-            stdout, stderr, status = Open3.capture3(cmd)
+            stdout, stderr, status = Open3.capture3(v2v_env, cmd)
             
             @logger.debug("guestfish output: #{stdout}")
             @logger.debug("guestfish stderr: #{stderr}")
