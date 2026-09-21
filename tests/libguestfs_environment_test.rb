@@ -4,6 +4,8 @@ require 'minitest/autorun'
 require 'minitest/mock'
 require 'ostruct'
 require 'rbconfig'
+require 'stringio'
+require 'timeout'
 
 module OpenNebulaHelper
     class OneHelper; end
@@ -131,11 +133,262 @@ class LibguestfsEnvironmentTest < Minitest::Test
             ['', '', status]
         end
         Open3.stub(:capture3, capture) do
-            h.send(:guest_root_free_mb, '/tmp/disk', { 'mounts' => { '/' => '/dev/sda1' } })
             h.send(:guest_run_cmd, '/tmp/disk', 'sync')
             h.send(:windows_control_sets_for_disk, '/tmp/disk')
             h.send(:disable_vmtools_via_virt_win_reg, '/tmp/disk')
             h.send(:disable_vmtools_via_guestfish, '/tmp/disk')
+        end
+    end
+
+    def test_guest_root_free_space_receives_environment
+        capture = lambda do |env, cmd|
+            assert_equal({ 'LIBGUESTFS_PATH' => APPLIANCE }, env)
+            assert_includes cmd, 'statvfs /'
+            ["bsize: 4096\nfrsize: 4096\nbavail: 512\n", '', status]
+        end
+        Open3.stub(:capture3, capture) do
+            assert_equal 2, helper.send(:guest_root_free_mb, '/tmp/disk',
+                                      { 'mounts' => { '/' => '/dev/sda1' } })
+        end
+    end
+
+    def test_spinner_joins_thread_when_block_raises
+        h = helper
+        h.singleton_class.send(:remove_method, :show_wait_spinner)
+        spinner = nil
+        threads_before = Thread.list
+        capture_io do
+            error = assert_raises(RuntimeError) do
+                h.send(:show_wait_spinner, 1000) do
+                    spinner = (Thread.list - threads_before).first
+                    assert spinner.alive?
+                    raise 'inspection failed'
+                end
+            end
+            assert_equal 'inspection failed', error.message
+        end
+        refute spinner.alive?
+        assert_equal false, spinner.status
+        capture_io { assert_equal :result, h.send(:show_wait_spinner, 1000) { :result } }
+    ensure
+        spinner.kill.join if spinner && spinner.alive?
+    end
+
+    def test_successful_block_and_spinner_preserve_return_value
+        assert_spinner_outcome(nil, nil)
+    end
+
+    def test_failing_block_and_successful_spinner_preserve_block_exception
+        assert_spinner_outcome(ArgumentError.new('operation failed'), nil)
+    end
+
+    def test_successful_block_and_failing_spinner_propagate_spinner_exception
+        assert_spinner_outcome(nil, IOError.new('spinner output failed'))
+    end
+
+    def test_failing_block_and_spinner_preserve_original_block_exception
+        assert_spinner_outcome(ArgumentError.new('operation failed'), IOError.new('spinner output failed'))
+    end
+
+    def test_interrupted_join_after_success_stops_spinner_before_raising
+        assert_interrupted_spinner_cleanup(nil)
+    end
+
+    def test_interrupted_join_preserves_operation_error_after_stopping_spinner
+        assert_interrupted_spinner_cleanup(ArgumentError.new('operation failed'))
+    end
+
+    def test_repeated_interruptions_do_not_escape_before_spinner_stops
+        assert_interrupted_spinner_cleanup(nil, true)
+    end
+
+    def test_repeated_interruptions_preserve_original_operation_error
+        assert_interrupted_spinner_cleanup(ArgumentError.new('operation failed'), true)
+    end
+
+    def assert_interrupted_spinner_cleanup(operation_error, interrupt_again = false)
+        h = helper
+        h.singleton_class.send(:remove_method, :show_wait_spinner)
+        started = Queue.new
+        joining = Queue.new
+        stopping = Queue.new
+        finish_stopping = Queue.new
+        blocked_output = Queue.new
+        result = Queue.new
+        spinner = nil
+        h.define_singleton_method(:print) do |_text|
+            started << Thread.current
+            begin
+                blocked_output.pop
+            ensure
+                stopping << true
+                finish_stopping.pop
+            end
+        end
+        caller = Thread.new do
+            begin
+                h.send(:show_wait_spinner) do
+                    spinner = started.pop
+                    spinner.define_singleton_method(:join) do |*args|
+                        joining << true
+                        super(*args)
+                    end
+                    raise operation_error if operation_error
+
+                    :result
+                end
+                result << [:returned, spinner.alive?]
+            rescue Exception => error
+                result << [error, spinner.alive?]
+            end
+        end
+        interruption = Interrupt.new('interrupted join')
+        Timeout.timeout(5) do
+            joining.pop
+            Thread.pass until caller.status == 'sleep'
+            caller.raise(interruption)
+            stopping.pop
+            caller.raise(Interrupt.new('interrupted again')) if interrupt_again
+            finish_stopping << true
+            error, alive_at_exit = result.pop
+            assert_same operation_error || interruption, error
+            refute alive_at_exit
+            caller.join
+            refute spinner.alive?
+        end
+    ensure
+        # Unblock test-owned waits even when an assertion or timeout fails.
+        finish_stopping << true if finish_stopping
+        blocked_output << true if blocked_output
+        caller.kill.join if caller && caller.alive?
+        spinner.kill.join if spinner && spinner.alive?
+    end
+
+    def assert_spinner_outcome(operation_error, spinner_error)
+        h = helper
+        h.singleton_class.send(:remove_method, :show_wait_spinner)
+        started = Queue.new
+        output = []
+        spinner = nil
+        h.define_singleton_method(:print) do |text|
+            # The test observes worker failures through join, not stderr.
+            Thread.current.report_on_exception = false
+            output << text
+            started << Thread.current if output.length == 1
+            raise spinner_error if spinner_error
+        end
+        operation = lambda do
+            h.send(:show_wait_spinner, 1000) do
+                spinner = started.pop
+                raise operation_error if operation_error
+
+                :result
+            end
+        end
+
+        expected_error = operation_error || spinner_error
+        if expected_error
+            actual_error = assert_raises(expected_error.class, &operation)
+            assert_same expected_error, actual_error
+        else
+            assert_equal :result, operation.call
+        end
+        refute spinner.alive?
+        if spinner_error
+            assert_nil spinner.status
+        else
+            assert_equal false, spinner.status
+        end
+        assert_equal '/', output.first
+        assert_equal "\b", output.last unless spinner_error
+    ensure
+        spinner.kill.join if spinner && spinner.alive?
+    end
+
+    def test_successful_inspection_logs_stderr
+        h = helper
+        messages = []
+        h.instance_variable_get(:@logger).stub(:debug, ->(message) { messages << message }) do
+            Open3.stub(:capture3, ['<operatingsystems/>', 'inspection warning', status]) do
+                assert_nil h.send(:detect_distro, '/tmp/disk')
+            end
+        end
+        assert_equal ['inspection warning'], messages
+    end
+
+    def test_prechecks_use_effective_environment
+        [[{}, { :libguestfs_path => APPLIANCE }],
+         [{ 'LIBGUESTFS_PATH' => '/exported' }, {}],
+         [{ 'LIBGUESTFS_PATH' => '/exported' }, { :libguestfs_path => APPLIANCE }]].each do |exported, options|
+            h = helper(options)
+            ENV.stub(:to_h, exported) do
+                Process.stub(:uid, 1000) do
+                    File.stub(:readable?, false) do
+                        out, err = capture_io do
+                            refute h.send(:warn_if_wof_support_missing, :overlay_globs => [])
+                            h.send(:warn_unreadable_kernel_for_libguestfs, h.send(:v2v_env))
+                        end
+                        assert_empty out
+                        assert_empty err
+                    end
+                end
+            end
+        end
+        # An empty exported value must not override a configured appliance.
+        h = helper
+        refute h.send(:warn_if_wof_support_missing, :env => { 'LIBGUESTFS_PATH' => '' },
+                      :overlay_globs => [])
+    end
+
+    def test_prechecks_prefer_yaml_path_over_exported_path
+        h = helper
+        used = []
+        configured_path = Object.new
+        configured_path.define_singleton_method(:to_s) { used << :yaml; APPLIANCE }
+        h.stub(:v2v_env, { 'LIBGUESTFS_PATH' => configured_path }) do
+            ENV.stub(:to_h, { 'LIBGUESTFS_PATH' => '/exported' }) do
+                Process.stub(:uid, 1000) do
+                    refute h.send(:warn_if_wof_support_missing, :overlay_globs => [])
+                    h.send(:warn_unreadable_kernel_for_libguestfs, h.send(:v2v_env))
+                end
+            end
+        end
+        assert_equal [:yaml, :yaml], used
+    end
+
+    def test_inspection_failure_retains_fallback_and_hybrid_behavior
+        [:fallback, :hybrid, :disabled, :fatal].each do |mode|
+            h = helper(:name => 'vm', :work_dir => '/unused')
+            h.instance_variable_set(:@props, { 'config' => { :guestFullName => 'Linux' } })
+            # Enable hybrid after command construction to exercise its rescue branch
+            # without involving the downloader or filesystem.
+            h.define_singleton_method(:build_v2v_vc_cmd) do
+                @options[mode] = true if [:fallback, :hybrid].include?(mode)
+                @options[:fallback] = true if mode == :fatal
+                'virt-v2v'
+            end
+            h.define_singleton_method(:warn_unreadable_kernel_for_libguestfs) { |_env| }
+            h.define_singleton_method(:create_one_images) do |_disks|
+                raise ConversionError, 'fatal' if mode == :fatal
+                detect_distro('/tmp/disk')
+            end
+            cleaned = false
+            h.define_singleton_method(:cleanup_disks) { cleaned = true }
+            h.define_singleton_method(:run_custom_conversion) { :custom }
+            streams = [StringIO.new, StringIO.new, StringIO.new, OpenStruct.new(:value => 0)]
+            Open3.stub(:popen3, streams) do
+                Dir.stub(:glob, ['/tmp/disk']) do
+                    Open3.stub(:capture3, ['', 'supermin failed', status(false)]) do
+                        if [:fallback, :hybrid].include?(mode)
+                            assert_equal :custom, h.send(:run_v2v_conversion)
+                            assert_equal mode == :fallback, cleaned
+                        else
+                            error = assert_raises(ConversionError) { h.send(:run_v2v_conversion) }
+                            assert_includes error.message, mode == :fatal ? 'fatal' : 'supermin failed'
+                        end
+                    end
+                end
+            end
         end
     end
 

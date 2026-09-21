@@ -139,6 +139,7 @@ end
 # Module OneVcenterHelper
 ##############################################################################
 class ConversionError < StandardError; end
+class InspectionError < ConversionError; end
 
 class OneSwapHelper < OpenNebulaHelper::OneHelper
     VSAN_VDDK_REQUIRED_MESSAGE = 'vSAN-backed VMDK conversion requires VDDK. ' \
@@ -984,10 +985,36 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             end
         end
         # Use the block's return value as the method's
-        yield.tap do # After yielding to the block, save the return value
-            iter = false # Tell the thread to exit, cleaning up after itself…
-            spinner.join # …and wait for it to do so.
+        yield
+    rescue Exception => operation_error
+        raise
+    ensure
+        iter = false # Tell the thread to exit, cleaning up after itself…
+        cleanup_error = nil
+        begin
+            Thread.handle_interrupt(Exception => :never) do
+                begin
+                    Thread.handle_interrupt(Exception => :immediate) do
+                        spinner.join if spinner
+                    end
+                rescue Exception => cleanup_error
+                    # Keep the first failure while finishing cleanup below.
+                ensure
+                    if spinner && spinner.alive?
+                        spinner.kill
+                        begin
+                            spinner.join
+                        rescue Exception => thread_error
+                            cleanup_error ||= thread_error
+                        end
+                    end
+                end
+            end
+        rescue Exception => interruption
+            # Deferred interruptions arrive only after the spinner is stopped.
+            cleanup_error ||= interruption
         end
+        raise cleanup_error if cleanup_error && !operation_error
     end
 
     def next_suffix(suffix)
@@ -1079,22 +1106,23 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             stdout, stderr, status = Open3.capture3(v2v_env, inspector_cmd)
             unless status.success?
                 reason = status.signaled? ? "signal #{status.termsig}" : "exit status #{status.exitstatus}"
-                raise ConversionError, "virt-inspector failed for #{disk} (#{reason}): #{stderr.to_s.strip}"
+                raise InspectionError, "virt-inspector failed for #{disk} (#{reason}): #{stderr.to_s.strip}"
             end
+            @logger.debug(stderr) unless stderr.to_s.strip.empty?
             if stdout.to_s.strip.empty?
-                raise ConversionError, "virt-inspector returned empty output for #{disk}"
+                raise InspectionError, "virt-inspector returned empty output for #{disk}"
             end
 
             begin
                 root = REXML::Document.new(stdout).root
             rescue REXML::ParseException => e
-                raise ConversionError, "virt-inspector returned invalid XML for #{disk}: #{e.message}"
+                raise InspectionError, "virt-inspector returned invalid XML for #{disk}: #{e.message}"
             end
             unless root
-                raise ConversionError, "virt-inspector returned XML without a root for #{disk}"
+                raise InspectionError, "virt-inspector returned XML without a root for #{disk}"
             end
             unless root.name == 'operatingsystems'
-                raise ConversionError, "virt-inspector returned unexpected XML root '#{root.name}' for #{disk}"
+                raise InspectionError, "virt-inspector returned unexpected XML root '#{root.name}' for #{disk}"
             end
             disk_xml = root.elements
         end
@@ -1860,7 +1888,8 @@ _EOF_"
     end
 
     def warn_unreadable_kernel_for_libguestfs(env)
-        return if Process.uid == 0 || env.key?('LIBGUESTFS_PATH')
+        effective_env = ENV.to_h.merge(env).merge(v2v_env)
+        return if Process.uid == 0 || !effective_env['LIBGUESTFS_PATH'].to_s.empty?
 
         kernel = "/boot/vmlinuz-#{`uname -r`.strip}"
         return if File.readable?(kernel)
@@ -1935,10 +1964,11 @@ _EOF_"
             end
 
             create_one_images(disks_on_file)
-        rescue ConversionError
-            raise
         rescue StandardError => e
-            # puts "Error raised: #{e.message}"
+            # Inspection failures retain the existing custom/hybrid fallback behavior.
+            raise if e.is_a?(ConversionError) && !e.is_a?(InspectionError)
+
+            @logger.debug(e.message)
             if @props['config'][:guestFullName].include?('Windows')
                 puts 'Windows not supported for fallback conversion.'.brown
                 raise e
@@ -2011,7 +2041,6 @@ _EOF_"
     def morph_shift_disks(disks)
         env = v2v_env
         warn_unreadable_kernel_for_libguestfs(env)
-        env_prefix = env.map {|k, v| "#{k}=#{Shellwords.escape(v)} " }.join
 
         # -i disk only accepts a single disk; multi-disk guests go through a
         # minimal libvirt domain XML so inspection sees the whole guest.
@@ -2022,7 +2051,7 @@ _EOF_"
                 end
 
         stdout, status = run_cmd_report(
-            "#{env_prefix}virt-v2v-in-place #{input} -v --machine-readable", true
+            "virt-v2v-in-place #{input} -v --machine-readable", true
         )
 
         return if status.success?
@@ -3813,7 +3842,8 @@ GUESTFISH
                         '/usr/lib64/guestfs/supermin.d/zz-ntfs-wof.tar.gz'],
         env: ENV
     )
-        return false unless env['LIBGUESTFS_PATH'].to_s.empty?
+        effective_env = env.to_h.merge(v2v_env)
+        return false unless effective_env['LIBGUESTFS_PATH'].to_s.empty?
         return false if overlay_globs.any? {|g| !Dir.glob(g).empty? }
 
         puts 'Warning: this host cannot read CompactOS-compressed NTFS. Windows'.brown
