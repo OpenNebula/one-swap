@@ -1223,13 +1223,13 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             when /^redhat-based8/, /^rhel8/, /^almalinux8/, /^rocky8/, /^ol8/, /^centos-stream8/
                 os = 'rhel8'
                 opts = [
-                    " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-8-$(arch)-rpms'",
+                    (" --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-8-$(arch)-rpms'" if guest_os =~ /^rhel8(?:\.|$)/),
                     " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm'",
                     ' --copy-in %<context>s:/tmp',
                     ' --install /tmp/%<basename>s',
                     ' --delete /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
-                ]
+                ].compact
                 fallback_opts = [
                     ' --firstboot-install epel-release',
                     ' --copy-in %<context>s:/tmp',
@@ -1239,13 +1239,13 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             when /^redhat-based9/, /^rhel9/, /^almalinux9/, /^rocky9/, /^ol9/, /^centos-stream9/
                 os = 'rhel9'
                 opts = [
-                    " --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms'",
+                    (" --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms'" if guest_os =~ /^rhel9(?:\.|$)/),
                     " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm'",
                     ' --copy-in %<context>s:/tmp',
                     ' --install /tmp/%<basename>s',
                     ' --delete /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
-                ]
+                ].compact
                 fallback_opts = [
                     ' --firstboot-install epel-release',
                     ' --copy-in %<context>s:/tmp',
