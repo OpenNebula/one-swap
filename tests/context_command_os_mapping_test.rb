@@ -53,6 +53,8 @@ class ContextCommandOsMappingTest < Minitest::Test
         assert_equal [expected_family], detected, message
         assert_includes cmd, "/tmp/one-context-#{expected_family}.pkg", message
         assert_includes fallback_cmd, "/tmp/one-context-#{expected_family}.pkg", message
+
+        [cmd, fallback_cmd]
     end
 
     def test_direct_mappings
@@ -84,6 +86,37 @@ class ContextCommandOsMappingTest < Minitest::Test
         cases.each do |osinfo_id, expected_family|
             msg = "#{osinfo_id.inspect} should map to #{expected_family.inspect}"
             assert_context_family(osinfo_id, expected_family, msg)
+        end
+    end
+
+    def test_subscription_manager_is_used_for_rhel_8_and_9
+        {
+            'rhel8.10' => ['rhel8', 8],
+            'rhel9.4' => ['rhel9', 9]
+        }.each do |osinfo_id, (family, version)|
+            cmd, = assert_context_family(osinfo_id, family)
+
+            assert_includes cmd, "subscription-manager repos --enable codeready-builder-for-rhel-#{version}-$(arch)-rpms"
+        end
+    end
+
+    def test_subscription_manager_is_not_used_for_rhel_compatible_guests
+        {
+            'rocky8' => 'rhel8',
+            'rocky9' => 'rhel9',
+            'almalinux8' => 'rhel8',
+            'almalinux9' => 'rhel9',
+            'ol8.8' => 'rhel8',
+            'ol9.4' => 'rhel9',
+            'centos-stream8' => 'rhel8',
+            'centos-stream9' => 'rhel9',
+            'redhat-based8' => 'rhel8',
+            'redhat-based9' => 'rhel9'
+        }.each do |osinfo_id, family|
+            cmd, fallback_cmd = assert_context_family(osinfo_id, family)
+
+            refute_includes cmd, 'subscription-manager'
+            refute_includes fallback_cmd, 'subscription-manager'
         end
     end
 
