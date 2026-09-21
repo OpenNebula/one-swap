@@ -56,12 +56,19 @@ To enable CompactOS support, run once on each migration host (as root):
 /usr/lib/one/oneswap/scripts/setup_ntfs_wof.sh
 ```
 
-The script builds the
+The script reuses an already installed `ntfs-plugin-80000017.so`, or you can
+provide one explicitly:
+
+```
+/usr/lib/one/oneswap/scripts/setup_ntfs_wof.sh --plugin /path/to/ntfs-plugin-80000017.so
+```
+
+If no plugin is available, Debian/Ubuntu hosts build the
 [ntfs-3g-system-compression](https://github.com/ebiggers/ntfs-3g-system-compression)
-plugin, installs it, and packs it as a supermin.d overlay so every libguestfs
-appliance rebuild includes it automatically (no fixed appliance or
-`LIBGUESTFS_PATH` needed). It requires internet access, or an internal mirror
-via the `NTFS_WOF_REPO_URL` environment variable.
+plugin from source. The plugin is packed as a supermin.d overlay so every
+libguestfs appliance rebuild includes it automatically (no fixed appliance or
+`LIBGUESTFS_PATH` needed). The source-build fallback requires internet access,
+or an internal mirror via the `NTFS_WOF_REPO_URL` environment variable.
 
 Windows guests using the `vd` device prefix require VirtIO block drivers to
 boot. OneSwap warns before conversion when no `virtio_path` is configured for
