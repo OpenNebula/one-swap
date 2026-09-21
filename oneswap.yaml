@@ -102,7 +102,9 @@
 
 # Extra VM Options:
 #:dev_prefix:                             # Device prefix for the VM disks ex: sd, hd, vd
-#:cpu_model:                              # CPU model
+#:cpu_model:                              # OpenNebula CPU model, for example Skylake-Server-noTSX-IBRS
+#:cpu_features:                           # CPU model features as a YAML array or comma-separated string; requires cpu_model
+#:machine:                                # KVM machine type, for example q35
 #:graphics_type:                          # Graphics type: vnc, sdl, spice
 #:graphics_listen:                        # Graphics listen IP
 #:graphics_port:                          # Graphics port
