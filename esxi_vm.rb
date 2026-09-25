@@ -18,6 +18,7 @@ class ESXi::VirtualMachine
         :POWEROFF => 'Powered off'
     }
     VIRT_V2V_OPTIONS_EXTRA = '-v --machine-readable'
+    SHUTDOWN_TIMEOUT = 300
 
     def initialize(esxi_client, getallvms_info)
         self.class.validate_vm_info(getallvms_info)
@@ -39,7 +40,27 @@ class ESXi::VirtualMachine
     end
 
     def shutdown
-        @client.shutdown_vm(@id)
+        return false unless @client.shutdown_vm(@id, vmwaretools?)
+
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + SHUTDOWN_TIMEOUT
+
+        loop do
+            current_state = state
+            return true if current_state == STATES[:POWEROFF]
+
+            unless current_state == STATES[:RUNNING]
+                @logger.error "Unable to determine power state while shutting down VM #{@name}: #{current_state.inspect}"
+                return false
+            end
+
+            remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)
+            if remaining <= 0
+                @logger.error "Timed out after #{SHUTDOWN_TIMEOUT}s waiting for VM #{@name} to power off"
+                return false
+            end
+
+            sleep [5, remaining].min
+        end
     end
 
     def start
