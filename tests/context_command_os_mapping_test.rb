@@ -192,16 +192,16 @@ class ContextCommandOsMappingTest < Minitest::Test
             </operatingsystems>
         XML
 
-        original_capture2 = Open3.method(:capture2)
-        Open3.define_singleton_method(:capture2) do |_cmd|
-            [xml, OpenStruct.new(:success? => true)]
+        original_capture3 = Open3.method(:capture3)
+        Open3.define_singleton_method(:capture3) do |_env, _cmd|
+            [xml, '', OpenStruct.new(:success? => true)]
         end
 
         osinfo = h.send(:detect_distro, '/tmp/disk.qcow2')
 
         assert_equal '10', osinfo['major_version']
     ensure
-        Open3.define_singleton_method(:capture2, original_capture2)
+        Open3.define_singleton_method(:capture3, original_capture3)
     end
 
     def test_rhel10_package_selection_uses_el10_rpm_pattern
