@@ -5,6 +5,7 @@ require 'logger'
 require 'minitest/autorun'
 require 'ostruct'
 require 'rexml/document'
+require 'shellwords'
 require 'tmpdir'
 
 module OpenNebulaHelper
@@ -89,34 +90,136 @@ class ContextCommandOsMappingTest < Minitest::Test
         end
     end
 
-    def test_subscription_manager_is_used_for_rhel_8_and_9
+    def test_el8_el9_and_el10_install_local_context_without_epel
         {
-            'rhel8.10' => ['rhel8', 8],
-            'rhel9.4' => ['rhel9', 9]
-        }.each do |osinfo_id, (family, version)|
-            cmd, = assert_context_family(osinfo_id, family)
+            'rhel8' => %w[rhel8.10 rocky8 almalinux8 ol8.8 centos-stream8 redhat-based8],
+            'rhel9' => %w[rhel9.4 rocky9 almalinux9 ol9.4 centos-stream9 redhat-based9],
+            'rhel10' => %w[rhel10 rocky10 almalinux10 ol10 redhat-based10]
+        }.each do |family, osinfo_ids|
+            osinfo_ids.each do |osinfo_id|
+                cmd, fallback_cmd = assert_context_family(osinfo_id, family)
+                package = "/tmp/one-context-#{family}.pkg"
 
-            assert_includes cmd, "subscription-manager repos --enable codeready-builder-for-rhel-#{version}-$(arch)-rpms"
+                refute_includes cmd, 'https://dl.fedoraproject.org/pub/epel/', osinfo_id
+                refute_includes cmd, 'epel-release', osinfo_id
+                refute_includes fallback_cmd, 'epel-release', osinfo_id
+                assert_includes cmd, " --copy-in #{package}:/tmp", osinfo_id
+                args = dnf_install_args(cmd)
+                assert_equal ['dnf', '-y'], args.first(2), osinfo_id
+                refute_includes cmd, '--disablerepo', osinfo_id
+                dnf_options.each {|option| assert_includes args, option, osinfo_id }
+                assert_includes args, '--setopt=strict=True', osinfo_id
+                assert_equal ['install', package], args.last(2), osinfo_id
+                refute_includes cmd, 'subscription-manager', osinfo_id
+                refute_includes Shellwords.split(cmd), '--install', osinfo_id
+                refute_includes cmd, 'codeready-builder', osinfo_id
+                refute_includes cmd, 'subscription-manager repos', osinfo_id
+                assert_includes fallback_cmd, " --copy-in #{package}:/tmp", osinfo_id
+                assert_includes fallback_cmd, " --firstboot-install #{package}", osinfo_id
+                refute_includes fallback_cmd, '--disablerepo', osinfo_id
+                refute_includes fallback_cmd, 'subscription-manager', osinfo_id
+            end
         end
     end
 
-    def test_subscription_manager_is_not_used_for_rhel_compatible_guests
-        {
-            'rocky8' => 'rhel8',
-            'rocky9' => 'rhel9',
-            'almalinux8' => 'rhel8',
-            'almalinux9' => 'rhel9',
-            'ol8.8' => 'rhel8',
-            'ol9.4' => 'rhel9',
-            'centos-stream8' => 'rhel8',
-            'centos-stream9' => 'rhel9',
-            'redhat-based8' => 'rhel8',
-            'redhat-based9' => 'rhel9'
-        }.each do |osinfo_id, family|
-            cmd, fallback_cmd = assert_context_family(osinfo_id, family)
+    def test_custom_context_directory_for_el8_el9_and_el10
+        Dir.mktmpdir do |dir|
+            [8, 9, 10].each do |version|
+                File.write(File.join(dir, "one-context-7.4.0-0.el#{version}.noarch.rpm"), '')
+            end
 
-            refute_includes cmd, 'subscription-manager'
-            refute_includes fallback_cmd, 'subscription-manager'
+            h = helper
+            h.instance_variable_get(:@options)[:context] = dir
+
+            [8, 9, 10].each do |version|
+                basename = "one-context-7.4.0-0.el#{version}.noarch.rpm"
+                cmd, fallback_cmd = h.send(:context_command, '/tmp/disk.qcow2', {
+                    'name' => 'linux', 'os' => "rhel#{version}"
+                })
+
+                [cmd, fallback_cmd].each do |command|
+                    assert_includes command, " --copy-in #{File.join(dir, basename)}:/tmp"
+                    refute_includes command, 'epel-release'
+                    refute_includes command, 'https://dl.fedoraproject.org/pub/epel/'
+                end
+                assert_equal ['install', "/tmp/#{basename}"], dnf_install_args(cmd).last(2)
+                assert_includes fallback_cmd, " --firstboot-install /tmp/#{basename}"
+            end
+        end
+    end
+
+    def dnf_options
+        %w[--setopt=strict=True --setopt=timeout=3 --setopt=*.timeout=3
+           --setopt=retries=1 --setopt=skip_if_unavailable=True
+           --setopt=*.skip_if_unavailable=True]
+    end
+
+    def test_non_el_commands_remain_unchanged
+        { 'fedora42' => 'fedora', 'debian12' => 'debian', 'ubuntu24.04' => 'debian',
+          'alt10' => 'alt', 'opensuse15.6' => 'opensuse', 'sles15.6' => 'opensuse' }.each do |os, family|
+            primary, fallback = assert_context_family(os, family)
+            assert_includes primary, " --install /tmp/one-context-#{family}.pkg"
+            assert_includes fallback, " --firstboot-install /tmp/one-context-#{family}.pkg"
+            refute_includes primary, 'dnf'
+            refute_includes primary, '--setopt'
+        end
+    end
+
+    def dnf_install_args(command)
+        args = Shellwords.split(command)
+        Shellwords.split(args[args.index('--run-command') + 1])
+    end
+
+    def test_el_context_package_path_is_quoted_for_host_and_guest_shells
+        Dir.mktmpdir('custom context ') do |dir|
+            basename = %q(one-context-7.4.0-0.el9 '";$(printf INJECTED)*%.rpm)
+            package = File.join(dir, basename)
+            File.write(package, '')
+            h = helper
+            h.instance_variable_get(:@options)[:context] = dir
+            cmd, fallback_cmd = h.send(:context_command, '/tmp/disk.qcow2', {
+                'name' => 'linux', 'os' => 'rocky9'
+            })
+
+            # Parse through a real host shell without running virt-customize.
+            stdout, stderr, status = Open3.capture3('sh', '-c', "set -- #{cmd}; printf '%s\\n' \"$@\"")
+            assert status.success?, stderr
+            args = stdout.lines.map(&:chomp)
+            assert_equal "#{package}:/tmp", args[args.index('--copy-in') + 1]
+            assert_equal "/tmp/#{basename}", args[args.index('--delete') + 1]
+            guest_cmd = args[args.index('--run-command') + 1]
+            # Replace DNF with an argument printer; no installation is performed.
+            stdout, stderr, status = Open3.capture3('sh', '-c', "dnf() { printf '%s\\n' \"$@\"; }; #{guest_cmd}")
+            assert status.success?, stderr
+            assert_equal ['-y'] + dnf_options + ['install', "/tmp/#{basename}"],
+                         stdout.lines.map(&:chomp)
+            fallback_args = Shellwords.split(fallback_cmd)
+            assert_equal "#{package}:/tmp", fallback_args[fallback_args.index('--copy-in') + 1]
+            assert_equal "/tmp/#{basename}", fallback_args[fallback_args.index('--firstboot-install') + 1]
+        end
+    end
+
+    def test_dnf_network_options_and_shell_quoting
+        %w[rocky8 rocky9 rocky10 rhel8.10 rhel9.4 rhel10].each do |os|
+            h = helper
+            package = %q(/custom context/one-context '"*$(echo bad).rpm)
+            h.define_singleton_method(:detect_context_package) {|_| package }
+            primary, fallback = h.context_command('/disk', { 'name' => 'linux', 'os' => os })
+            args = dnf_install_args(primary)
+            %w[--setopt=strict=True --setopt=timeout=3 --setopt=*.timeout=3 --setopt=retries=1
+               --setopt=skip_if_unavailable=True --setopt=*.skip_if_unavailable=True].each do |arg|
+                assert_includes args, arg
+            end
+            refute_includes primary, '--disablerepo'
+            refute_includes primary, '--disableplugin'
+            [primary, fallback].each do |command|
+                refute_match(/epel-release|codeready-builder|subscription-manager repos/, command)
+            end
+            guest = Shellwords.split(primary)[Shellwords.split(primary).index('--run-command') + 1]
+            output, error, status = Open3.capture3('sh', '-c', "dnf() { printf '%s\\n' \"$@\"; }; #{guest}")
+            assert status.success?, error
+            assert_equal args.drop(1), output.lines.map(&:chomp)
+            assert_equal "/tmp/#{File.basename(package)}", args.last
         end
     end
 

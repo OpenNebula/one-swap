@@ -1223,15 +1223,12 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             when /^redhat-based8/, /^rhel8/, /^almalinux8/, /^rocky8/, /^ol8/, /^centos-stream8/
                 os = 'rhel8'
                 opts = [
-                    (" --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-8-$(arch)-rpms'" if guest_os =~ /^rhel8(?:\.|$)/),
-                    " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm'",
                     ' --copy-in %<context>s:/tmp',
-                    ' --install /tmp/%<basename>s',
+                    ' --run-command %<install>s',
                     ' --delete /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
-                ].compact
+                ]
                 fallback_opts = [
-                    ' --firstboot-install epel-release',
                     ' --copy-in %<context>s:/tmp',
                     ' --firstboot-install /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
@@ -1239,15 +1236,12 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             when /^redhat-based9/, /^rhel9/, /^almalinux9/, /^rocky9/, /^ol9/, /^centos-stream9/
                 os = 'rhel9'
                 opts = [
-                    (" --run-command 'subscription-manager repos --enable codeready-builder-for-rhel-9-$(arch)-rpms'" if guest_os =~ /^rhel9(?:\.|$)/),
-                    " --run-command 'yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm'",
                     ' --copy-in %<context>s:/tmp',
-                    ' --install /tmp/%<basename>s',
+                    ' --run-command %<install>s',
                     ' --delete /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
-                ].compact
+                ]
                 fallback_opts = [
-                    ' --firstboot-install epel-release',
                     ' --copy-in %<context>s:/tmp',
                     ' --firstboot-install /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
@@ -1256,7 +1250,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 os = 'rhel10'
                 opts = [
                     ' --copy-in %<context>s:/tmp',
-                    ' --install /tmp/%<basename>s',
+                    ' --run-command %<install>s',
                     ' --delete /tmp/%<basename>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
                 ]
@@ -1292,6 +1286,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 :context => context_fullpath,
                 :basename => context_basename
             }
+
+            if %w[rhel8 rhel9 rhel10].include?(os)
+                install_args = ['dnf', '-y', '--setopt=strict=True',
+                                '--setopt=timeout=3', '--setopt=*.timeout=3',
+                                '--setopt=retries=1', '--setopt=skip_if_unavailable=True',
+                                '--setopt=*.skip_if_unavailable=True',
+                                'install', "/tmp/#{context_basename}"]
+                # Quote the guest command, then quote it again for the host shell.
+                vars[:install] = Shellwords.escape(Shellwords.join(install_args))
+                vars[:context] = Shellwords.escape(context_fullpath)
+                vars[:basename] = Shellwords.escape(context_basename)
+            end
 
             cmd = base_cmd + opts.map {|c| c % vars }.join
             fallback_cmd = base_cmd + fallback_opts.map {|c| c % vars }.join
