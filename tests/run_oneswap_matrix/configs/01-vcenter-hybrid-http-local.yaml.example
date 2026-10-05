@@ -1,0 +1,37 @@
+# TEST_VM=example-vm
+# TEST_ENV=vcenter
+# TEST_METHOD=hybrid
+# TEST_TRANSFER=local-http
+# TEST_STORAGE=local
+---
+:vcenter: '<VCENTER_HOST>'
+:vuser: '<VCENTER_USER>'
+:vpass: '<VCENTER_PASSWORD>'
+:accept_cert: true
+
+:esxi_user: '<ESXI_USER>'
+:esxi_pass: '<ESXI_PASSWORD>'
+
+:skip_mac: true
+
+:datastore: '<VCENTER_DATASTORE_ID>'
+
+:hybrid: true
+:download_stripes: 4
+
+http_transfer: true
+http_host: 'ONESWAP_WORKER_IP'
+http_port: 29869
+
+:work_dir: '<WORK_DIR>'
+:qemu_ga_linux: true
+:virt_tools: '/usr/share/virt-tools'
+:delete: true
+:remove-vmtools: true
+
+:one_cluster:  '<ONE_CLUSTER_ID>'
+:one_datastore: '<ONE_SYSTEM_DATASTORE_ID>'
+
+:dev_prefix: 'sd'
+:cpu_model: 'Skylake-Server-noTSX-IBRS'
+:cpu: 1
