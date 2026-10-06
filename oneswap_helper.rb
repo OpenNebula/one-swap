@@ -1164,6 +1164,31 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         end
     end
 
+    # Only the context transaction suppresses recommendations; --qemu-ga keeps
+    # using the explicit install_pkg path. Return a guest-shell command.
+    def context_install_command(family, package)
+        case family
+        when 'rhel8', 'rhel9', 'rhel10'
+            Shellwords.join(['dnf', '-y', '--setopt=strict=True',
+                             '--setopt=timeout=3', '--setopt=*.timeout=3',
+                             '--setopt=retries=1', '--setopt=skip_if_unavailable=True',
+                             '--setopt=*.skip_if_unavailable=True',
+                             '--setopt=install_weak_deps=False', 'install', package])
+        when 'fedora'
+            Shellwords.join(['dnf', '--setopt=skip_if_unavailable=True', '-y',
+                             '--setopt=install_weak_deps=False', 'install', package])
+        when 'debian'
+            apt = ['apt-get', '-q', '-y', '-o', 'Dpkg::Options::=--force-confnew']
+            'export DEBIAN_FRONTEND=noninteractive; ' +
+                Shellwords.join(apt + ['update']) + '; ' +
+                Shellwords.join(apt + ['--no-install-recommends', 'install', package])
+        when 'opensuse'
+            Shellwords.join(['zypper', '-n', 'in', '-l', '--no-recommends', package])
+        else
+            raise ArgumentError, "Unsupported context package family: #{family.inspect}"
+        end
+    end
+
     def context_command(disk, osinfo)
         base_cmd = "virt-customize -q -a #{disk}"
         cmd = nil
@@ -1207,7 +1232,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 os = 'fedora'
                 opts = [
                     ' --copy-in %<context>s:/tmp',
-                    ' --install /tmp/%<basename>s',
+                    ' --run-command %<install>s',
                     ' --delete /tmp/%<basename>s',
                     " --run-command 'systemctl enable systemd-networkd'",
                     " --run-command 'systemctl disable systemd-networkd-wait-online'",
@@ -1215,7 +1240,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 ]
                 fallback_opts = [
                     ' --copy-in %<context>s:/tmp',
-                    ' --firstboot-install /tmp/%<basename>s',
+                    ' --firstboot-command %<install>s',
                     " --run-command 'systemctl enable systemd-networkd'",
                     " --run-command 'systemctl disable systemd-networkd-wait-online'",
                     " --run-command 'sed -i \"s/SELINUX=enforcing/SELINUX=disabled/\" /etc/selinux/config || exit 0'"
@@ -1230,7 +1255,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 ]
                 fallback_opts = [
                     ' --copy-in %<context>s:/tmp',
-                    ' --firstboot-install /tmp/%<basename>s',
+                    ' --firstboot-command %<install>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
                 ]
             when /^redhat-based9/, /^rhel9/, /^almalinux9/, /^rocky9/, /^ol9/, /^centos-stream9/
@@ -1243,7 +1268,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 ]
                 fallback_opts = [
                     ' --copy-in %<context>s:/tmp',
-                    ' --firstboot-install /tmp/%<basename>s',
+                    ' --firstboot-command %<install>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
                 ]
             when /^redhat-based10(?:\.|$)/, /^rhel10/, /^almalinux10/, /^rocky10/, /^ol10/
@@ -1256,7 +1281,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 ]
                 fallback_opts = [
                     ' --copy-in %<context>s:/tmp',
-                    ' --firstboot-install /tmp/%<basename>s',
+                    ' --firstboot-command %<install>s',
                     " --run-command 'systemctl enable NetworkManager.service || exit 0'"
                 ]
             when /^ubuntu/, /^debian/
@@ -1264,14 +1289,14 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 opts = [
                     ' --uninstall cloud-init',
                     ' --copy-in %<context>s:/tmp',
-                    ' --install /tmp/%<basename>s',
+                    ' --run-command %<install>s',
                     ' --delete /tmp/%<basename>s',
                     " --run-command 'systemctl enable network.service || exit 0'"
                 ]
                 fallback_opts = [
                     ' --uninstall cloud-init',
                     ' --copy-in %<context>s:/tmp',
-                    ' --firstboot-install /tmp/%<basename>s',
+                    ' --firstboot-command %<install>s',
                     " --run-command 'systemctl enable network.service || exit 0'"
                 ]
             end
@@ -1283,21 +1308,11 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
             context_basename = File.basename(context_fullpath)
             vars = {
-                :context => context_fullpath,
-                :basename => context_basename
+                :context => Shellwords.escape(context_fullpath),
+                :basename => Shellwords.escape(context_basename),
+                # Quote the guest command again for the host shell.
+                :install => Shellwords.escape(context_install_command(os, "/tmp/#{context_basename}"))
             }
-
-            if %w[rhel8 rhel9 rhel10].include?(os)
-                install_args = ['dnf', '-y', '--setopt=strict=True',
-                                '--setopt=timeout=3', '--setopt=*.timeout=3',
-                                '--setopt=retries=1', '--setopt=skip_if_unavailable=True',
-                                '--setopt=*.skip_if_unavailable=True',
-                                'install', "/tmp/#{context_basename}"]
-                # Quote the guest command, then quote it again for the host shell.
-                vars[:install] = Shellwords.escape(Shellwords.join(install_args))
-                vars[:context] = Shellwords.escape(context_fullpath)
-                vars[:basename] = Shellwords.escape(context_basename)
-            end
 
             cmd = base_cmd + opts.map {|c| c % vars }.join
             fallback_cmd = base_cmd + fallback_opts.map {|c| c % vars }.join
@@ -1308,13 +1323,23 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             return false unless context_fullpath
 
             context_basename = File.basename(context_fullpath)
-            cmd = base_cmd +
-                    " --copy-in #{context_fullpath}:/tmp"\
-                    " --install /tmp/#{context_basename}"\
-                    " --delete /tmp/#{context_basename}"
-            fallback_cmd = base_cmd +
-                            " --copy-in #{context_fullpath}:/tmp"\
-                            " --firstboot-install /tmp/#{context_basename}"
+            if os == 'alt'
+                # ALT uses APT-RPM; Debian's recommendation flags are not portable.
+                cmd = base_cmd +
+                      " --copy-in #{context_fullpath}:/tmp"\
+                      " --install /tmp/#{context_basename}"\
+                      " --delete /tmp/#{context_basename}"
+                fallback_cmd = base_cmd +
+                               " --copy-in #{context_fullpath}:/tmp"\
+                               " --firstboot-install /tmp/#{context_basename}"
+            else
+                package = "/tmp/#{context_basename}"
+                install = Shellwords.escape(context_install_command(os, package))
+                copy = " --copy-in #{Shellwords.escape(context_fullpath)}:/tmp"
+                cmd = base_cmd + copy +
+                      " --run-command #{install} --delete #{Shellwords.escape(package)}"
+                fallback_cmd = base_cmd + copy + " --firstboot-command #{install}"
+            end
 
         elsif guest_os.start_with?('freebsd')
             # may not mount properly sometimes due to internal fs
