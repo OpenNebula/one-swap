@@ -261,10 +261,22 @@ class NetAppShiftModeTest < Minitest::Test
 
                 h, commands, = conversion_helper(mount, work_dir, 1,
                                                  :libguestfs_path => '/var/lib/one/appliance')
-                h.send(:run_shift_conversion)
-
-                assert_match(%r{^LIBGUESTFS_PATH=/var/lib/one/appliance virt-v2v-in-place},
-                             commands.first)
+                # Exercise the real runner: the environment is supplied separately,
+                # rather than embedded in the shell command.
+                h.singleton_class.send(:remove_method, :run_cmd_report)
+                h.define_singleton_method(:show_wait_spinner) {|&block| block.call }
+                original = Open3.method(:capture3)
+                begin
+                    Open3.define_singleton_method(:capture3) do |env, command|
+                        commands << [env, command]
+                        ['', '', FakeStatus.new(true)]
+                    end
+                    h.send(:run_shift_conversion)
+                ensure
+                    Open3.define_singleton_method(:capture3, original)
+                end
+                assert_equal({ 'LIBGUESTFS_PATH' => '/var/lib/one/appliance' }, commands.first[0])
+                assert_match(/^virt-v2v-in-place/, commands.first[1])
             end
         end
     end
