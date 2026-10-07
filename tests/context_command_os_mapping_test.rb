@@ -115,7 +115,7 @@ class ContextCommandOsMappingTest < Minitest::Test
                 refute_includes cmd, 'codeready-builder', osinfo_id
                 refute_includes cmd, 'subscription-manager repos', osinfo_id
                 assert_includes fallback_cmd, " --copy-in #{package}:/tmp", osinfo_id
-                assert_includes fallback_cmd, " --firstboot-install #{package}", osinfo_id
+                assert_equal args, dnf_install_args(fallback_cmd, '--firstboot-command'), osinfo_id
                 refute_includes fallback_cmd, '--disablerepo', osinfo_id
                 refute_includes fallback_cmd, 'subscription-manager', osinfo_id
             end
@@ -143,7 +143,7 @@ class ContextCommandOsMappingTest < Minitest::Test
                     refute_includes command, 'https://dl.fedoraproject.org/pub/epel/'
                 end
                 assert_equal ['install', "/tmp/#{basename}"], dnf_install_args(cmd).last(2)
-                assert_includes fallback_cmd, " --firstboot-install /tmp/#{basename}"
+                assert_equal dnf_install_args(cmd), dnf_install_args(fallback_cmd, '--firstboot-command')
             end
         end
     end
@@ -151,23 +151,158 @@ class ContextCommandOsMappingTest < Minitest::Test
     def dnf_options
         %w[--setopt=strict=True --setopt=timeout=3 --setopt=*.timeout=3
            --setopt=retries=1 --setopt=skip_if_unavailable=True
-           --setopt=*.skip_if_unavailable=True]
+           --setopt=*.skip_if_unavailable=True --setopt=install_weak_deps=False]
     end
 
-    def test_non_el_commands_remain_unchanged
-        { 'fedora42' => 'fedora', 'debian12' => 'debian', 'ubuntu24.04' => 'debian',
-          'alt10' => 'alt', 'opensuse15.6' => 'opensuse', 'sles15.6' => 'opensuse' }.each do |os, family|
+    def guest_install_command(command, flag = '--run-command')
+        args = Shellwords.split(command)
+        args.fetch(args.index(flag) + 1)
+    end
+
+    def dnf_install_args(command, flag = '--run-command')
+        Shellwords.split(guest_install_command(command, flag))
+    end
+
+    def test_non_el_recommendation_suppression
+        # Alias selection is covered by test_direct_mappings; exercise each builder once.
+        { 'fedora42' => ['fedora', 'dnf', '--setopt=install_weak_deps=False'],
+          'debian12' => ['debian', 'apt-get', '--no-install-recommends'],
+          'opensuse15.6' => ['opensuse', 'zypper', '--no-recommends'] }.each do |os, (family, manager, option)|
             primary, fallback = assert_context_family(os, family)
-            assert_includes primary, " --install /tmp/one-context-#{family}.pkg"
-            assert_includes fallback, " --firstboot-install /tmp/one-context-#{family}.pkg"
-            refute_includes primary, 'dnf'
-            refute_includes primary, '--setopt'
+            guest = guest_install_command(primary)
+            assert_equal guest, guest_install_command(fallback, '--firstboot-command')
+            assert_includes guest, manager
+            assert_includes Shellwords.split(guest), option
+            refute_includes Shellwords.split(primary), '--install'
+            refute_includes Shellwords.split(fallback), '--firstboot-install'
+            assert_includes Shellwords.split(primary), '--delete'
+            refute_includes Shellwords.split(fallback), '--delete'
+            if family == 'debian'
+                assert_includes guest, 'export DEBIAN_FRONTEND=noninteractive'
+                assert_includes guest, 'update; apt-get'
+                assert_includes Shellwords.split(guest), 'Dpkg::Options::=--force-confnew'
+                assert_includes primary, '--uninstall cloud-init'
+            elsif family == 'fedora'
+                assert_includes Shellwords.split(guest), '--setopt=skip_if_unavailable=True'
+            else
+                assert_equal ['zypper', '-n', 'in', '-l', '--no-recommends',
+                              '/tmp/one-context-opensuse.pkg'], Shellwords.split(guest)
+            end
         end
     end
 
-    def dnf_install_args(command)
-        args = Shellwords.split(command)
-        Shellwords.split(args[args.index('--run-command') + 1])
+    def test_alt_commands_remain_unchanged
+        primary, fallback = assert_context_family('alt10', 'alt')
+        assert_includes primary, ' --install /tmp/one-context-alt.pkg'
+        assert_includes fallback, ' --firstboot-install /tmp/one-context-alt.pkg'
+        refute_includes primary, '--no-install-recommends'
+        refute_includes fallback, '--no-install-recommends'
+    end
+
+    def test_apt_invocations_and_final_install_status
+        Dir.mktmpdir('apt harness ') do |dir|
+            # An executable on PATH works with /bin/sh without nonportable
+            # hyphenated shell function names. NULs preserve argument boundaries.
+            executable = File.join(dir, 'apt-get')
+            File.write(executable, <<~'SH')
+                #!/bin/sh
+                printf '%s\0' "$DEBIAN_FRONTEND" "$@"
+                printf '\0'
+                case " $* " in
+                    *" update "*) exit "$REFRESH_STATUS" ;;
+                    *) exit "$INSTALL_STATUS" ;;
+                esac
+            SH
+            File.chmod(0755, executable)
+
+            h = helper
+            package = %q(/custom context/one-context '";$(printf INJECTED)*%.deb)
+            h.define_singleton_method(:detect_context_package) {|_| package }
+            primary, fallback = h.context_command('/disk', { 'name' => 'linux', 'os' => 'debian12' })
+            apt_options = ['-q', '-y', '-o', 'Dpkg::Options::=--force-confnew']
+            expected = [
+                ['noninteractive'] + apt_options + ['update'],
+                ['noninteractive'] + apt_options +
+                    ['--no-install-recommends', 'install', "/tmp/#{File.basename(package)}"]
+            ]
+
+            [[primary, '--run-command'], [fallback, '--firstboot-command']].each do |cmd, flag|
+                [0, 100].product([0, 42]).each do |refresh_status, install_status|
+                    env = {
+                        'PATH' => dir,
+                        'DEBIAN_FRONTEND' => 'interactive',
+                        'REFRESH_STATUS' => refresh_status.to_s,
+                        'INSTALL_STATUS' => install_status.to_s
+                    }
+                    output, error, status = Open3.capture3(
+                        env, '/bin/sh', '-c', guest_install_command(cmd, flag))
+                    label = "#{flag}: refresh=#{refresh_status}, install=#{install_status}"
+                    assert_equal expected, output.split("\0\0").map {|call| call.split("\0") }, label
+                    assert_equal install_status, status.exitstatus, "#{label}: #{error}"
+                end
+            end
+        end
+    end
+
+    def test_context_install_command_rejects_unsupported_family
+        error = assert_raises(ArgumentError) do
+            helper.context_install_command('unknown', '/tmp/context.rpm')
+        end
+        assert_includes error.message, 'unknown'
+    end
+
+    def test_explicit_qemu_ga_is_independent_of_context_recommendations
+        # package_injection is distro-independent; command families are tested separately.
+        [false, true].each do |enabled|
+            [false, true].each do |offline_failure|
+                h = helper
+                h.instance_variable_get(:@options).merge!(
+                    :qemu_ga_linux => enabled, :context_timeout => 123)
+                h.define_singleton_method(:detect_context_package) {|_| '/tmp/context.pkg' }
+                h.define_singleton_method(:ensure_guest_free_space) {|*_| true }
+                calls = []
+                h.define_singleton_method(:run_cmd_report) do |cmd, out = false, timeout: nil|
+                    calls << [cmd, out, timeout]
+                    ['', OpenStruct.new(:success? => !(offline_failure && calls.length == 1))]
+                end
+                capture_io { h.package_injection('/disk', { 'name' => 'linux', 'os' => 'rocky9' }) }
+                context_calls = calls.reject {|cmd, _, _| cmd.include?('--install qemu-guest-agent') }
+                assert_equal offline_failure ? 2 : 1, context_calls.length
+                context_calls.each do |cmd, _, timeout|
+                    assert_match(/install_weak_deps|no-install-recommends|no-recommends/, cmd)
+                    assert_equal 123, timeout
+                end
+                agent_calls = calls - context_calls
+                assert_equal enabled ? 1 : 0, agent_calls.length
+                if enabled
+                    assert_equal ['virt-customize -a /disk --install qemu-guest-agent', false, 123],
+                                 agent_calls.first
+                end
+            end
+        end
+    end
+
+    def test_non_el_paths_are_quoted_for_both_shells
+        { 'fedora42' => 'dnf', 'debian12' => 'apt-get',
+          'opensuse15.6' => 'zypper' }.each do |os, manager|
+            h = helper
+            package = %q(/custom context/one-context '";$(printf INJECTED)*%.pkg)
+            h.define_singleton_method(:detect_context_package) {|_| package }
+            primary, fallback = h.context_command('/disk', { 'name' => 'linux', 'os' => os })
+            [[primary, '--run-command'], [fallback, '--firstboot-command']].each do |cmd, flag|
+                output, error, status = Open3.capture3('sh', '-c', "set -- #{cmd}; printf '%s\\n' \"$@\"")
+                assert status.success?, error
+                args = output.lines.map(&:chomp)
+                assert_equal "#{package}:/tmp", args[args.index('--copy-in') + 1]
+                guest = args[args.index(flag) + 1]
+                # Stub the guest manager, including apt's metadata refresh.
+                script = "#{manager}() { printf '%s\\n' \"$DEBIAN_FRONTEND\" \"$@\"; }; #{guest}"
+                output, error, status = Open3.capture3('bash', '-c', script)
+                assert status.success?, error
+                assert_equal "/tmp/#{File.basename(package)}", output.lines.last.chomp
+                assert_includes output.lines.map(&:chomp), 'noninteractive' if manager == 'apt-get'
+            end
+        end
     end
 
     def test_el_context_package_path_is_quoted_for_host_and_guest_shells
@@ -195,7 +330,7 @@ class ContextCommandOsMappingTest < Minitest::Test
                          stdout.lines.map(&:chomp)
             fallback_args = Shellwords.split(fallback_cmd)
             assert_equal "#{package}:/tmp", fallback_args[fallback_args.index('--copy-in') + 1]
-            assert_equal "/tmp/#{basename}", fallback_args[fallback_args.index('--firstboot-install') + 1]
+            assert_equal guest_cmd, fallback_args[fallback_args.index('--firstboot-command') + 1]
         end
     end
 
@@ -249,7 +384,7 @@ class ContextCommandOsMappingTest < Minitest::Test
     def test_unsupported_cases_return_false_without_package_lookup
         string_cases = [
             'centos-stream10',
-            'redhat-based100'
+            'redhat-based100', 'amazon2', 'amazon2023', 'amzn2', 'amzn2023', 'alpine3.22'
         ]
         osinfo_cases = [
             {
