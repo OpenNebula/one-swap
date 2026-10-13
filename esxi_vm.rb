@@ -696,10 +696,13 @@ class ESXi::VirtualMachine
         # scsi0:1.fileName = "alma9-clone-000003.vmdk"
         vmx_data.each do |key, value|
             if key =~ /^(scsi|ide|sata)\d+:\d+\.fileName$/
-                if value.is_a?(Array)
-                    value.each {|v| vmdks << v }
-                else
-                    vmdks << value
+                device_type_key = key.sub(/\.fileName$/, '.deviceType')
+                next if Array(vmx_data[device_type_key]).any? do |type|
+                    type.is_a?(String) && /\A(?:atapi-cdrom|cdrom-image|cdrom-raw)\z/i.match?(type)
+                end
+
+                Array(value).each do |filename|
+                    vmdks << filename if filename.is_a?(String) && filename.end_with?('.vmdk')
                 end
             end
         end
