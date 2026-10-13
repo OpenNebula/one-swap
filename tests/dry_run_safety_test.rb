@@ -583,6 +583,41 @@ def delta_vm
         assert_equal '[datastore] shared/base.vmdk', root_vm.vddk_path('../shared/base.vmdk')
     end
 
+    def test_absolute_esxi_disk_paths_are_preserved
+        client = Struct.new(:logger).new(Logger.new(File::NULL))
+        vm = vddk_vm(client)
+
+        [
+            '/vmfs/volumes/datastore/shared/base.vmdk',
+            '/vmfs/volumes/Data Store/shared disks/base.vmdk',
+            '/vmfs/volumes/650c2b3a-12345678-abcd-001122334455/shared/base.vmdk'
+        ].each do |path|
+            assert_equal path, vm.send(:storage_path, path)
+            assert_equal path, vm.vddk_path(path)
+        end
+    end
+
+    def test_datastore_names_with_spaces_preserve_vmx_and_disk_paths
+        client = Struct.new(:logger).new(Logger.new(File::NULL))
+
+        ['folder', 'VM Folder', '.'].each do |folder|
+            vmx = folder == '.' ? 'guest.vmx' : "#{folder}/guest.vmx"
+            vm = vddk_vm(client, "[Data Store] #{vmx}")
+            storage = File.dirname("/vmfs/volumes/Data Store/#{vmx}")
+
+            assert_equal "/vmfs/volumes/Data Store/#{vmx}", vm.instance_variable_get(:@vmx_file)
+            assert_equal "#{storage}/base.vmdk", vm.send(:storage_path, 'base.vmdk')
+            assert_equal "#{storage}/../shared/base.vmdk", vm.send(:storage_path, '../shared/base.vmdk')
+            relative = folder == '.' ? 'base.vmdk' : "#{folder}/base.vmdk"
+            assert_equal "[Data Store] #{relative}", vm.vddk_path('base.vmdk')
+            assert_equal '[Data Store] shared/base.vmdk', vm.vddk_path('../shared/base.vmdk')
+            assert_equal '[Data Store] shared/base.vmdk', vm.vddk_path('/shared/base.vmdk')
+            absolute = '/vmfs/volumes/Data Store/shared/base.vmdk'
+            assert_equal absolute, vm.send(:storage_path, absolute)
+            assert_equal absolute, vm.vddk_path(absolute)
+        end
+    end
+
     def test_storage_paths_use_actual_vmx_location
         client = Struct.new(:logger).new(Logger.new(File::NULL))
         [
