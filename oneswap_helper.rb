@@ -1804,6 +1804,7 @@ _EOF_"
     def convert_vddk_disk(vddk_file, output_path, snapshot_moref = nil)
         snapshot_arg = snapshot_moref.nil? ? '' :
             " snapshot=#{Shellwords.escape(snapshot_moref)}"
+        run_cmd = "qemu-img convert -O raw -p -S 4k -W \"$uri\" #{Shellwords.escape(output_path)}"
         cmd = 'nbdkit -r -U - vddk'\
               " libdir=#{Shellwords.escape(@options[:vddk_path])}"\
               " server=#{Shellwords.escape(@options[:vcenter])}"\
@@ -1813,7 +1814,7 @@ _EOF_"
               " vm=moref=#{Shellwords.escape(@vm_moref)}"\
               "#{snapshot_arg}"\
               " file=#{Shellwords.escape(vddk_file)}"\
-              " --run 'qemu-img convert -O raw -p -S 4k -W \"$uri\" #{Shellwords.escape(output_path)}'"
+              " --run #{Shellwords.escape(run_cmd)}"
         puts "Running: #{cmd}"
         success = system(cmd)
         raise "Failed to convert #{vddk_file} with VDDK" unless success

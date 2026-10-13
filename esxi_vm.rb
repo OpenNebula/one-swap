@@ -35,9 +35,9 @@ class ESXi::VirtualMachine
         file = getallvms_info[:file]
         @datastore = file.split(' ').first.slice(1..-2)
         @vm_storage_relative = File.dirname(file.split('] ', 2)[1])
-        @vm_storage = "#{ESXi::Client::DATASTORES_PATH}/#{@datastore}/#{@name}"
+        @vm_storage = File.expand_path(@vm_storage_relative, "#{ESXi::Client::DATASTORES_PATH}/#{@datastore}")
         @clone_dir = "#{@vm_storage}/vmkfstools_output"
-        @vmx_file = "#{@vm_storage}/#{@name}.vmx"
+        @vmx_file = storage_path(File.basename(file.split('] ', 2)[1]))
         @vmx = {}
     end
 

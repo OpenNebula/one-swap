@@ -224,6 +224,31 @@ class DryRunSafetyTest < Minitest::Test
         refute_includes stdout, 'plaintext-password'
     end
 
+    def test_convert_vddk_disk_quotes_output_path_for_both_shells
+        output_path = %q{/tmp/work dir/owner's "disk"; $HOME $(false).raw}
+        h = helper(:vddk_path => '/opt/vddk', :vcenter => 'vcenter.invalid',
+                   :vuser => 'user', :work_dir => '/tmp/work dir')
+        h.instance_variable_set(:@vm_moref, 'vm-42')
+        h.define_singleton_method(:vddk_thumbprint) { 'AA:BB' }
+        command = nil
+        h.define_singleton_method(:system) {|cmd| command = cmd; true }
+
+        capture_io do
+            assert_equal output_path, h.send(:convert_vddk_disk, '[ds] base.vmdk', output_path, 'snapshot-42')
+        end
+
+        # Decode the outer shell argument, then the command nbdkit runs.
+        # No shell, nbdkit or qemu-img process is started.
+        args = Shellwords.split(command)
+        assert_equal ['nbdkit', '-r', '-U', '-', 'vddk', 'libdir=/opt/vddk',
+                      'server=vcenter.invalid', 'user=user', 'password=+/tmp/work dir/vpassfile',
+                      'thumbprint=AA:BB', 'vm=moref=vm-42', 'snapshot=snapshot-42',
+                      'file=[ds] base.vmdk', '--run'], args[0...-1]
+        assert_includes args.last, '"$uri"'
+        assert_equal ['qemu-img', 'convert', '-O', 'raw', '-p', '-S', '4k', '-W',
+                      '$uri', output_path], Shellwords.split(args.last)
+    end
+
     def test_delta_prepare_with_zero_disks_cleans_snapshot_and_does_not_write_state
         calls = []
         vm = delta_vm
@@ -415,12 +440,28 @@ class DryRunSafetyTest < Minitest::Test
         assert_equal '[datastore] shared/base.vmdk', root_vm.vddk_path('../shared/base.vmdk')
     end
 
+    def test_storage_paths_use_actual_vmx_location
+        client = Struct.new(:logger).new(Logger.new(File::NULL))
+        [
+            ['actual-folder/guest.vmx', '/vmfs/volumes/datastore/actual-folder'],
+            ['guest.vmx', '/vmfs/volumes/datastore'],
+            ['display-name/display-name.vmx', '/vmfs/volumes/datastore/display-name']
+        ].each do |vmx, storage|
+            vm = vddk_vm(client, "[datastore] #{vmx}")
+            assert_equal "#{storage}/base.vmdk", vm.send(:storage_path, 'base.vmdk')
+            assert_equal "#{storage}/vmkfstools_output", vm.instance_variable_get(:@clone_dir)
+            assert_equal "/vmfs/volumes/datastore/#{vmx}", vm.instance_variable_get(:@vmx_file)
+            assert_equal vm.send(:storage_path, 'base.vmdk'),
+                         vm.vddk_path('base.vmdk').sub('[datastore] ', '/vmfs/volumes/datastore/')
+        end
+    end
+
     def with_vddk_prepare(disks)
         Dir.mktmpdir('oneswap-vddk-test-') do |dir|
             client = Minitest::Mock.new
             client.expect(:logger, Logger.new(File::NULL))
             vm = vddk_vm(client)
-            clone_dir = '/vmfs/volumes/datastore/display-name/vmkfstools_output'
+            clone_dir = '/vmfs/volumes/datastore/actual-folder/vmkfstools_output'
             vm.define_singleton_method(:live_storage_transfer_precheck) { true }
             vm.define_singleton_method(:vmwaretools?) { true }
             vm.define_singleton_method(:refresh_vmx) { true }
@@ -465,7 +506,7 @@ class DryRunSafetyTest < Minitest::Test
             assert_equal 'vddk', state['transport']
             assert_nil state['clone_dir']
             assert_equal '/vmfs/volumes/datastore', state['datastore_path']
-            assert_equal '/vmfs/volumes/datastore/display-name', state['vm_storage_path']
+            assert_equal '/vmfs/volumes/datastore/actual-folder', state['vm_storage_path']
             assert_nil state['base_transfer_bytes']
             assert_nil state['base_transfer_seconds']
             assert_nil state['base_transfer_mib_s']
@@ -643,7 +684,7 @@ class DryRunSafetyTest < Minitest::Test
                 client.expect(:shutdown_vm, true, [42])
                 state['disks'].each do |disk|
                     ['active_snapshot_descriptor', 'active_snapshot_extent'].each do |key|
-                        source = "/vmfs/volumes/datastore/display-name/#{disk[key]}"
+                        source = "/vmfs/volumes/datastore/actual-folder/#{disk[key]}"
                         client.expect(:pull_files, true, [source, state['transfer_dir']])
                     end
                     client.expect(:apply_vmdk_snapshot_to_raw, true, [
@@ -683,7 +724,7 @@ class DryRunSafetyTest < Minitest::Test
             assert_delta_cleanup(workflow, { 'transport' => 'ssh', 'clone_dir' => clone_dir }, clone_dir)
             # Pre-transport-marker states retain their original cleanup behavior.
             assert_delta_cleanup(workflow, { 'clone_dir' => clone_dir }, clone_dir)
-            assert_delta_cleanup(workflow, {}, '/vmfs/volumes/datastore/display-name/vmkfstools_output')
+            assert_delta_cleanup(workflow, {}, '/vmfs/volumes/datastore/actual-folder/vmkfstools_output')
         end
     end
 
@@ -709,7 +750,7 @@ class DryRunSafetyTest < Minitest::Test
             client.expect(:remove_files, true, [clone_dir])
             client.expect(:create_dir, true, [clone_dir])
             client.expect(:clone_virtual_disk, true, [
-                '/vmfs/volumes/datastore/display-name/base.vmdk', "#{clone_dir}/base.vmdk"
+                '/vmfs/volumes/datastore/actual-folder/base.vmdk', "#{clone_dir}/base.vmdk"
             ])
             client.expect(:pull_files, true) do |source, destination|
                 assert_equal "#{clone_dir}/*", source
