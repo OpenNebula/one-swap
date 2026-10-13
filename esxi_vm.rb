@@ -33,7 +33,7 @@ class ESXi::VirtualMachine
         @annotation = getallvms_info[:annotation]
 
         file = getallvms_info[:file]
-        @datastore = file.split(' ').first.slice(1..-2)
+        @datastore = file.split('] ', 2).first.delete_prefix('[')
         @vm_storage_relative = File.dirname(file.split('] ', 2)[1])
         @vm_storage = File.expand_path(@vm_storage_relative, "#{ESXi::Client::DATASTORES_PATH}/#{@datastore}")
         @clone_dir = "#{@vm_storage}/vmkfstools_output"
@@ -470,6 +470,8 @@ class ESXi::VirtualMachine
     end
 
     def vddk_path(fileName)
+        return fileName if fileName.start_with?("#{ESXi::Client::DATASTORES_PATH}/")
+
         relative_path = File.expand_path(fileName, "/#{@vm_storage_relative}").sub(%r{\A/}, '')
         "[#{@datastore}] #{relative_path}"
     end
@@ -737,6 +739,8 @@ class ESXi::VirtualMachine
     # @return [String] Path prefixed with datastore path
     #
     def storage_path(fileName)
+        return fileName if fileName.start_with?("#{ESXi::Client::DATASTORES_PATH}/")
+
         "#{@vm_storage}/#{fileName}"
     end
 
