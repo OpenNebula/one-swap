@@ -492,6 +492,12 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     def cleanup_dirs
         return if @options[:dry_run]
 
+        state_file = "#{@options[:work_dir]}/esxi_client-#{@options[:name]}/oneswap-delta-state.yaml"
+        if @options[:delta] && File.file?(state_file)
+            puts "Retaining working directory for delta recovery: #{state_file}"
+            return
+        end
+
         if @options[:delete]
             puts "Deleting everything in and including #{"#{@options[:work_dir]}"}"
             FileUtils.rm_rf("#{@options[:work_dir]}")
@@ -2304,7 +2310,9 @@ def prepare_delta_conversion(vm)
         vm = client.get_vm_by_name(vm_name)
         raise "Unable to find VM #{vm_name} on ESXi host" unless vm
 
-        vm.live2kvm_cleanup(@options[:work_dir])
+        return true if vm.live2kvm_cleanup(@options[:work_dir])
+
+        raise 'Failed to clean up delta migration; retry with --delta-cleanup'
     end
 
     def run_dry_run_estimate
