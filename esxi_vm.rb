@@ -67,6 +67,7 @@ class ESXi::VirtualMachine
         return false unless live_storage_transfer_precheck
         puts 'Delta prepare prechecks completed.'
 
+        @delta_transport = block_given? ? 'vddk' : 'ssh'
         transfer_dir = live2kvm_transfer_dir(target_dir)
         puts "Cleaning previous delta work directories at #{transfer_dir}..."
         live_storage_transfer_cleanup(transfer_dir)
@@ -171,9 +172,11 @@ class ESXi::VirtualMachine
         end
 
         if block_given?
-            base_transfer_seconds = base_convert_seconds
-            base_transfer_bytes = local_tree_size(convert_dir)
-            base_transfer_mib_s = mib_per_second(base_transfer_bytes, base_transfer_seconds)
+            # VDDK copies and converts in one operation; it does not measure
+            # the SCP transfer used for the remaining delta during commit.
+            base_transfer_seconds = nil
+            base_transfer_bytes = nil
+            base_transfer_mib_s = nil
         else
         @logger.info "Transferring VM #{@name} storage to #{transfer_dir}"
         puts "Transferring base disk files to local work dir #{transfer_dir}..."
@@ -224,7 +227,8 @@ class ESXi::VirtualMachine
             'transfer_dir' => transfer_dir,
             'convert_dir' => convert_dir,
             'results_dir' => results_dir,
-            'clone_dir' => @clone_dir,
+            'transport' => @delta_transport,
+            'clone_dir' => @delta_transport == 'vddk' ? nil : @clone_dir,
             # Delta size is only a point-in-time value while the VM keeps running;
             # it can continue growing until the final commit phase shuts it down.
             'delta_size_bytes' => nil,
@@ -253,7 +257,8 @@ class ESXi::VirtualMachine
         transfer_dir = state['transfer_dir']
         convert_dir = state['convert_dir']
         results_dir = state['results_dir']
-        @clone_dir = state['clone_dir'] || @clone_dir
+        @delta_transport = state['transport'] || 'ssh'
+        @clone_dir = state.fetch('clone_dir', @clone_dir)
         disks = state['disks']
         if !disks.is_a?(Array) || disks.empty?
             @logger.error 'Prepared delta state contains no disks; aborting before VM shutdown'
@@ -657,7 +662,11 @@ class ESXi::VirtualMachine
     end
 
     def cleanup_clone_dir(state)
-        clone_dir = state['clone_dir'] || @clone_dir
+        return if state['transport'] == 'vddk'
+
+        # Older states without the key use the VM's default clone directory.
+        # An explicit nil means there is no remote clone directory to remove.
+        clone_dir = state.fetch('clone_dir', @clone_dir)
         if clone_dir.to_s.empty? || !clone_dir.start_with?(ESXi::Client::DATASTORES_PATH)
             puts 'Warning: ESXi clone directory is missing or unsafe; skipping remote clone cleanup.'
             return
@@ -710,8 +719,10 @@ class ESXi::VirtualMachine
     def live_storage_transfer_cleanup(transfer_dir, reason = nil)
         @logger.error "Aborting live storage transfer due to #{reason}" if reason
 
-        @logger.info "Cleaning disk clone directory on ESXi host at #{@clone_dir}"
-        @client.remove_files(@clone_dir)
+        if @delta_transport != 'vddk' && !@clone_dir.to_s.empty?
+            @logger.info "Cleaning disk clone directory on ESXi host at #{@clone_dir}"
+            @client.remove_files(@clone_dir)
+        end
 
         @logger.info "Cleaning local transfer directory at #{transfer_dir}"
         FileUtils.remove_dir(transfer_dir) if Dir.exist?(transfer_dir)

@@ -421,7 +421,6 @@ class DryRunSafetyTest < Minitest::Test
             client.expect(:logger, Logger.new(File::NULL))
             vm = vddk_vm(client)
             clone_dir = '/vmfs/volumes/datastore/display-name/vmkfstools_output'
-            client.expect(:remove_files, true, [clone_dir])
             vm.define_singleton_method(:live_storage_transfer_precheck) { true }
             vm.define_singleton_method(:vmwaretools?) { true }
             vm.define_singleton_method(:refresh_vmx) { true }
@@ -440,14 +439,17 @@ class DryRunSafetyTest < Minitest::Test
             'os-000001.vmdk' => '../os/base.vmdk',
             'data-000001.vmdk' => '/shared/base.vmdk'
         }
-        with_vddk_prepare(disks) do |vm, _client, dir, clone_dir|
+        with_vddk_prepare(disks) do |vm, _client, dir, _clone_dir|
             calls = []
             state = nil
+            now = Time.at(1000)
             capture_io do
-                state = vm.live2kvm_prepare(dir) do |parent, output|
-                    calls << [parent, output]
-                    File.write(output, 'raw')
-                    output
+                Time.stub(:now, lambda { now += 1 }) do
+                    state = vm.live2kvm_prepare(dir) do |parent, output|
+                        calls << [parent, output]
+                        File.write(output, 'raw')
+                        output
+                    end
                 end
             end
             transfer = File.join(dir, 'esxi_client-display-name')
@@ -460,11 +462,17 @@ class DryRunSafetyTest < Minitest::Test
             assert_equal transfer, state['transfer_dir']
             assert_equal convert, state['convert_dir']
             assert_equal File.join(dir, 'esxi2kvm-display-name'), state['results_dir']
-            assert_equal clone_dir, state['clone_dir']
+            assert_equal 'vddk', state['transport']
+            assert_nil state['clone_dir']
             assert_equal '/vmfs/volumes/datastore', state['datastore_path']
             assert_equal '/vmfs/volumes/datastore/display-name', state['vm_storage_path']
-            assert_equal 6, state['base_transfer_bytes']
+            assert_nil state['base_transfer_bytes']
+            assert_nil state['base_transfer_seconds']
+            assert_nil state['base_transfer_mib_s']
             assert_equal 6, state['base_convert_bytes']
+            assert_equal 2.0, state['base_convert_seconds']
+            assert_in_delta 6.0 / (1024 * 1024) / state['base_convert_seconds'],
+                            state['base_convert_mib_s'], 1e-12
             assert_equal disks.each_with_index.map {|(active, parent), index|
                 {
                     'active_snapshot_descriptor' => active,
@@ -473,14 +481,13 @@ class DryRunSafetyTest < Minitest::Test
                     'converted_raw_base_path' => outputs[index]
                 }
             }, state['disks']
-            # The strict client mock rejects create_dir, clone_virtual_disk,
-            # pull_files and convert_vmdk: none may run for this transport.
+            # The strict client mock rejects remove_files, create_dir,
+            # clone_virtual_disk, pull_files and convert_vmdk: none may run for this transport.
         end
     end
 
     def test_vddk_prepare_exception_removes_partial_files_and_keeps_snapshot_for_cleanup
-        with_vddk_prepare('disk-000001.vmdk' => 'base.vmdk') do |vm, client, dir, clone_dir|
-            client.expect(:remove_files, true, [clone_dir])
+        with_vddk_prepare('disk-000001.vmdk' => 'base.vmdk') do |vm, _client, dir, _clone_dir|
             result = nil
             output, = capture_io do
                 result = vm.live2kvm_prepare(dir) do |_parent, target|
@@ -497,13 +504,12 @@ class DryRunSafetyTest < Minitest::Test
     end
 
     def test_vddk_prepare_zero_disks_removes_snapshot_and_stale_state
-        with_vddk_prepare({}) do |vm, client, dir, clone_dir|
+        with_vddk_prepare({}) do |vm, _client, dir, _clone_dir|
             transfer = File.join(dir, 'esxi_client-display-name')
             FileUtils.mkdir_p(transfer)
             File.write(File.join(transfer, 'oneswap-delta-state.yaml'), 'stale state')
             snapshots = []
             vm.define_singleton_method(:cleanup_snapshot) {|state| snapshots << state }
-            client.expect(:remove_files, true, [clone_dir])
             capture_io do
                 assert_equal false, vm.live2kvm_prepare(dir) { flunk 'No disks should be converted' }
             end
@@ -598,6 +604,195 @@ class DryRunSafetyTest < Minitest::Test
     def test_failed_vddk_prepare_prevents_commit_and_image_creation
         assert_delta_workflow(:run_delta_conversion, true, false)
         assert_delta_workflow(:run_delta_prepare, true, false)
+    end
+
+    def with_prepared_delta(overrides = {})
+        Dir.mktmpdir('oneswap-cleanup-test-') do |dir|
+            client = Minitest::Mock.new
+            client.expect(:logger, Logger.new(File::NULL))
+            vm = vddk_vm(client)
+            transfer = File.join(dir, 'esxi_client-display-name')
+            convert = File.join(transfer, 'convert')
+            FileUtils.mkdir_p(convert)
+            base = File.join(convert, 'disk0.raw')
+            File.write(base, 'raw')
+            state = {
+                'snapshot_name' => 'OneSwap prepare',
+                'transfer_dir' => transfer,
+                'convert_dir' => convert,
+                'results_dir' => File.join(dir, 'esxi2kvm-display-name'),
+                'disks' => [{
+                    'active_snapshot_descriptor' => 'disk-000001.vmdk',
+                    'active_snapshot_extent' => 'disk-000001-sesparse.vmdk',
+                    'converted_raw_base_path' => base
+                }]
+            }.merge(overrides)
+            File.write(File.join(transfer, 'oneswap-delta-state.yaml'), state.to_yaml)
+            yield vm, client, dir, state
+            client.verify
+        end
+    end
+
+    def assert_delta_cleanup(workflow, state_fields, remote_dir)
+        with_prepared_delta(state_fields) do |vm, client, dir, state|
+            # Snapshot cleanup must still run even when remote clone cleanup is skipped.
+            client.expect(:snapshot_id_by_name, 7, [42, 'OneSwap prepare'])
+            client.expect(:remove_snapshot_vm, true, [42, 7])
+            client.expect(:remove_files, true, [remote_dir]) if remote_dir
+            if workflow == :live2kvm_commit
+                client.expect(:shutdown_vm, true, [42])
+                state['disks'].each do |disk|
+                    ['active_snapshot_descriptor', 'active_snapshot_extent'].each do |key|
+                        source = "/vmfs/volumes/datastore/display-name/#{disk[key]}"
+                        client.expect(:pull_files, true, [source, state['transfer_dir']])
+                    end
+                    client.expect(:apply_vmdk_snapshot_to_raw, true, [
+                        File.join(state['transfer_dir'], disk['active_snapshot_extent']),
+                        disk['converted_raw_base_path']
+                    ])
+                    client.expect(:os_morph, true, [disk['converted_raw_base_path'],
+                                                  ESXi::VirtualMachine::VIRT_V2V_OPTIONS_EXTRA])
+                end
+                vm.define_singleton_method(:refresh_vmx) do
+                    @vmx = { 'scsi0:0.fileName' => 'base.vmdk' }
+                end
+            end
+            capture_io do
+                result = vm.public_send(workflow, dir)
+                assert_equal workflow == :live2kvm_commit ? state['results_dir'] : true, result
+            end
+            refute_path_exists state['transfer_dir']
+            if workflow == :live2kvm_commit
+                assert_equal 'raw', File.read(File.join(state['results_dir'], 'disk0.raw'))
+            end
+        end
+    end
+
+    def test_vddk_commit_and_cleanup_skip_remote_clone_removal
+        [:live2kvm_commit, :live2kvm_cleanup].each do |workflow|
+            [nil, '/vmfs/volumes/datastore/unused/vmkfstools_output'].each do |clone_dir|
+                assert_delta_cleanup(workflow, { 'transport' => 'vddk', 'clone_dir' => clone_dir }, nil)
+            end
+            assert_delta_cleanup(workflow, { 'transport' => 'vddk' }, nil)
+        end
+    end
+
+    def test_legacy_commit_and_cleanup_remove_remote_clone_directory
+        clone_dir = '/vmfs/volumes/datastore/legacy/vmkfstools_output'
+        [:live2kvm_commit, :live2kvm_cleanup].each do |workflow|
+            assert_delta_cleanup(workflow, { 'transport' => 'ssh', 'clone_dir' => clone_dir }, clone_dir)
+            # Pre-transport-marker states retain their original cleanup behavior.
+            assert_delta_cleanup(workflow, { 'clone_dir' => clone_dir }, clone_dir)
+            assert_delta_cleanup(workflow, {}, '/vmfs/volumes/datastore/display-name/vmkfstools_output')
+        end
+    end
+
+    def test_commit_and_cleanup_safely_skip_nil_or_empty_clone_directory
+        [:live2kvm_commit, :live2kvm_cleanup].each do |workflow|
+            [nil, ''].each do |clone_dir|
+                assert_delta_cleanup(workflow, { 'clone_dir' => clone_dir }, nil)
+            end
+        end
+    end
+
+    def test_vddk_commit_failure_cleans_local_files_without_remote_clone_removal
+        with_prepared_delta('transport' => 'vddk') do |vm, client, dir, state|
+            client.expect(:shutdown_vm, false, [42])
+            assert_equal false, vm.live2kvm_commit(dir)
+            refute_path_exists state['transfer_dir']
+        end
+    end
+
+    def test_legacy_prepare_retains_separate_transfer_and_conversion_metrics
+        with_vddk_prepare('disk-000001.vmdk' => 'base.vmdk') do |vm, client, dir, clone_dir|
+            transfer = File.join(dir, 'esxi_client-display-name')
+            client.expect(:remove_files, true, [clone_dir])
+            client.expect(:create_dir, true, [clone_dir])
+            client.expect(:clone_virtual_disk, true, [
+                '/vmfs/volumes/datastore/display-name/base.vmdk', "#{clone_dir}/base.vmdk"
+            ])
+            client.expect(:pull_files, true) do |source, destination|
+                assert_equal "#{clone_dir}/*", source
+                assert_equal transfer, destination
+                File.write(File.join(destination, 'base.vmdk'), 'vmdk')
+                true
+            end
+            client.expect(:convert_vmdk, true) do |source, destination, format|
+                assert_equal File.join(transfer, 'base.vmdk'), source
+                assert_equal File.join(transfer, 'convert/base.raw'), destination
+                assert_equal 'raw', format
+                File.write(destination, 'raw')
+                true
+            end
+            state = nil
+            capture_io { state = vm.live2kvm_prepare(dir) }
+            assert_equal 'ssh', state['transport']
+            assert_equal clone_dir, state['clone_dir']
+            assert_equal 4, state['base_transfer_bytes']
+            assert_equal 3, state['base_convert_bytes']
+            ['base_transfer_seconds', 'base_convert_seconds',
+             'base_transfer_mib_s', 'base_convert_mib_s'].each do |key|
+                assert_operator state[key], :>, 0, key
+            end
+            assert_equal state, vm.live2kvm_state(dir)
+        end
+    end
+
+    def assert_delta_dry_run_metrics(state, expected_rate, expected_source)
+        Dir.mktmpdir('oneswap-estimate-test-') do |dir|
+            h = helper(:work_dir => dir, :name => 'test-vm',
+                       :dry_run_source_export_mib_s => 40,
+                       :dry_run_qcow2_conversion_mib_s => 50,
+                       :dry_run_delta_os_morph_seconds => 30,
+                       :dry_run_guest_customization_seconds => 10)
+            h.define_singleton_method(:get_esxi_host) { 'esxi.invalid' }
+            h.define_singleton_method(:read_metrics) { {} }
+            client = Minitest::Mock.new
+            vm = Minitest::Mock.new
+            # Run both the calculation and the full reporting entry point.
+            2.times do
+                client.expect(:get_vm_by_name, vm, ['test-vm'])
+                vm.expect(:live2kvm_state, state, [dir])
+                vm.expect(:live2kvm_current_delta_size, {
+                    :bytes => 1024 * 1024, :source => 'test delta', :paths => [], :refreshed => true
+                }, [dir])
+            end
+            ESXi::Client.stub(:new, client) do
+                info = h.send(:dry_run_delta_info)
+                refute_nil info
+                assert_equal expected_rate, info[:source_rate]
+                assert_equal expected_source, info[:source_rate_source]
+                assert_equal 80, info[:apply_rate]
+                output, = capture_io { h.send(:run_delta_dry_run_estimate) }
+                label = expected_source == :prepare_measured ? 'measured during prepare' : 'configured fallback, not measured'
+                assert_includes output, "source/delta transfer: #{expected_rate.to_f} MiB/s (#{label})"
+                assert_includes output, 'total estimated downtime/import-ready time:'
+                refute_match(/NaN|Infinity/, output)
+            end
+            client.verify
+            vm.verify
+        end
+    end
+
+    def test_delta_dry_run_uses_fallback_for_nil_vddk_transfer_metrics
+        assert_delta_dry_run_metrics({
+            'transport' => 'vddk', 'base_transfer_bytes' => nil,
+            'base_transfer_seconds' => nil, 'base_transfer_mib_s' => nil,
+            'base_convert_bytes' => 1024 * 1024, 'base_convert_seconds' => 0.0125,
+            'base_convert_mib_s' => 80
+        }, 40, :configured_fallback)
+    end
+
+    def test_delta_dry_run_preserves_old_state_transfer_metrics
+        assert_delta_dry_run_metrics({
+            'base_transfer_bytes' => 1024 * 1024, 'base_transfer_seconds' => 0.01,
+            'base_transfer_mib_s' => 100, 'base_convert_bytes' => 1024 * 1024,
+            'base_convert_mib_s' => 80
+        }, 100, :prepare_measured)
+    end
+
+    def test_delta_dry_run_uses_fallback_when_old_state_has_no_transfer_metrics
+        assert_delta_dry_run_metrics({ 'base_convert_mib_s' => 80 }, 40, :configured_fallback)
     end
 
 end
