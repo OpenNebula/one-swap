@@ -314,6 +314,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         end
 
         password = options[:vpass] || OpenNebulaHelper::OneHelper.get_password
+        options[:vpass] = password
         {
             :user     => options[:vuser],
             :password => password,
@@ -1047,7 +1048,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         puts "Running: #{cmd}"
         show_wait_spinner do
             if timeout && timeout.to_i > 0
-                stdout, stderr, status, timed_out = run_cmd_with_timeout(cmd, timeout.to_i, env)
+                stdout, stderr, status, timed_out = run_cmd_with_timeout(cmd, timeout.to_i, env: env)
             else
                 stdout, stderr, status = Open3.capture3(env, cmd)
             end
@@ -1067,7 +1068,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     # Runs a command, terminating it if exceeds the given amount of seconds
     #
     # @return [Array] [stdout, stderr, status, timed_out]
-    def run_cmd_with_timeout(cmd, timeout, env = {})
+    def run_cmd_with_timeout(cmd, timeout, env: {})
         timed_out = false
         stdout = stderr = ''
         status = nil
@@ -1828,7 +1829,7 @@ _EOF_"
     def vddk_thumbprint
         return @options[:vddk_thumb] if @options[:vddk_thumb]
 
-        tcp_client = TCPSocket.new(@options[:vcenter], 443)
+        tcp_client = TCPSocket.new(@options[:vcenter], @options[:port] || 443)
         ssl_context = OpenSSL::SSL::SSLContext.new
         ssl_client = OpenSSL::SSL::SSLSocket.new(tcp_client, ssl_context)
         ssl_client.connect
@@ -1931,6 +1932,7 @@ _EOF_"
         cmd = 'nbdkit -r -U - vddk'\
               " libdir=#{Shellwords.escape(@options[:vddk_path])}"\
               " server=#{Shellwords.escape(@options[:vcenter])}"\
+              " port=#{Shellwords.escape((@options[:port] || 443).to_s)}"\
               " user=#{Shellwords.escape(@options[:vuser])}"\
               " password=+#{Shellwords.escape("#{@options[:work_dir]}/vpassfile")}"\
               " thumbprint=#{Shellwords.escape(vddk_thumbprint)}"\
@@ -4197,8 +4199,8 @@ GUESTFISH
             Dir.mkdir(conv_path) unless Dir.exist?(conv_path)
             Dir.mkdir(tran_path) unless Dir.exist?(tran_path)
 
-            password_file = File.open("#{@options[:work_dir]}/vpassfile", 'w')
-            password_file.print @options[:vpass]
+            password_file = File.open("#{@options[:work_dir]}/vpassfile", 'w', 0o600)
+            password_file.print connection_options('vm', @options)[:password]
             password_file.chmod(0o600)
             password_file.close
 

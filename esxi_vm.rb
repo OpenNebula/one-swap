@@ -149,7 +149,8 @@ class ESXi::VirtualMachine
                     output_path = "#{convert_dir}/disk#{disks.length}.raw"
                     puts "Copying base disk via VDDK: #{parent_disk}..."
                     t0 = Time.now
-                    converted_raw_base_path = yield(parent_disk, output_path)
+                    yield(parent_disk, output_path)
+                    raise "VDDK conversion output is missing: #{output_path}" unless File.exist?(output_path)
                     elapsed = Time.now - t0
                     puts "Copied base disk #{parent_disk} via VDDK in #{format_elapsed(elapsed)}."
                     base_convert_seconds += elapsed
@@ -158,7 +159,7 @@ class ESXi::VirtualMachine
                         'active_snapshot_descriptor' => disk,
                         'active_snapshot_extent' => "#{disk_name}-sesparse.vmdk",
                         'parent_base_descriptor' => parent_disk,
-                        'converted_raw_base_path' => converted_raw_base_path
+                        'converted_raw_base_path' => output_path
                     }
                     next
                 rescue StandardError => e
@@ -199,43 +200,43 @@ class ESXi::VirtualMachine
             base_transfer_bytes = nil
             base_transfer_mib_s = nil
         else
-        @logger.info "Transferring VM #{@name} storage to #{transfer_dir}"
-        puts "Transferring base disk files to local work dir #{transfer_dir}..."
-        t0 = Time.now
-        if !@client.pull_files("#{@clone_dir}/*", transfer_dir)
-            message = 'failed disk transfer'
-            live_storage_transfer_cleanup(transfer_dir, message)
-            return false
-        end
-        base_transfer_seconds = Time.now - t0
-        base_transfer_bytes = local_tree_size(transfer_dir)
-        base_transfer_mib_s = mib_per_second(base_transfer_bytes, base_transfer_seconds)
-        puts "Transferred base disk files in #{format_elapsed(base_transfer_seconds)}."
-
-        cloned_vmdk_list = Dir.children(transfer_dir)
-
-        Dir.mkdir(convert_dir) unless Dir.exist?(convert_dir)
-        cloned_vmdk_list.each do |file|
-            next if file.end_with?('-flat.vmdk')
-
-            source = "#{transfer_dir}/#{file}"
-            target = "#{convert_dir}/#{file.chomp('.vmdk')}.raw"
-            format = 'raw'
-
-            puts "Converting base disk to raw: #{file}..."
+            @logger.info "Transferring VM #{@name} storage to #{transfer_dir}"
+            puts "Transferring base disk files to local work dir #{transfer_dir}..."
             t0 = Time.now
-            if @client.convert_vmdk(source, target, format)
-                elapsed = Time.now - t0
-                base_convert_seconds += elapsed
-                base_convert_bytes += File.size(target) if File.exist?(target)
-                puts "Converted #{file} to raw in #{format_elapsed(elapsed)}."
-                next
+            if !@client.pull_files("#{@clone_dir}/*", transfer_dir)
+                message = 'failed disk transfer'
+                live_storage_transfer_cleanup(transfer_dir, message)
+                return false
             end
+            base_transfer_seconds = Time.now - t0
+            base_transfer_bytes = local_tree_size(transfer_dir)
+            base_transfer_mib_s = mib_per_second(base_transfer_bytes, base_transfer_seconds)
+            puts "Transferred base disk files in #{format_elapsed(base_transfer_seconds)}."
 
-            message = "failed disk #{source} conversion"
-            live_storage_transfer_cleanup(transfer_dir, message)
-            return false
-        end
+            cloned_vmdk_list = Dir.children(transfer_dir)
+
+            Dir.mkdir(convert_dir) unless Dir.exist?(convert_dir)
+            cloned_vmdk_list.each do |file|
+                next if file.end_with?('-flat.vmdk')
+
+                source = "#{transfer_dir}/#{file}"
+                target = "#{convert_dir}/#{file.chomp('.vmdk')}.raw"
+                format = 'raw'
+
+                puts "Converting base disk to raw: #{file}..."
+                t0 = Time.now
+                if @client.convert_vmdk(source, target, format)
+                    elapsed = Time.now - t0
+                    base_convert_seconds += elapsed
+                    base_convert_bytes += File.size(target) if File.exist?(target)
+                    puts "Converted #{file} to raw in #{format_elapsed(elapsed)}."
+                    next
+                end
+
+                message = "failed disk #{source} conversion"
+                live_storage_transfer_cleanup(transfer_dir, message)
+                return false
+            end
         end
         base_convert_mib_s = mib_per_second(base_convert_bytes, base_convert_seconds)
 
