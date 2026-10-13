@@ -395,4 +395,209 @@ class DryRunSafetyTest < Minitest::Test
         assert h.send(:virtio_path_configured?)
         refute_includes out, 'no VirtIO driver ISO is configured'
     end
+
+    # Construct the real VM metadata without constructing an SSH client.
+    def vddk_vm(client, vmx = '[datastore] actual-folder/guest.vmx')
+        info = ESXi::VirtualMachine::VM_INFO_KEYS.to_h {|key| [key, ''] }
+        info.merge!(:name => 'display-name', :vmid => 42, :file => vmx)
+        ESXi::VirtualMachine.new(client, info)
+    end
+
+    def test_vddk_paths_use_vmx_folder_and_normalize_parent_hints
+        client = Struct.new(:logger).new(Logger.new(File::NULL))
+        vm = vddk_vm(client)
+        assert_equal '[datastore] actual-folder/base.vmdk', vm.vddk_path('base.vmdk')
+        assert_equal '[datastore] shared/base.vmdk', vm.vddk_path('../shared/base.vmdk')
+        assert_equal '[datastore] shared/base.vmdk', vm.vddk_path('/shared/base.vmdk')
+
+        root_vm = vddk_vm(client, '[datastore] guest.vmx')
+        assert_equal '[datastore] base.vmdk', root_vm.vddk_path('base.vmdk')
+        assert_equal '[datastore] shared/base.vmdk', root_vm.vddk_path('../shared/base.vmdk')
+    end
+
+    def with_vddk_prepare(disks)
+        Dir.mktmpdir('oneswap-vddk-test-') do |dir|
+            client = Minitest::Mock.new
+            client.expect(:logger, Logger.new(File::NULL))
+            vm = vddk_vm(client)
+            clone_dir = '/vmfs/volumes/datastore/display-name/vmkfstools_output'
+            client.expect(:remove_files, true, [clone_dir])
+            vm.define_singleton_method(:live_storage_transfer_precheck) { true }
+            vm.define_singleton_method(:vmwaretools?) { true }
+            vm.define_singleton_method(:refresh_vmx) { true }
+            vm.define_singleton_method(:active_disks) { disks.keys }
+            vm.define_singleton_method(:vmdk_info) do |disk|
+                { 'parentFileNameHint' => disks.fetch(disk) }
+            end
+            client.expect(:snapshot_vm, true, [42, String, Hash])
+            yield vm, client, dir, clone_dir
+            client.verify
+        end
+    end
+
+    def test_vddk_prepare_persists_multiple_disks_without_legacy_clone_or_transfer
+        disks = {
+            'os-000001.vmdk' => '../os/base.vmdk',
+            'data-000001.vmdk' => '/shared/base.vmdk'
+        }
+        with_vddk_prepare(disks) do |vm, _client, dir, clone_dir|
+            calls = []
+            state = nil
+            capture_io do
+                state = vm.live2kvm_prepare(dir) do |parent, output|
+                    calls << [parent, output]
+                    File.write(output, 'raw')
+                    output
+                end
+            end
+            transfer = File.join(dir, 'esxi_client-display-name')
+            convert = File.join(transfer, 'convert')
+            outputs = ["#{convert}/disk0.raw", "#{convert}/disk1.raw"]
+            assert_equal disks.values.zip(outputs), calls
+            assert_equal state, YAML.load_file(File.join(transfer, 'oneswap-delta-state.yaml'))
+            assert_equal 'display-name', state['vm_name']
+            assert_equal vm.live2kvm_snapshot_name, state['snapshot_name']
+            assert_equal transfer, state['transfer_dir']
+            assert_equal convert, state['convert_dir']
+            assert_equal File.join(dir, 'esxi2kvm-display-name'), state['results_dir']
+            assert_equal clone_dir, state['clone_dir']
+            assert_equal '/vmfs/volumes/datastore', state['datastore_path']
+            assert_equal '/vmfs/volumes/datastore/display-name', state['vm_storage_path']
+            assert_equal 6, state['base_transfer_bytes']
+            assert_equal 6, state['base_convert_bytes']
+            assert_equal disks.each_with_index.map {|(active, parent), index|
+                {
+                    'active_snapshot_descriptor' => active,
+                    'active_snapshot_extent' => active.sub('.vmdk', '-sesparse.vmdk'),
+                    'parent_base_descriptor' => parent,
+                    'converted_raw_base_path' => outputs[index]
+                }
+            }, state['disks']
+            # The strict client mock rejects create_dir, clone_virtual_disk,
+            # pull_files and convert_vmdk: none may run for this transport.
+        end
+    end
+
+    def test_vddk_prepare_exception_removes_partial_files_and_keeps_snapshot_for_cleanup
+        with_vddk_prepare('disk-000001.vmdk' => 'base.vmdk') do |vm, client, dir, clone_dir|
+            client.expect(:remove_files, true, [clone_dir])
+            result = nil
+            output, = capture_io do
+                result = vm.live2kvm_prepare(dir) do |_parent, target|
+                    File.write(target, 'partial conversion')
+                    raise IOError, 'controlled conversion failure'
+                end
+            end
+            assert_equal false, result
+            refute_path_exists File.join(dir, 'esxi_client-display-name')
+            assert_empty Dir.children(dir)
+            assert_includes output, "Warning: VM snapshot #{vm.live2kvm_snapshot_name} remains active."
+            assert_includes output, 'Run --delta-cleanup before retrying.'
+        end
+    end
+
+    def test_vddk_prepare_zero_disks_removes_snapshot_and_stale_state
+        with_vddk_prepare({}) do |vm, client, dir, clone_dir|
+            transfer = File.join(dir, 'esxi_client-display-name')
+            FileUtils.mkdir_p(transfer)
+            File.write(File.join(transfer, 'oneswap-delta-state.yaml'), 'stale state')
+            snapshots = []
+            vm.define_singleton_method(:cleanup_snapshot) {|state| snapshots << state }
+            client.expect(:remove_files, true, [clone_dir])
+            capture_io do
+                assert_equal false, vm.live2kvm_prepare(dir) { flunk 'No disks should be converted' }
+            end
+            assert_equal [{ 'snapshot_name' => vm.live2kvm_snapshot_name }], snapshots
+            refute_path_exists transfer
+            assert_empty Dir.children(dir)
+        end
+    end
+
+    def assert_delta_workflow(workflow, vddk, prepared = true)
+        Dir.mktmpdir('oneswap-dispatch-test-') do |dir|
+            disk = File.join(dir, 'disk0.raw')
+            File.write(disk, 'raw')
+            h = helper(:name => 'test-vm', :work_dir => dir,
+                       :vddk_path => vddk ? '/mock/vddk' : nil)
+            h.define_singleton_method(:get_esxi_host) { 'esxi.invalid' }
+            h.define_singleton_method(:esxi_client_options) { {} }
+            calls = []
+            h.define_singleton_method(:local_path_image_allocation_preflight!) { calls << :preflight }
+            h.define_singleton_method(:validate_delta_vddk_prerequisites!) { calls << :prerequisites }
+            h.define_singleton_method(:vcenter_snapshot_moref) do |name|
+                calls << [:snapshot, name]
+                'snapshot-42'
+            end
+            h.define_singleton_method(:convert_vddk_disk) do |*args|
+                calls << [:convert, *args]
+                disk
+            end
+            h.define_singleton_method(:create_one_images) {|paths| calls << [:images, paths] }
+            vm = Minitest::Mock.new
+            if vddk || workflow == :run_delta_prepare
+                vm.expect(:live2kvm_prepare, prepared ? { 'transfer_dir' => dir } : false) do |work, &block|
+                    assert_equal dir, work
+                    assert_equal vddk, !block.nil?
+                    assert_equal disk, block.call('base.vmdk', disk) if block
+                    true
+                end
+                if vddk
+                    vm.expect(:live2kvm_snapshot_name, 'prepare snapshot')
+                    vm.expect(:vddk_path, '[ds] actual-folder/base.vmdk', ['base.vmdk'])
+                    vm.expect(:live2kvm_commit, dir, [dir]) if workflow == :run_delta_conversion && prepared
+                end
+            else
+                vm.expect(:live2kvm, dir, [dir])
+            end
+            client = Minitest::Mock.new
+            client.expect(:get_vm_by_name, vm, ['test-vm'])
+            factory = lambda do |host, logger, options|
+                assert_equal 'esxi.invalid', host
+                assert_same h.instance_variable_get(:@logger), logger
+                assert_equal({}, options)
+                client
+            end
+            ESXi::Client.stub(:new, factory) do
+                capture_io do
+                    if prepared
+                        h.send(workflow)
+                    else
+                        error = assert_raises(RuntimeError) { h.send(workflow) }
+                        assert_match(/Failed to (perform|prepare) delta migration/, error.message)
+                    end
+                end
+            end
+            expected = workflow == :run_delta_conversion ? [:preflight] : []
+            if vddk
+                expected.concat([:prerequisites, [:snapshot, 'prepare snapshot'],
+                                 [:convert, '[ds] actual-folder/base.vmdk', disk, 'snapshot-42']])
+            end
+            expected << [:images, [disk]] if workflow == :run_delta_conversion && prepared
+            assert_equal expected, calls
+            vm.verify
+            client.verify
+        end
+    end
+
+    def test_run_delta_conversion_dispatches_vddk_prepare_then_commit
+        assert_delta_workflow(:run_delta_conversion, true)
+    end
+
+    def test_run_delta_prepare_dispatches_vddk_block
+        assert_delta_workflow(:run_delta_prepare, true)
+    end
+
+    def test_run_delta_conversion_preserves_legacy_live2kvm
+        assert_delta_workflow(:run_delta_conversion, false)
+    end
+
+    def test_run_delta_prepare_preserves_legacy_prepare_without_block
+        assert_delta_workflow(:run_delta_prepare, false)
+    end
+
+    def test_failed_vddk_prepare_prevents_commit_and_image_creation
+        assert_delta_workflow(:run_delta_conversion, true, false)
+        assert_delta_workflow(:run_delta_prepare, true, false)
+    end
+
 end
