@@ -2,12 +2,17 @@
 # Run with: ruby tests/dry_run_safety_test.rb
 
 require 'logger'
+require 'openssl'
 require 'minitest/autorun'
 require 'stringio'
 require 'tmpdir'
 
 module OpenNebulaHelper
-    class OneHelper; end
+    class OneHelper
+        def self.get_password
+            raise 'Unexpected password prompt'
+        end
+    end
 end
 
 module RbVmomi
@@ -241,12 +246,88 @@ class DryRunSafetyTest < Minitest::Test
         # No shell, nbdkit or qemu-img process is started.
         args = Shellwords.split(command)
         assert_equal ['nbdkit', '-r', '-U', '-', 'vddk', 'libdir=/opt/vddk',
-                      'server=vcenter.invalid', 'user=user', 'password=+/tmp/work dir/vpassfile',
+                      'server=vcenter.invalid', 'port=443', 'user=user', 'password=+/tmp/work dir/vpassfile',
                       'thumbprint=AA:BB', 'vm=moref=vm-42', 'snapshot=snapshot-42',
                       'file=[ds] base.vmdk', '--run'], args[0...-1]
         assert_includes args.last, '"$uri"'
         assert_equal ['qemu-img', 'convert', '-O', 'raw', '-p', '-S', '4k', '-W',
                       '$uri', output_path], Shellwords.split(args.last)
+    end
+
+    def test_vddk_uses_configured_or_default_port_for_thumbprint_and_nbdkit
+        [nil, '8443'].each do |port|
+            h = helper(:vcenter => 'vcenter.invalid', :port => port,
+                       :vddk_path => '/opt/vddk', :vuser => 'user', :work_dir => '/tmp/work')
+            h.instance_variable_set(:@vm_moref, 'vm-42')
+            tcp = Minitest::Mock.new
+            tcp.expect(:close, nil)
+            ssl = Minitest::Mock.new
+            ssl.expect(:connect, nil)
+            ssl.expect(:puts, nil, ["GET / HTTP/1.0\r\n\r\n"])
+            ssl.expect(:read, '')
+            ssl.expect(:sysclose, nil)
+            ssl.expect(:peer_cert, Struct.new(:to_der).new('test certificate'))
+            commands = []
+            h.define_singleton_method(:system) {|cmd| commands << cmd; true }
+            socket_factory = lambda do |host, actual_port|
+                assert_equal 'vcenter.invalid', host
+                assert_equal port || 443, actual_port
+                tcp
+            end
+            TCPSocket.stub(:new, socket_factory) do
+                OpenSSL::SSL::SSLSocket.stub(:new, ssl) do
+                    capture_io do
+                        h.send(:convert_vddk_disk, '[ds] base.vmdk', '/tmp/disk.raw', 'snapshot-42')
+                    end
+                end
+            end
+            args = Shellwords.split(commands.fetch(0))
+            assert_includes args, "port=#{port || 443}"
+            assert_includes args, 'snapshot=snapshot-42'
+            assert_includes args, 'password=+/tmp/work/vpassfile'
+            tcp.verify
+            ssl.verify
+        end
+    end
+
+    def test_convert_writes_prompted_or_supplied_password_before_vddk_conversion
+        [nil, 'supplied password'].each do |supplied|
+            Dir.mktmpdir('oneswap-password-test-') do |dir|
+                options = { :work_dir => dir.dup, :vcenter => 'vcenter.invalid',
+                            :vuser => 'user', :vpass => supplied, :vddk_path => '/opt/vddk' }
+                h = helper
+                h.define_singleton_method(:apply_verbosity) {|_| }
+                h.define_singleton_method(:check_one_connectivity) { true }
+                h.define_singleton_method(:cleanup_all) { cleanup_passwords }
+                h.define_singleton_method(:vddk_thumbprint) { 'AA:BB' }
+                h.instance_variable_set(:@vm_moref, 'vm-42')
+                observations = []
+                h.define_singleton_method(:convert_vm) do
+                    # This connection normally occurs after the password file is written.
+                    observations << connection_options('vm', @options)[:password]
+                    convert_vddk_disk('[ds] base.vmdk', File.join(@options[:work_dir], 'disk.raw'))
+                end
+                h.define_singleton_method(:system) do |cmd|
+                    password_arg = Shellwords.split(cmd).find {|arg| arg.start_with?('password=+') }
+                    path = password_arg.delete_prefix('password=+')
+                    observations << File.read(path)
+                    observations << (File.stat(path).mode & 0o777)
+                    true
+                end
+                prompts = 0
+                prompt = lambda { prompts += 1; "prompted 'password'" }
+                output = nil
+                OpenNebulaHelper::OneHelper.stub(:get_password, prompt) do
+                    output, = capture_io { h.convert('test-vm', options) }
+                end
+                expected = supplied || "prompted 'password'"
+                assert_equal [expected, expected, 0o600], observations
+                assert_equal expected, options[:vpass]
+                assert_equal supplied ? 0 : 1, prompts
+                refute_includes output, expected
+                refute_path_exists File.join(dir, 'test-vm/vpassfile')
+            end
+        end
     end
 
     def test_delta_prepare_with_zero_disks_cleans_snapshot_and_does_not_write_state
@@ -524,6 +605,79 @@ class DryRunSafetyTest < Minitest::Test
             }, state['disks']
             # The strict client mock rejects remove_files, create_dir,
             # clone_virtual_disk, pull_files and convert_vmdk: none may run for this transport.
+        end
+    end
+
+    def test_vddk_prepare_ignores_conversion_block_return_value
+        [nil, true, '/unexpected/disk.raw'].each do |block_result|
+            with_vddk_prepare('disk-000001.vmdk' => 'base.vmdk') do |vm, _client, dir, _clone_dir|
+                state = nil
+                capture_io do
+                    state = vm.live2kvm_prepare(dir) do |parent, output|
+                        assert_equal 'base.vmdk', parent
+                        File.write(output, 'raw')
+                        block_result
+                    end
+                end
+                expected = File.join(dir, 'esxi_client-display-name/convert/disk0.raw')
+                assert_equal expected, state['disks'].first['converted_raw_base_path']
+                assert_equal state, vm.live2kvm_state(dir)
+                assert_equal 'raw', File.read(expected)
+            end
+        end
+    end
+
+    def test_vddk_prepare_missing_expected_output_fails_and_cleans_up
+        with_vddk_prepare('disk-000001.vmdk' => 'base.vmdk') do |vm, _client, dir, _clone_dir|
+            log = StringIO.new
+            vm.instance_variable_set(:@logger, Logger.new(log))
+            result = nil
+            output, = capture_io do
+                result = vm.live2kvm_prepare(dir) do |_parent, target|
+                    # Even an existing file returned by the block is not the expected output.
+                    other = File.join(File.dirname(target), 'wrong.raw')
+                    File.write(other, 'raw')
+                    other
+                end
+            end
+            assert_equal false, result
+            assert_empty Dir.children(dir)
+            assert_includes log.string, 'VDDK conversion output is missing:'
+            assert_includes output, "Warning: VM snapshot #{vm.live2kvm_snapshot_name} remains active."
+            assert_includes output, 'Run --delta-cleanup before retrying.'
+        end
+    end
+
+    def test_run_cmd_report_preserves_keyword_environment_with_and_without_timeout
+        [{}, { 'ONESWAP_TEST' => 'value with spaces' }].each do |env|
+            [nil, 1].each do |timeout|
+                h = helper
+                h.define_singleton_method(:show_wait_spinner) {|&block| block.call }
+                status = Struct.new(:success?).new(true)
+                wait = Minitest::Mock.new
+                wait.expect(:join, true, [1]) if timeout
+                wait.expect(:value, status) if timeout
+                popen = lambda do |actual_env, cmd, **options, &block|
+                    assert_equal env, actual_env
+                    assert_equal 'mock-command', cmd
+                    assert_equal({ :pgroup => true }, options)
+                    block.call(StringIO.new, StringIO.new('stdout'), StringIO.new('stderr'), wait)
+                end
+                capture = lambda do |actual_env, cmd|
+                    assert_equal env, actual_env
+                    assert_equal 'mock-command', cmd
+                    ['stdout', 'stderr', status]
+                end
+                Open3.stub(:popen3, popen) do
+                    Open3.stub(:capture3, capture) do
+                        capture_io do
+                            assert_equal ['stdout', status], h.send(:run_cmd_report, 'mock-command', true,
+                                                                   timeout: timeout, env: env)
+                        end
+                    end
+                end
+                wait.verify
+            end
         end
     end
 
