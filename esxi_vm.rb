@@ -355,10 +355,10 @@ class ESXi::VirtualMachine
         vmx_verified = verify_vmx_base_disks(state, state_file)
         if !snapshot_removed || !vmx_verified
             snapshot_name = state['snapshot_name']
-            puts "Warning: failed to fully clean up VMware snapshot #{snapshot_name}; prepared state was #{state_file}."
+            puts "Warning: failed to fully clean up VMware snapshot #{snapshot_name}; prepared state retained at #{state_file}. Retry with --delta-cleanup."
+        else
+            live_storage_transfer_cleanup(transfer_dir)
         end
-
-        live_storage_transfer_cleanup(transfer_dir)
 
         results_dir
     end
@@ -430,7 +430,11 @@ class ESXi::VirtualMachine
             return cleanup_leftover_oneswap_snapshots(live2kvm_state_file(target_dir))
         end
 
-        cleanup_snapshot(state)
+        unless cleanup_snapshot(state)
+            puts "Delta prepare cleanup failed; prepared state retained at #{live2kvm_state_file(target_dir)}. Retry with --delta-cleanup."
+            return false
+        end
+
         cleanup_clone_dir(state)
         cleanup_local_state(target_dir, state)
 

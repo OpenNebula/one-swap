@@ -863,12 +863,12 @@ class DryRunSafetyTest < Minitest::Test
         end
     end
 
-    def assert_delta_cleanup(workflow, state_fields, remote_dir)
+    def assert_delta_cleanup(workflow, state_fields, remote_dir, snapshot_removed = true)
         with_prepared_delta(state_fields) do |vm, client, dir, state|
             # Snapshot cleanup must still run even when remote clone cleanup is skipped.
             client.expect(:snapshot_id_by_name, 7, [42, 'OneSwap prepare'])
-            client.expect(:remove_snapshot_vm, true, [42, 7])
-            client.expect(:remove_files, true, [remote_dir]) if remote_dir
+            client.expect(:remove_snapshot_vm, snapshot_removed, [42, 7])
+            client.expect(:remove_files, true, [remote_dir]) if remote_dir && snapshot_removed
             if workflow == :live2kvm_commit
                 client.expect(:shutdown_vm, true, [42])
                 state['disks'].each do |disk|
@@ -887,14 +887,83 @@ class DryRunSafetyTest < Minitest::Test
                     @vmx = { 'scsi0:0.fileName' => 'base.vmdk' }
                 end
             end
-            capture_io do
+            output, = capture_io do
                 result = vm.public_send(workflow, dir)
-                assert_equal workflow == :live2kvm_commit ? state['results_dir'] : true, result
+                assert_equal workflow == :live2kvm_commit ? state['results_dir'] : snapshot_removed, result
+            end
+            unless snapshot_removed
+                refute_includes output, 'Delta prepare cleanup completed.'
+                assert_includes output, 'retained'
+                assert_equal state, vm.live2kvm_state(dir)
+                if workflow == :live2kvm_cleanup
+                    assert_equal 'raw', File.read(state['disks'].first['converted_raw_base_path'])
+                end
+
+                # A fresh VM instance can retry cleanup using the retained state.
+                client.expect(:logger, Logger.new(File::NULL))
+                retry_vm = vddk_vm(client)
+                client.expect(:snapshot_id_by_name, 7, [42, 'OneSwap prepare'])
+                client.expect(:remove_snapshot_vm, true, [42, 7])
+                client.expect(:remove_files, true, [remote_dir]) if remote_dir
+                retry_output, = capture_io { assert_equal true, retry_vm.live2kvm_cleanup(dir) }
+                assert_includes retry_output, 'Delta prepare cleanup completed.'
             end
             refute_path_exists state['transfer_dir']
             if workflow == :live2kvm_commit
                 assert_equal 'raw', File.read(File.join(state['results_dir'], 'disk0.raw'))
             end
+        end
+    end
+
+    def test_failed_snapshot_removal_retains_state_for_cleanup_retry
+        clone_dir = '/vmfs/volumes/datastore/legacy/vmkfstools_output'
+        [:live2kvm_commit, :live2kvm_cleanup].each do |workflow|
+            assert_delta_cleanup(workflow, { 'transport' => 'vddk', 'clone_dir' => nil }, nil, false)
+            assert_delta_cleanup(workflow, { 'transport' => 'ssh', 'clone_dir' => clone_dir }, clone_dir, false)
+            assert_delta_cleanup(workflow, { 'clone_dir' => clone_dir }, clone_dir, false)
+        end
+    end
+
+    def test_delta_cleanup_dispatch_reports_failure
+        [true, false].each do |removed|
+            h = helper(:name => 'test-vm', :work_dir => '/tmp/work')
+            h.define_singleton_method(:get_esxi_host) { 'esxi.invalid' }
+            h.define_singleton_method(:esxi_client_options) { {} }
+            vm = Minitest::Mock.new
+            vm.expect(:live2kvm_cleanup, removed, ['/tmp/work'])
+            client = Minitest::Mock.new
+            client.expect(:get_vm_by_name, vm, ['test-vm'])
+            ESXi::Client.stub(:new, client) do
+                if removed
+                    assert_equal true, h.send(:run_delta_cleanup)
+                else
+                    error = assert_raises(RuntimeError) { h.send(:run_delta_cleanup) }
+                    assert_includes error.message, 'Failed to clean up delta migration'
+                end
+            end
+            vm.verify
+            client.verify
+        end
+    end
+
+    def test_delete_preserves_delta_recovery_state_until_cleanup_succeeds
+        with_prepared_delta('transport' => 'vddk') do |vm, client, dir, state|
+            h = helper(:name => 'display-name', :work_dir => dir, :delta => true, :delete => true)
+            ['vpassfile', 'esxpassfile'].each { |name| File.write(File.join(dir, name), 'password') }
+            capture_io { h.send(:cleanup_all) }
+            assert_equal state, vm.live2kvm_state(dir)
+            assert_equal 'raw', File.read(state['disks'].first['converted_raw_base_path'])
+            refute_path_exists File.join(dir, 'vpassfile')
+            refute_path_exists File.join(dir, 'esxpassfile')
+
+            client.expect(:snapshot_id_by_name, 7, [42, 'OneSwap prepare'])
+            client.expect(:remove_snapshot_vm, true, [42, 7])
+            capture_io do
+                assert_equal true, vm.live2kvm_cleanup(dir)
+                h.send(:cleanup_dirs)
+            end
+            refute_path_exists dir
+            Dir.mkdir(dir) # Let the temporary-directory fixture remove its root.
         end
     end
 
