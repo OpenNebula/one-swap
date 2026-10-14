@@ -130,6 +130,22 @@ OS=[
 `cpu_features` can be provided either as a YAML array or as a comma-separated
 string and requires `cpu_model` to be set.
 
+VDDK can also be used with `--delta` for the initial/base disk transfer on
+non-vSAN VMware datastores:
+
+```
+oneswap convert <vm> --delta --vddk /opt/vmware-vix-disklib-distrib/
+```
+
+Delta migration with VDDK requires the same relevant vCenter disk-access
+permissions as full VDDK conversion. Passwordless SSH to ESXi is still
+mandatory: VDDK is used only for the initial/base disk transfer; final delta
+synchronization still uses SSH.
+
+The `:vddk_path:` setting in `oneswap.yaml` can be used instead of the CLI
+option. vSAN-backed disks still do not support `--delta`; use full VDDK
+conversion for vSAN.
+
 ## Dry-run Estimates
 
 OneSwap can estimate migration time without running the full conversion. Dry-run
@@ -407,7 +423,7 @@ Includes all permissions from OneSwap-Standard, plus:
 **Important Notes**:
 - Assign roles at vCenter root level with **"Propagate to children"** enabled
 - For `--clone` mode, the VM **must NOT have any snapshots** (remove all snapshots before cloning)
-- For `--delta` and `--esxi` modes, vCenter permissions are minimal as operations run via direct ESXi SSH
+- For `--delta` without VDDK and `--esxi`, vCenter permissions are minimal as operations run via direct ESXi SSH. Delta migration with VDDK additionally requires the relevant vCenter disk-access permissions used by full VDDK conversion.
 
 ## Contributing
 

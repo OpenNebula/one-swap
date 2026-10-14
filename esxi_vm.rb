@@ -10,6 +10,8 @@ module ESXi; end
 #
 class ESXi::VirtualMachine
 
+    attr_reader :live2kvm_snapshot_name
+
     # output from vim-cmd vmsvc/getallvms
     VM_INFO_KEYS = [:vmid, :name, :file, :guest_os, :version, :annotation]
 
@@ -32,10 +34,11 @@ class ESXi::VirtualMachine
         @annotation = getallvms_info[:annotation]
 
         file = getallvms_info[:file]
-        @datastore = file.split(' ').first.slice(1..-2)
-        @vm_storage = "#{ESXi::Client::DATASTORES_PATH}/#{@datastore}/#{@name}"
+        @datastore = file.split('] ', 2).first.delete_prefix('[')
+        @vm_storage_relative = File.dirname(file.split('] ', 2)[1])
+        @vm_storage = File.expand_path(@vm_storage_relative, "#{ESXi::Client::DATASTORES_PATH}/#{@datastore}")
         @clone_dir = "#{@vm_storage}/vmkfstools_output"
-        @vmx_file = "#{@vm_storage}/#{@name}.vmx"
+        @vmx_file = storage_path(File.basename(file.split('] ', 2)[1]))
         @vmx = {}
     end
 
@@ -85,11 +88,13 @@ class ESXi::VirtualMachine
         return false unless live_storage_transfer_precheck
         puts 'Delta prepare prechecks completed.'
 
+        @delta_transport = block_given? ? 'vddk' : 'ssh'
         transfer_dir = live2kvm_transfer_dir(target_dir)
         puts "Cleaning previous delta work directories at #{transfer_dir}..."
         live_storage_transfer_cleanup(transfer_dir)
 
         results_dir = live2kvm_results_dir(target_dir)
+        convert_dir = "#{transfer_dir}/convert"
         FileUtils.rm_r(results_dir) if Dir.exist?(results_dir)
         puts 'Previous delta work directories cleaned.'
 
@@ -97,6 +102,7 @@ class ESXi::VirtualMachine
         @logger.info "Creating premigrate snapshot for VM #{@name}"
         t0 = Time.now
         snapshot_name = ESXi::Client.default_snapshot_name
+        @live2kvm_snapshot_name = snapshot_name
         snapshot_options = ESXi::Client.default_snapshot_options
         if !vmwaretools?
             snapshot_options = snapshot_options.merge({ :quiesce => true })
@@ -110,7 +116,7 @@ class ESXi::VirtualMachine
         puts "Snapshot created in #{format_elapsed(Time.now - t0)}."
 
         FileUtils.mkdir_p(transfer_dir) unless Dir.exist?(transfer_dir)
-        if !@client.create_dir(@clone_dir)
+        if !block_given? && !@client.create_dir(@clone_dir)
             message = "Aborting live storage transfer. Cannot create remote clone directory #{@clone_dir}"
             @logger.error message
             return false
@@ -121,12 +127,49 @@ class ESXi::VirtualMachine
         refresh_vmx # snapshots created new active disks
         detected_disks = active_disks
         puts "Detected #{detected_disks.length} active disk(s) in #{format_elapsed(Time.now - t0)}."
+        if detected_disks.empty?
+            message = 'no active disks detected for delta migration'
+            cleanup_snapshot({ 'snapshot_name' => snapshot_name })
+            live_storage_transfer_cleanup(transfer_dir, message)
+            return false
+        end
+
+        base_convert_seconds = 0.0
+        base_convert_bytes = 0
         disks = []
         detected_disks.each do |disk|
             vmdk_data = vmdk_info(disk)
             parent_disk = vmdk_data['parentFileNameHint']
             disk_name = disk.chomp('.vmdk')
             parent_disk_name = parent_disk.chomp('.vmdk')
+
+            if block_given?
+                begin
+                    Dir.mkdir(convert_dir) unless Dir.exist?(convert_dir)
+                    output_path = "#{convert_dir}/disk#{disks.length}.raw"
+                    puts "Copying base disk via VDDK: #{parent_disk}..."
+                    t0 = Time.now
+                    yield(parent_disk, output_path)
+                    raise "VDDK conversion output is missing: #{output_path}" unless File.exist?(output_path)
+                    elapsed = Time.now - t0
+                    puts "Copied base disk #{parent_disk} via VDDK in #{format_elapsed(elapsed)}."
+                    base_convert_seconds += elapsed
+                    base_convert_bytes += File.size(output_path) if File.exist?(output_path)
+                    disks << {
+                        'active_snapshot_descriptor' => disk,
+                        'active_snapshot_extent' => "#{disk_name}-sesparse.vmdk",
+                        'parent_base_descriptor' => parent_disk,
+                        'converted_raw_base_path' => output_path
+                    }
+                    next
+                rescue StandardError => e
+                    message = "failed disk #{parent_disk} VDDK conversion: #{e.class}: #{e.message}"
+                    @logger.debug e.backtrace.join("\n") if e.backtrace
+                    live_storage_transfer_cleanup(transfer_dir, message)
+                    puts "Warning: VM snapshot #{snapshot_name} remains active. Run --delta-cleanup before retrying."
+                    return false
+                end
+            end
 
             clone_source = storage_path(parent_disk)
             clone_target = "#{@clone_dir}/#{parent_disk}"
@@ -150,46 +193,50 @@ class ESXi::VirtualMachine
             return false
         end
 
-        @logger.info "Transferring VM #{@name} storage to #{transfer_dir}"
-        puts "Transferring base disk files to local work dir #{transfer_dir}..."
-        t0 = Time.now
-        if !@client.pull_files("#{@clone_dir}/*", transfer_dir)
-            message = 'failed disk transfer'
-            live_storage_transfer_cleanup(transfer_dir, message)
-            return false
-        end
-        base_transfer_seconds = Time.now - t0
-        base_transfer_bytes = local_tree_size(transfer_dir)
-        base_transfer_mib_s = mib_per_second(base_transfer_bytes, base_transfer_seconds)
-        puts "Transferred base disk files in #{format_elapsed(base_transfer_seconds)}."
-
-        cloned_vmdk_list = Dir.children(transfer_dir)
-
-        convert_dir = "#{transfer_dir}/convert"
-        Dir.mkdir(convert_dir) unless Dir.exist?(convert_dir)
-
-        base_convert_seconds = 0.0
-        base_convert_bytes = 0
-        cloned_vmdk_list.each do |file|
-            next if file.end_with?('-flat.vmdk')
-
-            source = "#{transfer_dir}/#{file}"
-            target = "#{convert_dir}/#{file.chomp('.vmdk')}.raw"
-            format = 'raw'
-
-            puts "Converting base disk to raw: #{file}..."
+        if block_given?
+            # VDDK copies and converts in one operation; it does not measure
+            # the SCP transfer used for the remaining delta during commit.
+            base_transfer_seconds = nil
+            base_transfer_bytes = nil
+            base_transfer_mib_s = nil
+        else
+            @logger.info "Transferring VM #{@name} storage to #{transfer_dir}"
+            puts "Transferring base disk files to local work dir #{transfer_dir}..."
             t0 = Time.now
-            if @client.convert_vmdk(source, target, format)
-                elapsed = Time.now - t0
-                base_convert_seconds += elapsed
-                base_convert_bytes += File.size(target) if File.exist?(target)
-                puts "Converted #{file} to raw in #{format_elapsed(elapsed)}."
-                next
+            if !@client.pull_files("#{@clone_dir}/*", transfer_dir)
+                message = 'failed disk transfer'
+                live_storage_transfer_cleanup(transfer_dir, message)
+                return false
             end
+            base_transfer_seconds = Time.now - t0
+            base_transfer_bytes = local_tree_size(transfer_dir)
+            base_transfer_mib_s = mib_per_second(base_transfer_bytes, base_transfer_seconds)
+            puts "Transferred base disk files in #{format_elapsed(base_transfer_seconds)}."
 
-            message = "failed disk #{source} conversion"
-            live_storage_transfer_cleanup(transfer_dir, message)
-            return false
+            cloned_vmdk_list = Dir.children(transfer_dir)
+
+            Dir.mkdir(convert_dir) unless Dir.exist?(convert_dir)
+            cloned_vmdk_list.each do |file|
+                next if file.end_with?('-flat.vmdk')
+
+                source = "#{transfer_dir}/#{file}"
+                target = "#{convert_dir}/#{file.chomp('.vmdk')}.raw"
+                format = 'raw'
+
+                puts "Converting base disk to raw: #{file}..."
+                t0 = Time.now
+                if @client.convert_vmdk(source, target, format)
+                    elapsed = Time.now - t0
+                    base_convert_seconds += elapsed
+                    base_convert_bytes += File.size(target) if File.exist?(target)
+                    puts "Converted #{file} to raw in #{format_elapsed(elapsed)}."
+                    next
+                end
+
+                message = "failed disk #{source} conversion"
+                live_storage_transfer_cleanup(transfer_dir, message)
+                return false
+            end
         end
         base_convert_mib_s = mib_per_second(base_convert_bytes, base_convert_seconds)
 
@@ -202,7 +249,8 @@ class ESXi::VirtualMachine
             'transfer_dir' => transfer_dir,
             'convert_dir' => convert_dir,
             'results_dir' => results_dir,
-            'clone_dir' => @clone_dir,
+            'transport' => @delta_transport,
+            'clone_dir' => @delta_transport == 'vddk' ? nil : @clone_dir,
             # Delta size is only a point-in-time value while the VM keeps running;
             # it can continue growing until the final commit phase shuts it down.
             'delta_size_bytes' => nil,
@@ -231,7 +279,22 @@ class ESXi::VirtualMachine
         transfer_dir = state['transfer_dir']
         convert_dir = state['convert_dir']
         results_dir = state['results_dir']
-        @clone_dir = state['clone_dir'] || @clone_dir
+        @delta_transport = state['transport'] || 'ssh'
+        @clone_dir = state.fetch('clone_dir', @clone_dir)
+        disks = state['disks']
+        if !disks.is_a?(Array) || disks.empty?
+            @logger.error 'Prepared delta state contains no disks; aborting before VM shutdown'
+            return false
+        end
+        if convert_dir.to_s.empty? || !Dir.exist?(convert_dir)
+            @logger.error "Prepared delta convert directory is missing; aborting before VM shutdown: #{convert_dir}"
+            return false
+        end
+        converted_disks = Dir.children(convert_dir)
+        if converted_disks.empty?
+            @logger.error "Prepared delta convert directory is empty; aborting before VM shutdown: #{convert_dir}"
+            return false
+        end
 
         t0 = Time.now
         @logger.warn "Shutting down VM #{@name}. Downtime begins"
@@ -242,7 +305,7 @@ class ESXi::VirtualMachine
         end
 
         # transfer and apply active snapshot vmdk
-        state['disks'].each do |disk_data|
+        disks.each do |disk_data|
             # alma9-clone_17-000022.vmdk
             # alma9-clone --> vm name
             # _17 --> disk identifier
@@ -272,7 +335,6 @@ class ESXi::VirtualMachine
             return false
         end
 
-        converted_disks = Dir.children(convert_dir)
         os_morph_seconds = 0.0
         os_morph_disks_tried = 0
         converted_disks.each do |disk|
@@ -314,10 +376,10 @@ class ESXi::VirtualMachine
         vmx_verified = verify_vmx_base_disks(state, state_file)
         if !snapshot_removed || !vmx_verified
             snapshot_name = state['snapshot_name']
-            puts "Warning: failed to fully clean up VMware snapshot #{snapshot_name}; prepared state was #{state_file}."
+            puts "Warning: failed to fully clean up VMware snapshot #{snapshot_name}; prepared state retained at #{state_file}. Retry with --delta-cleanup."
+        else
+            live_storage_transfer_cleanup(transfer_dir)
         end
-
-        live_storage_transfer_cleanup(transfer_dir)
 
         results_dir
     end
@@ -389,7 +451,11 @@ class ESXi::VirtualMachine
             return cleanup_leftover_oneswap_snapshots(live2kvm_state_file(target_dir))
         end
 
-        cleanup_snapshot(state)
+        unless cleanup_snapshot(state)
+            puts "Delta prepare cleanup failed; prepared state retained at #{live2kvm_state_file(target_dir)}. Retry with --delta-cleanup."
+            return false
+        end
+
         cleanup_clone_dir(state)
         cleanup_local_state(target_dir, state)
 
@@ -426,6 +492,13 @@ class ESXi::VirtualMachine
 
     def running?
         state == STATES[:RUNNING]
+    end
+
+    def vddk_path(fileName)
+        return fileName if fileName.start_with?("#{ESXi::Client::DATASTORES_PATH}/")
+
+        relative_path = File.expand_path(fileName, "/#{@vm_storage_relative}").sub(%r{\A/}, '')
+        "[#{@datastore}] #{relative_path}"
     end
 
     def poweroff?
@@ -617,7 +690,11 @@ class ESXi::VirtualMachine
     end
 
     def cleanup_clone_dir(state)
-        clone_dir = state['clone_dir'] || @clone_dir
+        return if state['transport'] == 'vddk'
+
+        # Older states without the key use the VM's default clone directory.
+        # An explicit nil means there is no remote clone directory to remove.
+        clone_dir = state.fetch('clone_dir', @clone_dir)
         if clone_dir.to_s.empty? || !clone_dir.start_with?(ESXi::Client::DATASTORES_PATH)
             puts 'Warning: ESXi clone directory is missing or unsafe; skipping remote clone cleanup.'
             return
@@ -670,8 +747,10 @@ class ESXi::VirtualMachine
     def live_storage_transfer_cleanup(transfer_dir, reason = nil)
         @logger.error "Aborting live storage transfer due to #{reason}" if reason
 
-        @logger.info "Cleaning disk clone directory on ESXi host at #{@clone_dir}"
-        @client.remove_files(@clone_dir)
+        if @delta_transport != 'vddk' && !@clone_dir.to_s.empty?
+            @logger.info "Cleaning disk clone directory on ESXi host at #{@clone_dir}"
+            @client.remove_files(@clone_dir)
+        end
 
         @logger.info "Cleaning local transfer directory at #{transfer_dir}"
         FileUtils.remove_dir(transfer_dir) if Dir.exist?(transfer_dir)
@@ -685,6 +764,8 @@ class ESXi::VirtualMachine
     # @return [String] Path prefixed with datastore path
     #
     def storage_path(fileName)
+        return fileName if fileName.start_with?("#{ESXi::Client::DATASTORES_PATH}/")
+
         "#{@vm_storage}/#{fileName}"
     end
 

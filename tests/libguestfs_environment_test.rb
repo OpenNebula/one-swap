@@ -112,6 +112,25 @@ class LibguestfsEnvironmentTest < Minitest::Test
         assert_equal APPLIANCE, output
     end
 
+    def test_timeout_runner_defaults_to_configured_appliance_when_called_directly
+        command = Shellwords.join([RbConfig.ruby, '-e', 'print ENV.fetch("LIBGUESTFS_PATH", "")'])
+        output, error, st, timed_out = helper.send(:run_cmd_with_timeout, command, 5)
+        assert st.success?, error
+        refute timed_out
+        assert_equal APPLIANCE, output
+    end
+
+    def test_install_pkg_defaults_to_configured_appliance
+        capture = lambda do |env, command|
+            assert_equal({ 'LIBGUESTFS_PATH' => APPLIANCE }, env)
+            assert_equal 'virt-customize -a /tmp/disk --install pkg', command
+            ['', '', status]
+        end
+        Open3.stub(:capture3, capture) do
+            capture_io { helper.send(:install_pkg, '/tmp/disk', 'pkg') }
+        end
+    end
+
     def test_blank_and_unset_options_preserve_inherited_environment
         [{}, { :libguestfs_path => nil }, { :libguestfs_path => " \n" }].each do |options|
             h = helper(options)
