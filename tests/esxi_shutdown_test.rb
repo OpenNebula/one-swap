@@ -1,6 +1,7 @@
 require 'minitest/autorun'
 require 'minitest/mock'
 require 'stringio'
+require 'tmpdir'
 require_relative '../esxi_vm'
 
 class EsxiShutdownTest < Minitest::Test
@@ -81,22 +82,28 @@ class EsxiShutdownTest < Minitest::Test
     end
 
     def assert_commit_aborts(vm, client)
-        prepared = {
-            'transfer_dir' => '/unused/transfers',
-            'convert_dir' => '/unused/conversions',
-            'results_dir' => '/unused/results',
-            'disks' => [{ 'active_snapshot_descriptor' => 'disk.vmdk',
-                          'active_snapshot_extent' => 'disk-delta.vmdk' }]
-        }
-        cleaned = []
-        vm.define_singleton_method(:storage_path) {|file| file }
-        unexpected_transfer = ->(*) { flunk 'Delta processing must not start' }
-        client.define_singleton_method(:pull_files, unexpected_transfer)
-        vm.stub(:read_live2kvm_state, prepared) do
-            vm.stub(:live_storage_transfer_cleanup, ->(*args) { cleaned << args }) do
-                assert_equal false, vm.live2kvm_commit('/unused')
+        Dir.mktmpdir('oneswap-shutdown-test-') do |convert_dir|
+            # Pass the delta prechecks so these tests reach the real shutdown path.
+            base = File.join(convert_dir, 'disk.raw')
+            File.write(base, 'raw')
+            prepared = {
+                'transfer_dir' => '/unused/transfers',
+                'convert_dir' => convert_dir,
+                'results_dir' => '/unused/results',
+                'disks' => [{ 'active_snapshot_descriptor' => 'disk.vmdk',
+                              'active_snapshot_extent' => 'disk-delta.vmdk',
+                              'converted_raw_base_path' => base }]
+            }
+            cleaned = []
+            vm.define_singleton_method(:storage_path) {|file| file }
+            unexpected_transfer = ->(*) { flunk 'Delta processing must not start' }
+            client.define_singleton_method(:pull_files, unexpected_transfer)
+            vm.stub(:read_live2kvm_state, prepared) do
+                vm.stub(:live_storage_transfer_cleanup, ->(*args) { cleaned << args }) do
+                    assert_equal false, vm.live2kvm_commit('/unused')
+                end
             end
+            assert_equal [['/unused/transfers', 'failed to shut down VM shutdown-test']], cleaned
         end
-        assert_equal [['/unused/transfers', 'failed to shut down VM shutdown-test']], cleaned
     end
 end

@@ -1045,9 +1045,9 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     # @param cmd [String] The command to be executed.
     # @param out [Boolean] (optional) Whether to return the output or not.
     # @param timeout [Integer, nil] (optional) Abort the command if it runs longer than this specified number of seconds, 0 disables timeout.
-    # @param env [Hash] (optional) Environment variables to pass to the command.
+    # @param env [Hash] (optional) Environment variables to pass to the command; defaults to v2v_env.
     # @return [Array] Returns an array containing the stdout and status if out is true.
-    def run_cmd_report(cmd, out = false, timeout: nil, env: {})
+    def run_cmd_report(cmd, out = false, timeout: nil, env: v2v_env)
         t0 = Time.now
         stdout, stderr, status = nil
         timed_out = false
@@ -1074,7 +1074,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     # Runs a command, terminating it if exceeds the given amount of seconds
     #
     # @return [Array] [stdout, stderr, status, timed_out]
-    def run_cmd_with_timeout(cmd, timeout, env: {})
+    def run_cmd_with_timeout(cmd, timeout, env: v2v_env)
         timed_out = false
         stdout = stderr = ''
         status = nil
@@ -1536,7 +1536,7 @@ _EOF_"
               " --install #{pkg}"
     end
 
-    def install_pkg(disk, pkg, timeout: nil, env: {})
+    def install_pkg(disk, pkg, timeout: nil, env: v2v_env)
         print "Installing #{pkg}..."
         run_cmd_report(pkg_install_command(disk, pkg), false, timeout: timeout, env: env)
     end
@@ -2222,8 +2222,9 @@ _EOF_"
         File.open(xml_path, 'w') {|f| doc.write(f) }
 
         xml_path
+    end
 
-def prepare_delta_conversion(vm)
+    def prepare_delta_conversion(vm)
         if @options[:vddk_path]
             validate_delta_vddk_prerequisites!
             puts 'Using VDDK transport for delta prepare.'

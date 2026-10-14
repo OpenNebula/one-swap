@@ -261,7 +261,7 @@ class ContextCommandOsMappingTest < Minitest::Test
                 h.define_singleton_method(:detect_context_package) {|_| '/tmp/context.pkg' }
                 h.define_singleton_method(:ensure_guest_free_space) {|*_| true }
                 calls = []
-                h.define_singleton_method(:run_cmd_report) do |cmd, out = false, timeout: nil|
+                h.define_singleton_method(:run_cmd_report) do |cmd, out = false, timeout: nil, env: {}|
                     calls << [cmd, out, timeout]
                     ['', OpenStruct.new(:success? => !(offline_failure && calls.length == 1))]
                 end

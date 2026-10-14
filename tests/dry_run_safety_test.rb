@@ -746,9 +746,10 @@ def delta_vm
     end
 
     def test_run_cmd_report_preserves_keyword_environment_with_and_without_timeout
-        [{}, { 'ONESWAP_TEST' => 'value with spaces' }].each do |env|
+        [{}, { 'ONESWAP_TEST' => 'value with spaces' },
+         { 'LIBGUESTFS_PATH' => '/explicit/appliance' }].each do |env|
             [nil, 1].each do |timeout|
-                h = helper
+                h = helper(:libguestfs_path => '/configured/appliance')
                 h.define_singleton_method(:show_wait_spinner) {|&block| block.call }
                 status = Struct.new(:success?).new(true)
                 wait = Minitest::Mock.new
@@ -932,7 +933,9 @@ def delta_vm
             client.expect(:remove_snapshot_vm, snapshot_removed, [42, 7])
             client.expect(:remove_files, true, [remote_dir]) if remote_dir && snapshot_removed
             if workflow == :live2kvm_commit
-                client.expect(:shutdown_vm, true, [42])
+                vm.define_singleton_method(:vmwaretools?) { false }
+                vm.define_singleton_method(:state) { ESXi::VirtualMachine::STATES[:POWEROFF] }
+                client.expect(:shutdown_vm, true, [42, false])
                 state['disks'].each do |disk|
                     ['active_snapshot_descriptor', 'active_snapshot_extent'].each do |key|
                         source = "/vmfs/volumes/datastore/actual-folder/#{disk[key]}"
@@ -1058,7 +1061,8 @@ def delta_vm
 
     def test_vddk_commit_failure_cleans_local_files_without_remote_clone_removal
         with_prepared_delta('transport' => 'vddk') do |vm, client, dir, state|
-            client.expect(:shutdown_vm, false, [42])
+            vm.define_singleton_method(:vmwaretools?) { false }
+            client.expect(:shutdown_vm, false, [42, false])
             assert_equal false, vm.live2kvm_commit(dir)
             refute_path_exists state['transfer_dir']
         end
