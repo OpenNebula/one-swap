@@ -387,7 +387,7 @@ class LibguestfsEnvironmentTest < Minitest::Test
                 'virt-v2v'
             end
             h.define_singleton_method(:warn_unreadable_kernel_for_libguestfs) { |_env| }
-            h.define_singleton_method(:create_one_images) do |_disks|
+            h.define_singleton_method(:create_one_images) do |_disks, _format|
                 raise ConversionError, 'fatal' if mode == :fatal
                 detect_distro('/tmp/disk')
             end
@@ -396,11 +396,12 @@ class LibguestfsEnvironmentTest < Minitest::Test
             h.define_singleton_method(:run_custom_conversion) { :custom }
             streams = [StringIO.new, StringIO.new, StringIO.new, OpenStruct.new(:value => 0)]
             Open3.stub(:popen3, streams) do
-                Dir.stub(:glob, ['/tmp/disk']) do
+                Dir.stub(:children, ['vm-sda']) do
                     Open3.stub(:capture3, ['', 'supermin failed', status(false)]) do
                         if [:fallback, :hybrid].include?(mode)
                             assert_equal :custom, h.send(:run_v2v_conversion)
-                            assert_equal mode == :fallback, cleaned
+                            # The end-of-run cleanup would remove the custom conversion inputs.
+                            refute cleaned
                         else
                             error = assert_raises(ConversionError) { h.send(:run_v2v_conversion) }
                             assert_includes error.message, mode == :fatal ? 'fatal' : 'supermin failed'
@@ -419,8 +420,8 @@ class LibguestfsEnvironmentTest < Minitest::Test
                 def dependency_precheck; end
             end
             client = client_class.new('host', Logger.new(File::NULL), h.send(:esxi_client_options))
-            execution = lambda do |cmd, _message, env|
-                assert_includes cmd, 'virt-v2v-in-place -i disk /tmp/disk'
+            execution = lambda do |cmd, _message, env, _output|
+                assert_includes cmd, 'virt-v2v-in-place -i disk -if raw /tmp/disk'
                 assert_equal h.send(:v2v_env), env
                 true
             end

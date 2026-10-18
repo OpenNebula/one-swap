@@ -16,6 +16,7 @@
 
 require 'one_helper'
 require 'opennebula'
+require 'etc'
 require 'json'
 require 'logger'
 require 'fileutils'
@@ -140,11 +141,24 @@ end
 ##############################################################################
 class ConversionError < StandardError; end
 class InspectionError < ConversionError; end
+# The disks are converted, but OpenNebula could not import them.
+class ImageImportError < ConversionError; end
 
 class OneSwapHelper < OpenNebulaHelper::OneHelper
 
-    VCENTER_SNAPSHOT_LOOKUP_ATTEMPTS = 5
-    VCENTER_SNAPSHOT_LOOKUP_INTERVAL = 1
+    # A snapshot taken on the ESXi host reaches vCenter at its next sync with
+    # the host, which can take several seconds.
+    VCENTER_SNAPSHOT_LOOKUP_TIMEOUT = 120
+    VCENTER_SNAPSHOT_LOOKUP_INTERVAL = 2
+    # Local user of the OpenNebula datastore drivers, which read imported images.
+    DATASTORE_USER = 'oneadmin'
+    # OpenNebula keeps an image LOCKED while it copies the image into its datastore.
+    IMAGE_POLL_INTERVAL = 2
+    # Consecutive failed reads of an image tolerated, such as while oned restarts.
+    IMAGE_INFO_ATTEMPTS = 30
+    # Config file modes that a delta migration replaces with its own transfer.
+    DELTA_REPLACED_CONFIG_KEYS = [:esxi_ip, :custom_convert, :hybrid, :download_stripes, :fallback, :clone,
+                                  :shift, :shift_skip_conversion]
     VSAN_VDDK_REQUIRED_MESSAGE = 'vSAN-backed VMDK conversion requires VDDK. ' \
                                  'Please configure :vddk_path in the OneSwap config file ' \
                                  'or pass --vddk /path/to/vmware-vix-disklib-distrib/.'
@@ -162,13 +176,31 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     def initialize
         super
 
-        Dir.mkdir(ONE_LOGS) unless Dir.exist?(ONE_LOGS)
-
-        @log_file = File.open(LOG, 'a')
+        @log_file = open_log_file
         @log_file.sync = true
 
         @verbose = OneSwapLogger.verbose?({})
         @logger  = OneSwapLogger.build(@log_file, :verbose => @verbose)
+    end
+
+    #
+    # The system log is not writable for every user that can run oneswap
+    # (it is root-owned when root ran oneswap first); log to the home
+    # directory then instead of failing before anything starts.
+    #
+    def open_log_file
+        Dir.mkdir(ONE_LOGS) unless Dir.exist?(ONE_LOGS)
+        File.open(LOG, 'a')
+    rescue SystemCallError => e
+        begin
+            fallback = File.join(Dir.home, 'oneswap.log')
+            log_file = File.open(fallback, 'a')
+            $stderr.puts "Warning: unable to write #{LOG} (#{e.message}); logging to #{fallback}"
+            log_file
+        rescue SystemCallError, ArgumentError
+            $stderr.puts "Warning: unable to write #{LOG} (#{e.message}); logging is disabled"
+            File.open(File::NULL, 'a')
+        end
     end
 
     # Raise log verbosity to DEBUG (and echo diagnostics to the terminal, not
@@ -310,7 +342,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                   " #{object_name}:\n"\
                   "\t --vcenter vCenter hostname\n"\
                   "\t --vuser username to login in vcenter\n"\
-                  "got: #{options}"
+                  "got: #{options.reject {|key, _| key.to_s.include?('pass') }}"
         end
 
         password = options[:vpass] || OpenNebulaHelper::OneHelper.get_password
@@ -471,8 +503,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
     def cleanup_passwords
         puts 'Deleting password files.' unless @options[:dry_run]
-        File.delete("#{@options[:work_dir]}/vpassfile")
-        File.delete("#{@options[:work_dir]}/esxpassfile")
+        # A failed start may not have written them; that must not hide its error.
+        FileUtils.rm_f(["#{@options[:work_dir]}/vpassfile", "#{@options[:work_dir]}/esxpassfile"])
     end
 
     def cleanup_disks
@@ -492,7 +524,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     def cleanup_dirs
         return if @options[:dry_run]
 
-        state_file = "#{@options[:work_dir]}/esxi_client-#{@options[:name]}/oneswap-delta-state.yaml"
+        state_file = "#{@options[:work_dir]}/esxi_client-#{@options[:name]}/#{ESXi::VirtualMachine::STATE_FILE}"
         if @options[:delta] && File.file?(state_file)
             puts "Retaining working directory for delta recovery: #{state_file}"
             return
@@ -506,10 +538,24 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         end
     end
 
+    def cleanup_upload_dir
+        FileUtils.rm_rf(@upload_dir) if @upload_dir
+        @upload_dir = nil
+    end
+
     def cleanup_all
         cleanup_passwords
+        cleanup_upload_dir
         cleanup_disks
         cleanup_dirs
+    end
+
+    #
+    # Holds the files OneSwap copies into the guest. virt-customize --copy-in
+    # splits its argument at the first colon, and the work dir has the VM name.
+    #
+    def upload_dir
+        @upload_dir ||= Dir.mktmpdir('oneswap-upload-')
     end
 
     def mem_to_mb(value, unit)
@@ -597,15 +643,23 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         return true
     end
 
+    # The domain XML file that virt-v2v wrote next to the converted disks.
+    def conversion_domain_xml
+        conversions = "#{@options[:work_dir]}/conversions"
+        # The work dir has the VM name: it must not be read as a pattern.
+        xml = Dir.glob('*.xml', :base => conversions).min
+        xml && File.join(conversions, xml)
+    end
+
     def create_vm_template_from_ova
         # Open XML domain file generated from conversion
-        xml_file = Dir.glob("#{@options[:work_dir]}/conversions/*.xml")
-        if xml_file.empty?
+        xml_file = conversion_domain_xml
+        if xml_file.nil?
             puts 'No XML domain file found'
             exit 0
         end
 
-        domain_xml = File.read(xml_file.first)
+        domain_xml = File.read(xml_file)
         xml_template = Nokogiri::XML(domain_xml)
 
         vm_template_config = {
@@ -1105,13 +1159,45 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     rescue Errno::ESRCH, Errno::EPERM
     end
 
+    #
+    # The image import names the format of its disks: probing guest-controlled
+    # data could make the libguestfs tools read files of this host.
+    #
+    def register_disk_format(disks, format)
+        @disk_formats ||= {}
+        disks.each {|disk| @disk_formats[disk] = format }
+    end
+
+    def disk_format_option(disk)
+        format = @disk_formats && @disk_formats[disk]
+        format ? "--format=#{format} " : ''
+    end
+
+    # Arguments that add a disk to virt-inspector, virt-customize or guestfish.
+    def guestfs_disk(disk)
+        "#{disk_format_option(disk)}-a #{Shellwords.escape(disk)}"
+    end
+
+    # Arguments that give a disk to virt-win-reg.
+    def win_reg_disk(disk)
+        "#{disk_format_option(disk)}#{Shellwords.escape(disk)}"
+    end
+
+    # The guestfish script line that adds a disk.
+    def guestfish_add(disk)
+        format = @disk_formats && @disk_formats[disk]
+        "add #{guestfish_quote(disk)}#{format ? " format:#{format}" : ''}"
+    end
+
+    def guestfish_quote(value)
+        "\"#{value.to_s.gsub('\\') { '\\\\' }.gsub('"') { '\\"' }}\""
+    end
+
     def detect_distro(disk)
         print 'Inspecting disk...'
         t0 = Time.now
         distro_info = {}
-        inspector_cmd = 'virt-inspector -a '\
-            "#{disk} "\
-            '--no-applications --no-icon'
+        inspector_cmd = "virt-inspector #{guestfs_disk(disk)} --no-applications --no-icon"
         disk_xml = nil
         show_wait_spinner do
             stdout, stderr, status = Open3.capture3(v2v_env, inspector_cmd)
@@ -1203,7 +1289,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 return nil
             end
             real_path = File.realpath('/etc/resolv.conf')
-            tmp_resolv = "#{@options[:work_dir]}/resolv.conf"
+            tmp_resolv = File.join(upload_dir, 'resolv.conf')
             File.open(real_path, 'rb') do |src|
                 File.open(tmp_resolv, 'wb') {|dst| IO.copy_stream(src, dst) }
             end
@@ -1215,7 +1301,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 puts 'Warning: --inject-dns value is not valid, skipping DNS injection.'.brown
                 return nil
             end
-            tmp_resolv = "#{@options[:work_dir]}/resolv.conf"
+            tmp_resolv = File.join(upload_dir, 'resolv.conf')
             File.write(tmp_resolv, ips.map {|ip| "nameserver #{ip}" }.join("\n") + "\n")
             puts "Injecting custom resolv.conf (#{ips.join(', ')}) into guest for DNS resolution...".green
             return tmp_resolv
@@ -1248,7 +1334,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def context_command(disk, osinfo)
-        base_cmd = "virt-customize -q -a #{disk}"
+        base_cmd = "virt-customize -q #{guestfs_disk(disk)}"
         cmd = nil
         fallback_cmd = nil
         context_fullpath = nil
@@ -1257,18 +1343,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             context_fullpath = detect_context_package('windows')
             return false unless context_fullpath
 
-            context_basename = File.basename(context_fullpath)
+            guest_package = "\"c:\\Temp\\#{File.basename(context_fullpath)}\""
             cmd = base_cmd +
                   ' --mkdir /Temp'\
-                  " --copy-in #{context_fullpath}:/Temp"\
-                  " --firstboot-command 'msiexec -i c:\\Temp\\#{context_basename} /quiet && del c:\\Temp\\#{context_basename}'"
+                  " --copy-in #{Shellwords.escape(context_fullpath)}:/Temp"\
+                  " --firstboot-command #{Shellwords.escape("msiexec -i #{guest_package} /quiet && del #{guest_package}")}"
             return cmd, nil
         end
 
         if @options[:inject_dns]
             resolv_src = inject_dns_resolv_conf
             if resolv_src
-                base_cmd += " --copy-in #{resolv_src}:/etc/"
+                base_cmd += " --copy-in #{Shellwords.escape(resolv_src)}:/etc/"
             end
         end
 
@@ -1383,13 +1469,14 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             context_basename = File.basename(context_fullpath)
             if os == 'alt'
                 # ALT uses APT-RPM; Debian's recommendation flags are not portable.
+                package = Shellwords.escape("/tmp/#{context_basename}")
                 cmd = base_cmd +
-                      " --copy-in #{context_fullpath}:/tmp"\
-                      " --install /tmp/#{context_basename}"\
-                      " --delete /tmp/#{context_basename}"
+                      " --copy-in #{Shellwords.escape(context_fullpath)}:/tmp"\
+                      " --install #{package}"\
+                      " --delete #{package}"
                 fallback_cmd = base_cmd +
-                               " --copy-in #{context_fullpath}:/tmp"\
-                               " --firstboot-install /tmp/#{context_basename}"
+                               " --copy-in #{Shellwords.escape(context_fullpath)}:/tmp"\
+                               " --firstboot-install #{package}"
             else
                 package = "/tmp/#{context_basename}"
                 install = Shellwords.escape(context_install_command(os, package))
@@ -1405,15 +1492,16 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             return false unless context_fullpath
 
             context_basename = File.basename(context_fullpath)
+            package = Shellwords.escape("/tmp/#{context_basename}")
             cmd = base_cmd +
                     ' --install curl,bash,sudo,base64,ruby,open-vm-tools-nox11'\
-                    " --copy-in #{context_fullpath}:/tmp"\
-                    " --install /tmp/#{context_basename}"\
-                    " --delete /tmp/#{context_basename}"
+                    " --copy-in #{Shellwords.escape(context_fullpath)}:/tmp"\
+                    " --install #{package}"\
+                    " --delete #{package}"
             fallback_cmd = base_cmd +
                             ' --firstboot-install curl,bash,sudo,base64,ruby,open-vm-tools-nox11'\
-                            " --copy-in #{context_fullpath}:/tmp"\
-                            " --firstboot-install /tmp/#{context_basename}"
+                            " --copy-in #{Shellwords.escape(context_fullpath)}:/tmp"\
+                            " --firstboot-install #{package}"
 
         elsif guest_os.start_with?('alpine')
             puts 'Alpine is not compatible with offline install, please install context manually.'.brown
@@ -1425,9 +1513,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def get_win_controlset(disk)
-        cmd = 'virt-win-reg'\
-              " #{disk}"\
-              " 'HKLM\\SYSTEM\\Select'"
+        cmd = "virt-win-reg #{win_reg_disk(disk)} 'HKLM\\SYSTEM\\Select'"
         print 'Checking Windows ControlSet...'
         stdout, _status = run_cmd_report(cmd, true)
         stdout.split("\n").find {|s| s.start_with?('"Current"') }.split(':')[1].to_i
@@ -1435,13 +1521,14 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
     def win_context_inject(disk, osinfo)
         puts 'win_context_inject'
-        cmd = "guestfish <<_EOF_
-add #{disk}
-run
-mount #{osinfo['mounts']['/']} /
-upload #{@options[:virt_tools]}/rhsrvany.exe /rhsrvany.exe
-upload #{detect_context_package('windows')} /one-context.msi
-_EOF_"
+        # A quoted delimiter: the shell passes the script to guestfish unchanged.
+        cmd = "guestfish <<'_EOF_'\n" \
+              "#{guestfish_add(disk)}\n" \
+              "run\n" \
+              "mount #{osinfo['mounts']['/']} /\n" \
+              "upload #{guestfish_quote("#{@options[:virt_tools]}/rhsrvany.exe")} /rhsrvany.exe\n" \
+              "upload #{guestfish_quote(detect_context_package('windows'))} /one-context.msi\n" \
+              '_EOF_'
         print 'Uploading context files to Windows disk...'
         puts 'win_context_inject cmd: ' + cmd
         run_cmd_report(cmd)
@@ -1462,10 +1549,7 @@ _EOF_"
         regfile.flush
         regfile.close
 
-        cmd = 'virt-win-reg'\
-              ' --merge'\
-              " #{disk}"\
-              " #{@options[:work_dir]}/service.reg"
+        cmd = "virt-win-reg --merge #{win_reg_disk(disk)} #{Shellwords.escape("#{@options[:work_dir]}/service.reg")}"
 
         print 'Merging service registry entry to install on boot...'
         run_cmd_report(cmd)
@@ -1473,9 +1557,7 @@ _EOF_"
 
     def win_virtio_command(disk)
         # requires newer version of virt-customize actually
-        cmd = 'virt-customize'\
-              " -a #{disk}"\
-              " --inject-virtio-win #{@options[:virtio_path]}"
+        cmd = "virt-customize #{guestfs_disk(disk)} --inject-virtio-win #{Shellwords.escape(@options[:virtio_path])}"
         puts 'win_virtio_command cmd: ' + cmd
         cmd
     end
@@ -1505,7 +1587,7 @@ _EOF_"
                     raise "Could not find guest-agent/qemu-ga-x86_64.msi in ISO '#{path}'."
                 end
 
-                dest = File.join(@options[:work_dir] || Dir.tmpdir, 'qemu-ga-x86_64.msi')
+                dest = File.join(upload_dir, 'qemu-ga-x86_64.msi')
                 FileUtils.cp(candidate, dest)
                 dest
             ensure
@@ -1521,19 +1603,16 @@ _EOF_"
     def qemu_ga_command(disk)
         msi = resolve_qemu_ga_msi(@options[:qemu_ga_win].to_s)
         msi_filename = File.basename(msi)
+        guest_msi = "\"c:\\Temp\\#{msi_filename}\""
         # Copy MSI into the guest and install it silently on first boot then delete it.
-        'virt-customize'\
-        " -a #{disk}"\
+        "virt-customize #{guestfs_disk(disk)}"\
         ' --mkdir /Temp'\
         " --copy-in #{Shellwords.escape(msi)}:/Temp"\
-        " --firstboot-command " \
-        "'msiexec /i c:\\Temp\\#{msi_filename} /quiet /norestart && del c:\\Temp\\#{msi_filename}'"
+        " --firstboot-command #{Shellwords.escape("msiexec /i #{guest_msi} /quiet /norestart && del #{guest_msi}")}"
     end
 
     def pkg_install_command(disk, pkg)
-        'virt-customize'\
-              " -a #{disk}"\
-              " --install #{pkg}"
+        "virt-customize #{guestfs_disk(disk)} --install #{Shellwords.escape(pkg)}"
     end
 
     def install_pkg(disk, pkg, timeout: nil, env: v2v_env)
@@ -1546,9 +1625,7 @@ _EOF_"
         root_dev = osinfo['mounts'] && osinfo['mounts']['/']
         return nil unless root_dev
 
-        cmd = 'guestfish --ro'\
-              " -a #{disk}"\
-              " run : mount-ro #{root_dev} / : statvfs /"
+        cmd = "guestfish --ro #{guestfs_disk(disk)} run : mount-ro #{Shellwords.escape(root_dev)} / : statvfs /"
         stdout, stderr, status = Open3.capture3(v2v_env, cmd)
         unless status.success?
             @logger.debug("Could not stat guest root filesystem: #{stderr}")
@@ -1598,10 +1675,7 @@ _EOF_"
     end
 
     def guest_run_cmd(disk, cmd)
-        cmd = 'guestfish'\
-              " -a #{disk}"\
-              ' -i'\
-              " #{cmd}"
+        cmd = "guestfish #{guestfs_disk(disk)} -i #{cmd}"
         puts "Running: #{cmd}"
         _stdout, _stderr, _status = Open3.capture3(v2v_env, cmd)
     end
@@ -1709,13 +1783,11 @@ _EOF_"
         #   -o local
         #   -os /path/to/working/folder
         #   -of [qcow2|raw]
-        "#{@options[:v2v_path]} -v --machine-readable"\
-                  ' -i libvirtxml'\
-                  " #{xml_file}"\
-                  ' -o local'\
-                  ' --root first'\
-                  " -os #{@options[:work_dir]}/conversions/"\
-                  " -of #{@options[:format]}"
+        "#{Shellwords.escape(@options[:v2v_path])} -v --machine-readable"\
+            ' -i libvirtxml'\
+            " #{Shellwords.escape(xml_file)}"\
+            ' --root first'\
+            "#{v2v_local_output}"
     end
 
     def vc_virtual_disks
@@ -1746,15 +1818,11 @@ _EOF_"
         raise VSAN_VDDK_REQUIRED_MESSAGE.red unless @options[:vddk_path]
     end
 
-    def build_v2v_vc_cmd
-        # virt-v2v
-        #   -ic 'vpx://UserName@vCenter.Host.FQDN
-        #             /Datacenter/Cluster/Host?no_verify=1'
-        #   -ip password_file.txt ### Should be a 0600 file with only the password, no newline
-        #   'virtual-machine-name'
-        #   -o local
-        #   -os /path/to/working/folder
-        #   -of [qcow2|raw]
+    #
+    # vpx:// URL of the ESXi host of the VM, as virt-v2v takes it:
+    #   vpx://UserName@vCenter.Host.FQDN/Datacenter[/Cluster]/Host[?no_verify=1]
+    #
+    def vcenter_vpx_url
         err_msg = 'Unable to find Host, Cluster, and Datacenter of VM'
         dc, cluster, host = nil
 
@@ -1787,20 +1855,34 @@ _EOF_"
         no_verify = @options[:accept_cert] ? '?no_verify=1' : ''
         enc = ->(s) { CGI.escape(s.to_s).gsub('+', '%20') }
         if cluster == false
-            url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
-                  "/#{enc.(dc[:name])}/#{enc.(host[:name])}#{no_verify}"
+            "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
+                "/#{enc.(dc[:name])}/#{enc.(host[:name])}#{no_verify}"
         else
-            url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
-                  "/#{enc.(dc[:name])}/#{enc.(cluster[:name])}/#{enc.(host[:name])}#{no_verify}"
+            "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
+                "/#{enc.(dc[:name])}/#{enc.(cluster[:name])}/#{enc.(host[:name])}#{no_verify}"
         end
+    end
 
-        "#{@options[:v2v_path]} -v --machine-readable"\
-                  " -ic '#{url}'"\
-                  " -ip #{@options[:work_dir]}/vpassfile"\
-                  ' -o local'\
-                  " -os #{@options[:work_dir]}/conversions/"\
-                  " -of #{@options[:format]}"\
-                  " '#{@props['name']}'"
+    # Output arguments of every virt-v2v conversion.
+    def v2v_local_output
+        " -o local -os #{Shellwords.escape("#{@options[:work_dir]}/conversions/")}"\
+            " -of #{Shellwords.escape(@options[:format])}"
+    end
+
+    def build_v2v_vc_cmd
+        # virt-v2v
+        #   -ic 'vpx://UserName@vCenter.Host.FQDN
+        #             /Datacenter/Cluster/Host?no_verify=1'
+        #   -ip password_file.txt ### Should be a 0600 file with only the password, no newline
+        #   'virtual-machine-name'
+        #   -o local
+        #   -os /path/to/working/folder
+        #   -of [qcow2|raw]
+        "#{Shellwords.escape(@options[:v2v_path])} -v --machine-readable"\
+            " -ic #{Shellwords.escape(vcenter_vpx_url)}"\
+            " -ip #{Shellwords.escape("#{@options[:work_dir]}/vpassfile")}"\
+            "#{v2v_local_output}"\
+            " #{Shellwords.escape(@props['name'])}"
     end
 
     def build_v2v_esx_cmd
@@ -1819,17 +1901,17 @@ _EOF_"
         # /vmfs/volumes/65de2b62-8488ae37-d55b-3cecefcef5a6
         ds_path = @props['config'][:datastoreUrl].find {|ds| ds[:name] == ds_name }
         vmx_fullpath = "#{ds_path[:url]}/#{vmx_relpath}"
+        # virt-v2v parses a URI, so the path is percent-encoded.
+        vmx_uri_path = vmx_fullpath.split('/', -1).map {|part| CGI.escape(part).gsub('+', '%20') }.join('/')
 
         url = "ssh://#{CGI.escape(@options[:esxi_user])}@#{@options[:esxi_ip]}"\
-              "/#{vmx_fullpath}"
-        "#{@options[:v2v_path]} -v --machine-readable"\
-                  ' -i vmx'\
-                  ' -it ssh'\
-                  " #{url}"\
-                  " -ip #{@options[:work_dir]}/esxpassfile"\
-                  ' -o local'\
-                  " -os #{@options[:work_dir]}/conversions/"\
-                  " -of #{@options[:format]}"
+              "/#{vmx_uri_path}"
+        "#{Shellwords.escape(@options[:v2v_path])} -v --machine-readable"\
+            ' -i vmx'\
+            ' -it ssh'\
+            " #{Shellwords.escape(url)}"\
+            " -ip #{Shellwords.escape("#{@options[:work_dir]}/esxpassfile")}"\
+            "#{v2v_local_output}"
     end
 
     def vddk_thumbprint
@@ -1865,57 +1947,24 @@ _EOF_"
         #   -o local
         #   -os /path/to/working/folder
         #   -of [qcow2|raw]
-        err_msg = 'Unable to find Host, Cluster, and Datacenter of VM'
-        dc, cluster, host = nil
-
-        host_ref = @props['runtime.host']._ref
-        hs_list = get_objects(@vi_client, 'HostSystem', ['name'])
-        hs_entry = hs_list.find {|h| h.obj._ref == host_ref }
-        raise err_msg unless hs_entry
-
-        pobj = hs_entry.obj
-        while dc.nil? || cluster.nil? || host.nil?
-            host    = pobj if pobj.class == RbVmomi::VIM::HostSystem
-            cluster = pobj if pobj.class == RbVmomi::VIM::ClusterComputeResource
-            cluster = false if pobj.class == RbVmomi::VIM::ComputeResource
-            dc      = pobj if pobj.class == RbVmomi::VIM::Datacenter
-            begin
-                pobj = pobj[:parent]
-            rescue StandardError => e
-                @logger.error("Error traversing vCenter inventory: #{e.message}")
-                raise err_msg
-            end
-            raise err_msg if pobj.nil?
-        end
-
+        url = vcenter_vpx_url
         vddk_thumbprint
 
-        no_verify = @options[:accept_cert] ? '?no_verify=1' : ''
-        enc = ->(s) { CGI.escape(s.to_s).gsub('+', '%20') }
-        if cluster == false
-            url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
-                  "/#{enc.(dc[:name])}/#{enc.(host[:name])}#{no_verify}"
-        else
-            url = "vpx://#{CGI.escape(@options[:vuser])}@#{@options[:vcenter]}"\
-                  "/#{enc.(dc[:name])}/#{enc.(cluster[:name])}/#{enc.(host[:name])}#{no_verify}"
-        end
-        "#{@options[:v2v_path]} -v --machine-readable"\
-                  " -ic '#{url}'"\
-                  " -ip #{@options[:work_dir]}/vpassfile"\
-                  ' -it vddk'\
-                  " -io vddk-libdir=#{@options[:vddk_path]}"\
-                  " -io vddk-thumbprint=#{@options[:vddk_thumb]}"\
-                  ' -o local'\
-                  " -os #{@options[:work_dir]}/conversions/"\
-                  " -of #{@options[:format]}"\
-                  " '#{@props['name']}'"
+        "#{Shellwords.escape(@options[:v2v_path])} -v --machine-readable"\
+            " -ic #{Shellwords.escape(url)}"\
+            " -ip #{Shellwords.escape("#{@options[:work_dir]}/vpassfile")}"\
+            ' -it vddk'\
+            " -io #{Shellwords.escape("vddk-libdir=#{@options[:vddk_path]}")}"\
+            " -io #{Shellwords.escape("vddk-thumbprint=#{@options[:vddk_thumb]}")}"\
+            "#{v2v_local_output}"\
+            " #{Shellwords.escape(@props['name'])}"
     end
 
     def vcenter_snapshot_moref(snapshot_name)
-        vm = RbVmomi::VIM::VirtualMachine.new(@vi_client, @vm_moref)
+        deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + VCENTER_SNAPSHOT_LOOKUP_TIMEOUT
 
-        VCENTER_SNAPSHOT_LOOKUP_ATTEMPTS.times do |attempt|
-            snapshot_info = vm.collect!('snapshot')['snapshot']
+        loop do
+            snapshot_info = @vm_obj.collect!('snapshot')['snapshot']
             snapshots = Array(snapshot_info&.rootSnapshotList)
 
             until snapshots.empty?
@@ -1925,32 +1974,60 @@ _EOF_"
                 snapshots.concat(Array(snapshot.childSnapshotList))
             end
 
-            sleep VCENTER_SNAPSHOT_LOOKUP_INTERVAL if attempt < VCENTER_SNAPSHOT_LOOKUP_ATTEMPTS - 1
+            break if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+            sleep VCENTER_SNAPSHOT_LOOKUP_INTERVAL
         end
 
-        raise "Unable to find snapshot '#{snapshot_name}' for VM #{@vm_moref} in vCenter"
+        raise "Unable to find snapshot '#{snapshot_name}' for VM #{@vm_moref} in vCenter " \
+              "after #{VCENTER_SNAPSHOT_LOOKUP_TIMEOUT}s"
     end
 
     def convert_vddk_disk(vddk_file, output_path, snapshot_moref = nil)
         snapshot_arg = snapshot_moref.nil? ? '' :
             " snapshot=#{Shellwords.escape(snapshot_moref)}"
-        run_cmd = "qemu-img convert -O raw -p -S 4k -W \"$uri\" #{Shellwords.escape(output_path)}"
-        cmd = 'nbdkit -r -U - vddk'\
-              " libdir=#{Shellwords.escape(@options[:vddk_path])}"\
-              " server=#{Shellwords.escape(@options[:vcenter])}"\
-              " port=#{Shellwords.escape((@options[:port] || 443).to_s)}"\
-              " user=#{Shellwords.escape(@options[:vuser])}"\
-              " password=+#{Shellwords.escape("#{@options[:work_dir]}/vpassfile")}"\
-              " thumbprint=#{Shellwords.escape(vddk_thumbprint)}"\
-              " vm=moref=#{Shellwords.escape(@vm_moref)}"\
-              "#{snapshot_arg}"\
-              " file=#{Shellwords.escape(vddk_file)}"\
-              " --run #{Shellwords.escape(run_cmd)}"
-        puts "Running: #{cmd}"
-        success = system(cmd)
-        raise "Failed to convert #{vddk_file} with VDDK" unless success
+        # The guest controls the disk content: never let qemu-img probe it as
+        # an image format, which could make it read files of this host.
+        run_cmd = "qemu-img convert -f raw -O raw -p -S 4k -W \"$uri\" #{Shellwords.escape(output_path)}"
+
+        # nbdkit leaves the directory it creates for "-U -" behind, so the
+        # socket lives in a directory removed here instead. A socket path
+        # holds 107 bytes, which a long TMPDIR would exceed.
+        tmpdir = Dir.tmpdir.length > 70 ? '/tmp' : Dir.tmpdir
+        Dir.mktmpdir('nbd', tmpdir) do |socket_dir|
+            socket = File.join(socket_dir, 's')
+            cmd = "nbdkit -r -U #{Shellwords.escape(socket)} vddk"\
+                  " libdir=#{Shellwords.escape(@options[:vddk_path])}"\
+                  " server=#{Shellwords.escape(@options[:vcenter])}"\
+                  " port=#{Shellwords.escape((@options[:port] || 443).to_s)}"\
+                  " user=#{Shellwords.escape(@options[:vuser])}"\
+                  " password=+#{Shellwords.escape("#{@options[:work_dir]}/vpassfile")}"\
+                  " thumbprint=#{Shellwords.escape(vddk_thumbprint)}"\
+                  " vm=moref=#{Shellwords.escape(@vm_moref)}"\
+                  "#{snapshot_arg}"\
+                  " file=#{Shellwords.escape(vddk_file)}"\
+                  " --run #{Shellwords.escape(run_cmd)}"
+            puts "Running: #{cmd}"
+            success = system(cmd)
+            raise "Failed to convert #{vddk_file} with VDDK" unless success
+        end
 
         output_path
+    end
+
+    #
+    # vCenter names of the datastores of the VM, keyed by name and by the
+    # volume id that ESXi uses in /vmfs/volumes paths.
+    #
+    def vcenter_datastore_names
+        Array(@props['config'][:datastoreUrl]).each_with_object({}) do |datastore, names|
+            name = datastore[:name].to_s
+            next if name.empty?
+
+            names[name] = name
+            volume = datastore[:url].to_s[%r{/vmfs/volumes/([^/]+)/?\z}, 1]
+            names[volume] = name if volume
+        end
     end
 
     def build_v2v_ova
@@ -1961,12 +2038,10 @@ _EOF_"
         #   -of [qcow2|raw]
         #   --root=[ask|single|first|/dev/sdX]
 
-        "#{@options[:v2v_path]} -v --machine-readable"\
-                  " -i ova #{@options[:ova]}"\
-                  ' -o local'\
-                  " -os #{@options[:work_dir]}/conversions/"\
-                  " -of #{@options[:format]}"\
-                  " --root=#{@options[:root]}"
+        "#{Shellwords.escape(@options[:v2v_path])} -v --machine-readable"\
+            " -i ova #{Shellwords.escape(@options[:ova])}"\
+            "#{v2v_local_output}"\
+            " --root=#{Shellwords.escape(@options[:root].to_s)}"
     end
 
     def v2v_env
@@ -2044,15 +2119,16 @@ _EOF_"
                 raise "virt-v2v exited in error code #{exit_status} but did not provide an error"
             end
 
-            disks_on_file = Dir.glob("#{@options[:work_dir]}/conversions/#{@options[:name]}*").reject do |f|
-                f.end_with?('.xml')
-            end.sort
+            conversions = "#{@options[:work_dir]}/conversions"
+            disks_on_file = Dir.children(conversions).select do |f|
+                f.start_with?(@options[:name]) && !f.end_with?('.xml')
+            end.sort.map {|f| File.join(conversions, f) }
             puts "#{disks_on_file.length} disks on the local disk for this VM: #{disks_on_file}"
             if disks_on_file.length == 0
                 raise 'There are no disks on the local filesystem due to previous failures.'
             end
 
-            create_one_images(disks_on_file)
+            create_one_images(disks_on_file, @options[:format])
         rescue StandardError => e
             # Inspection failures retain the existing custom/hybrid fallback behavior.
             raise if e.is_a?(ConversionError) && !e.is_a?(InspectionError)
@@ -2064,7 +2140,13 @@ _EOF_"
             end
             if @options[:fallback]
                 puts 'Error encountered, fallback enabled. Attempting Custom Conversion now.'
-                cleanup_disks
+                # Only the failed outputs: the custom conversion writes into
+                # conversions/ and a hybrid one converts the downloads in transfers/.
+                conversions = "#{@options[:work_dir]}/conversions"
+                if @options[:delete] && Dir.exist?(conversions)
+                    puts "Deleting failed conversion outputs in #{conversions}"
+                    Dir.children(conversions).each {|file| FileUtils.rm_rf(File.join(conversions, file)) }
+                end
                 run_custom_conversion
             elsif @options[:hybrid]
                 puts 'Hybrid conversion failed, attempting manual conversion.'
@@ -2078,12 +2160,9 @@ _EOF_"
 
     # Passworldess root access to ESXi host IP required
     def run_delta_conversion
-        local_path_image_allocation_preflight!
+        delta_preflight!
 
-        client = ESXi::Client.new(get_esxi_host, @logger, esxi_client_options)
-
-        vm_name = @options[:name]
-        vm = client.get_vm_by_name(vm_name)
+        vm = delta_esxi_vm(esxi_client_options)
 
         conversion_dir = if @options[:delta_commit]
                              vm.live2kvm_commit(@options[:work_dir])
@@ -2098,9 +2177,63 @@ _EOF_"
 
         raise 'Failed to perform delta migration' unless conversion_dir
 
-        disks_on_file = Dir.children(conversion_dir).map {|disk| File.join(conversion_dir, disk) }
+        disks_on_file = ESXi::VirtualMachine.disk_files(conversion_dir).map {|disk| File.join(conversion_dir, disk) }
 
-        create_one_images(disks_on_file)
+        begin
+            img_ids = create_one_images(disks_on_file, 'raw')
+        rescue Exception # rubocop:disable Lint/RescueException
+            # Also when interrupted: the VM is off, and the retry needs its disks.
+            puts "The migrated disks are kept in #{conversion_dir}."
+            images = begin
+                vm_images
+            rescue StandardError
+                []
+            end
+            puts "Delete the images left for VM #{@options[:name]}: #{images.join(', ')}." unless images.empty?
+            puts "Keep VM #{@options[:name]} powered off, fix the cause and retry the import with --delta-commit."
+            raise
+        end
+
+        # A copy still running reads the migrated disks, which the finish removes.
+        copying = img_ids.map {|img| img[:id] }.reject {|id| image_state(id) == 'READY' }
+        if copying.empty?
+            vm.live2kvm_finish(@options[:work_dir])
+        else
+            puts "OpenNebula has not finished importing image(s) #{copying.join(', ')}, so the migrated disks stay " \
+                 "in #{conversion_dir}. Once the images are READY, run --delta-cleanup --delete-after to remove " \
+                 'the delta state and the migrated disks. If an image fails, delete the images and the template ' \
+                 'of the VM, and retry the import with --delta-commit.'
+        end
+
+        img_ids
+    end
+
+    # The state of an image, nil when OpenNebula cannot tell it.
+    def image_state(id)
+        image = OpenNebula::Image.new_with_id(id, @client)
+        OpenNebula.is_error?(image.info) ? nil : image.state_str
+    end
+
+    # Images that a conversion of this VM creates, as "name (ID id)".
+    def vm_images
+        pool = OpenNebula::ImagePool.new(@client)
+        pool.info
+        pool.select {|image| image.name =~ /\A#{Regexp.escape(@options[:name])}_\d+\z/ }
+            .map {|image| "#{image.name} (ID #{image.id})" }
+    end
+
+    #
+    # @return [ESXi::VirtualMachine] the VM being migrated, found on its ESXi host
+    #
+    def delta_esxi_vm(client_options)
+        esxi_host = get_esxi_host
+        client = ESXi::Client.new(esxi_host, @logger, client_options)
+        # The VMX path tells apart VMs of the same name on the host.
+        vmx = @props['config'][:files][:vmPathName]
+        vm = client.get_vm_by_name(@options[:name], vmx)
+        raise "Unable to find VM #{@options[:name]} (#{vmx}) on ESXi host #{esxi_host}" unless vm
+
+        vm
     end
 
     # NetApp Shift conversion. The blueprint execution (triggered once per
@@ -2127,7 +2260,7 @@ _EOF_"
 
         morph_shift_disks(disks) unless @options[:shift_skip_morph]
 
-        create_one_images(disks)
+        create_one_images(disks, 'qcow2')
     end
 
     # Run the OS morph (virtio drivers, initramfs, bootloader) against the
@@ -2139,7 +2272,7 @@ _EOF_"
         # -i disk only accepts a single disk; multi-disk guests go through a
         # minimal libvirt domain XML so inspection sees the whole guest.
         input = if disks.length == 1
-                    "-i disk #{Shellwords.escape(disks.first)}"
+                    "-if qcow2 -i disk #{Shellwords.escape(disks.first)}"
                 else
                     "-i libvirtxml #{Shellwords.escape(write_shift_domain_xml(disks))}"
                 end
@@ -2229,9 +2362,10 @@ _EOF_"
             validate_delta_vddk_prerequisites!
             puts 'Using VDDK transport for delta prepare.'
             snapshot_moref = nil
+            datastore_names = vcenter_datastore_names
             return vm.live2kvm_prepare(@options[:work_dir]) do |parent_disk, output_path|
                 snapshot_moref ||= vcenter_snapshot_moref(vm.live2kvm_snapshot_name)
-                convert_vddk_disk(vm.vddk_path(parent_disk), output_path, snapshot_moref)
+                convert_vddk_disk(vm.vddk_path(parent_disk, datastore_names), output_path, snapshot_moref)
             end
         end
 
@@ -2244,13 +2378,98 @@ _EOF_"
         @logger.debug 'Local PATH mode requires OneSwap to run on the OpenNebula frontend or work_dir to be shared at the same path.'
 
         endpoint_host = opennebula_endpoint_host
-        return if endpoint_host.nil? || local_opennebula_endpoint?(endpoint_host)
-        return if @options[:allow_local_path_remote]
+        remote = !endpoint_host.nil? && !local_opennebula_endpoint?(endpoint_host)
+        if remote && !@options[:allow_local_path_remote]
+            raise "OpenNebula endpoint host '#{endpoint_host}' appears to differ from this OneSwap worker. " \
+                  'Local PATH image allocation would be resolved on the OpenNebula frontend and may not see worker-local files. ' \
+                  'Enable http_transfer/http_host/http_port, run OneSwap on the frontend, share work_dir at the same path, ' \
+                  'or pass --allow-local-path-remote if this path is intentionally shared.'
+        end
+    end
 
-        raise "OpenNebula endpoint host '#{endpoint_host}' appears to differ from this OneSwap worker. " \
-              'Local PATH image allocation would be resolved on the OpenNebula frontend and may not see worker-local files. ' \
-              'Enable http_transfer/http_host/http_port, run OneSwap on the frontend, share work_dir at the same path, ' \
-              'or pass --allow-local-path-remote if this path is intentionally shared.'
+    #
+    # OpenNebula's datastore drivers single-quote the path of a local image, so
+    # they cannot import one with an apostrophe, such as in the VM name. Over
+    # HTTP the path is percent-encoded.
+    #
+    # @param name [String] the VM name
+    #
+    def ensure_importable_local_path!(name = @options[:name])
+        return if @options[:http_transfer]
+
+        # Shift converts the disks onto its mount, which OpenNebula imports from.
+        path = @options[:shift] ? File.join(@options[:shift_mount].to_s, name.to_s) : @options[:work_dir].to_s
+        return unless path.include?("'")
+
+        remedy = if @options[:ova] || @options[:vmdk]
+                     'Rename the file or use a work_dir without one.'
+                 else
+                     'Rename the VM, use a path without one, or enable http_transfer.'
+                 end
+        raise "OpenNebula cannot import disks from #{path}: its datastore drivers do not accept an apostrophe " \
+              "in a local path. #{remedy}"
+    end
+
+    # Before the Shift blueprint converts them, refuses the VMs OpenNebula could not import.
+    def ensure_importable_shift_vms!(names, options)
+        @options = options
+        names.each {|name| ensure_importable_local_path!(name) }
+        nil
+    end
+
+    #
+    # A delta commit shuts the VM down before the guest conversion and the
+    # import, so what they need is checked first, already at prepare.
+    #
+    def delta_preflight!
+        warn_unreadable_kernel_for_libguestfs({})
+        local_path_image_allocation_preflight!
+        ensure_work_dir_readable_by_datastore_user! unless @options[:http_transfer]
+    end
+
+    #
+    # The datastore drivers import the disks as the OpenNebula user, so disks
+    # it cannot read only fail at image creation. They are files in new
+    # directories below work_dir, so one is created the same way and checked.
+    #
+    def ensure_work_dir_readable_by_datastore_user!
+        return unless Process.uid.zero?
+
+        user = begin
+            Etc.getpwnam(DATASTORE_USER)
+        rescue ArgumentError
+            nil
+        end
+        return unless user
+
+        work_dir = @options[:work_dir].to_s
+        probe_dir = File.join(work_dir, ".oneswap-access-#{Process.pid}")
+        probe = File.join(probe_dir, 'disk0.raw')
+        begin
+            FileUtils.rm_rf(probe_dir)
+            Dir.mkdir(probe_dir)
+            File.write(probe, '')
+            return if path_accessible_as?(user, probe)
+        ensure
+            FileUtils.rm_rf(probe_dir)
+        end
+
+        raise "The OpenNebula user #{DATASTORE_USER} cannot read the files OneSwap creates in #{work_dir} " \
+              "(umask #{format('%04o', File.umask)}), so the converted disks could not be imported. Make " \
+              "work_dir and its parent directories accessible to #{DATASTORE_USER}, with a umask that lets " \
+              "it read new files (such as 0022, or 0027 with a setgid work_dir of group #{DATASTORE_USER}), " \
+              'or use http_transfer.'
+    end
+
+    def path_accessible_as?(user, path)
+        pid = fork do
+            Process.initgroups(user.name, user.gid)
+            Process::GID.change_privilege(user.gid)
+            Process::UID.change_privilege(user.uid)
+            exit!(File.readable?(path) ? 0 : 1)
+        end
+        Process.wait(pid)
+        $?.success?
     end
 
     def opennebula_endpoint_host
@@ -2288,28 +2507,43 @@ _EOF_"
     end
 
     def run_delta_prepare
-        esxi_host = get_esxi_host
-        puts "Checking ESXi SSH/auth for #{@options[:esxi_user] || 'root'}@#{esxi_host}..."
-        client = ESXi::Client.new(esxi_host, @logger, esxi_client_options)
-        puts 'ESXi SSH/auth check completed.'
+        delta_preflight!
 
-        vm_name = @options[:name]
-        vm = client.get_vm_by_name(vm_name)
+        puts "Checking ESXi SSH/auth for #{@options[:esxi_user] || 'root'}@#{get_esxi_host}..."
+        vm = delta_esxi_vm(esxi_client_options)
+        puts 'ESXi SSH/auth check completed.'
 
         state = prepare_delta_conversion(vm)
         raise 'Failed to prepare delta migration' unless state
 
-        state_file = File.join(state['transfer_dir'], 'oneswap-delta-state.yaml')
+        state_file = File.join(state['transfer_dir'], ESXi::VirtualMachine::STATE_FILE)
         puts "Delta base phase prepared. State file: #{state_file}"
         puts 'Warning: the VM snapshot remains active. Delta size can continue growing until --delta-commit is run.'
     end
 
-    def run_delta_cleanup
-        client = ESXi::Client.new(get_esxi_host, @logger, esxi_client_options)
+    #
+    # --delta-cleanup creates no image or template, and after a commit the
+    # images of the VM already exist, so the name prechecks must not block it.
+    #
+    def one_prechecks_required?
+        !@options[:skip_prechecks] && !@options[:delta_cleanup]
+    end
 
-        vm_name = @options[:name]
-        vm = client.get_vm_by_name(vm_name)
-        raise "Unable to find VM #{vm_name} on ESXi host" unless vm
+    #
+    # Drop from the config file the transfer and conversion modes that --delta
+    # replaces (it finds its ESXi host through vCenter), so that defaults set
+    # there do not make it fail. Given on the command line they still conflict.
+    #
+    # @param config [Hash] config file options, before the command line is merged
+    #
+    # @return [Array<Symbol>] the dropped keys that enabled something
+    #
+    def self.drop_config_modes_for_delta!(config)
+        DELTA_REPLACED_CONFIG_KEYS.select {|key| config.delete(key) }
+    end
+
+    def run_delta_cleanup
+        vm = delta_esxi_vm(esxi_client_options)
 
         return true if vm.live2kvm_cleanup(@options[:work_dir])
 
@@ -2391,7 +2625,11 @@ _EOF_"
         puts "VM: #{@options[:name]}"
 
         if delta_info.nil?
-            puts 'Downtime estimate is not available. The remaining delta size is only known after the base phase has been completed.'
+            if @dry_run_delta_error
+                puts "Downtime estimate is not available: #{@dry_run_delta_error}"
+            else
+                puts 'Downtime estimate is not available. The remaining delta size is only known after the base phase has been completed.'
+            end
             return
         end
 
@@ -2488,9 +2726,8 @@ _EOF_"
     end
 
     def dry_run_delta_info
-        client = ESXi::Client.new(get_esxi_host, @logger, esxi_client_options(:non_interactive => true))
-        vm = client.get_vm_by_name(@options[:name])
-        return nil unless vm
+        @dry_run_delta_error = nil
+        vm = delta_esxi_vm(esxi_client_options(:non_interactive => true))
 
         state = vm.live2kvm_state(@options[:work_dir]) || {}
         delta_size = vm.live2kvm_current_delta_size(@options[:work_dir])
@@ -2524,7 +2761,9 @@ _EOF_"
             source_basis = "configured fallback, not measured, #{source_rate.round(2)} MiB/s"
         end
 
-        measured_apply_rate = state['base_convert_mib_s'].to_f
+        # A VDDK prepare measures its network copy, not a local conversion
+        # comparable to applying the delta.
+        measured_apply_rate = state['transport'] == 'vddk' ? 0.0 : state['base_convert_mib_s'].to_f
         if measured_apply_rate > 0
             apply_rate = measured_apply_rate
             apply_rate_source = :prepare_measured
@@ -2612,6 +2851,7 @@ _EOF_"
             :confidence_note => confidence_note
         }
     rescue StandardError => e
+        @dry_run_delta_error = e.message
         @logger.warn "Unable to read prepared delta size: #{e.message}"
         nil
     end
@@ -2805,7 +3045,7 @@ _EOF_"
     end
 
     def delta_state_file
-        File.join(@options[:work_dir], "esxi_client-#{@options[:name]}", 'oneswap-delta-state.yaml')
+        File.join(@options[:work_dir], "esxi_client-#{@options[:name]}", ESXi::VirtualMachine::STATE_FILE)
     end
 
     def read_metrics
@@ -2892,7 +3132,7 @@ _EOF_"
         img = nil
         begin
             server_thread = start_http_transfer_server(benchmark_dir)
-            path = "http://#{@options[:http_host]}:#{@options[:http_port]}/#{File.basename(test_file)}"
+            path = http_image_url(test_file)
             img = OpenNebula::Image.new(OpenNebula::Image.build_xml, @client)
             img.add_element('//IMAGE', {
                                 'NAME' => "#{@options[:name]}_dry_run_import_benchmark_#{Time.now.to_i}",
@@ -2909,9 +3149,11 @@ _EOF_"
             end
 
             puts 'Waiting for benchmark image to be ready.'
-            img_wait_sec = @options[:img_wait] || 120
-            unless img.wait_state('READY', img_wait_sec)
-                raise "benchmark image did not become READY before #{img_wait_sec}s timeout"
+            img_state = wait_image_settled(img, image_wait_timeout)
+            if img_state == 'ERROR'
+                raise "OpenNebula could not import the benchmark image: #{img['TEMPLATE/ERROR']}"
+            elsif img_state != 'READY'
+                raise "benchmark image did not become READY before #{image_wait_timeout}s timeout"
             end
 
             seconds = Time.now - import_t0
@@ -2932,10 +3174,10 @@ _EOF_"
             puts "Warning: import benchmark failed: #{e.message}"
             puts 'The dry-run estimate will use previous import metrics or dry_run_target_import_mib_s.'
         ensure
-            begin
-                img.delete if img && img.id
-            rescue StandardError => e
-                puts "Warning: unable to delete benchmark image #{img.id}: #{e.message}" if img && img.id
+            if img && img.id
+                # The copy needs the server. After a signal, it is not waited for.
+                rc = delete_image_once_copied(img, $!.is_a?(SignalException) ? 0 : image_wait_timeout)
+                puts "Warning: unable to delete benchmark image #{img.id}: #{rc.message}" if OpenNebula.is_error?(rc)
             end
             if server_thread
                 server_thread.kill
@@ -3114,7 +3356,8 @@ _EOF_"
         puts "Converting disk #{vmdk_path} to #{output_format}..."
         base_name = File.basename(vmdk_path, '.vmdk')
         output_path = File.join(@options[:work_dir], 'conversions', "#{base_name}.#{output_format}")
-        command = "qemu-img convert -O #{output_format} -p -S 4k -W #{vmdk_path} #{output_path}"
+        command = "qemu-img convert -O #{Shellwords.escape(output_format)} -p -S 4k -W " \
+                  "#{Shellwords.escape(vmdk_path)} #{Shellwords.escape(output_path)}"
         t0 = Time.now
         success = system(command)
         duration = (Time.now - t0).round(2)
@@ -3285,8 +3528,15 @@ _EOF_"
         end
     end
 
-    def create_one_images(disks)
+    #
+    # @param disks [Array<String>] converted disks, in the VM disk order
+    # @param format [String] their format, which the guest tools must not probe
+    #
+    def create_one_images(disks, format)
+        register_disk_format(disks, format)
         puts 'Creating Images in OpenNebula'
+        # Images of a failed import are deleted: a retry needs their names.
+        created = []
         img_ids = []
         persistent_image = @options[:persistent_img] ? 'YES' : 'NO'
         t0 = Time.now
@@ -3295,6 +3545,8 @@ _EOF_"
         # Normalize datastore input to an array of integers
         datastores = @options[:datastore].to_s.split(',').map(&:strip).map(&:to_i)
 
+        # The server of the disk being imported, stopped also when the import fails.
+        server_thread = nil
         disks.each_with_index do |d, i|
             img = OpenNebula::Image.new(OpenNebula::Image.build_xml, @client)
             customization_t0 = Time.now
@@ -3320,22 +3572,9 @@ _EOF_"
             customization_seconds = Time.now - customization_t0
 
             if @options[:http_transfer]
-                path = "http://#{@options[:http_host]}:#{@options[:http_port]}/#{File.basename(d)}"
+                path = http_image_url(d)
                 puts "Using HTTP transfer for image #{i}: #{path}"
-                server_thread = Thread.new do
-                    server = WEBrick::HTTPServer.new({
-                                                         :Port => @options[:http_port],
-                        :DocumentRoot => File.dirname(d),
-                        :RequestCallback => lambda {|_req, res|
-                            res['Cache-Control'] = 'public, max-age=3600'
-                        },
-                        :MaxThreads => 8
-                                                     })
-
-                    trap('INT') { server.shutdown }
-
-                    server.start
-                end
+                server_thread = start_http_transfer_server(File.dirname(d))
             else
                 path = d
             end
@@ -3356,16 +3595,24 @@ _EOF_"
             rc = img.allocate(img.to_xml, ds_id)
 
             if OpenNebula.is_error?(rc)
-                raise "Failed to create OpenNebula image '#{img_name}':\n#{rc.message}"
+                raise ImageImportError, "Failed to create OpenNebula image '#{img_name}':\n#{rc.message}"
             end
+            created << img.id
 
             chown_one_object(img, *resolve_one_ownership)
 
-            img_wait_sec = @options[:img_wait] || 120
-            puts 'Waiting for image to be ready. Timeout: ' + img_wait_sec.to_s + ' seconds.'
+            img_wait_sec = image_wait_timeout
+            if img_wait_sec
+                puts "Waiting for image to be ready. Timeout: #{img_wait_sec} seconds."
+            else
+                puts 'Waiting for image to be ready.'
+            end
 
-            img_wait_return = img.wait_state('READY', img_wait_sec)
-            if img_wait_return == false
+            img_state = wait_image_settled(img, img_wait_sec)
+            if img_state == 'ERROR'
+                raise ImageImportError,
+                      "OpenNebula could not import image #{img.id} (#{img_name}): #{img['TEMPLATE/ERROR']}"
+            elsif img_state != 'READY'
                 puts 'Image did not become ready in time.'
                 puts 'Image Short State: ' + img.short_state_str
             end
@@ -3375,8 +3622,8 @@ _EOF_"
             import_bytes = File.exist?(d) ? File.size(d) : 0
 
             if @options[:http_transfer]
-                server_thread.kill
-                server_thread.join
+                stop_http_transfer_server(server_thread)
+                server_thread = nil
             end
 
             import_seconds = Time.now - import_t0
@@ -3389,7 +3636,8 @@ _EOF_"
                 puts "OpenNebula import for image #{i}: #{format_mib(import_bytes.to_f / (1024 * 1024))} " \
                      "in #{format_duration(import_seconds)} (#{import_mib_s.round(2)} MiB/s)"
             end
-            if @options[:http_transfer]
+            # The timings of a copy still running would overstate its speed.
+            if @options[:http_transfer] || img_state != 'READY'
                 import_metrics << {
                     'disk' => d,
                     'customization_seconds' => customization_seconds
@@ -3408,11 +3656,111 @@ _EOF_"
 
             img_ids.append({ :id => img.id, :os => os_name })
         end
+        # All imported: a later error must not delete the images.
+        created = nil
 
         persist_opennebula_import_metrics(import_metrics)
         puts "Allocated images in OpenNebula in (#{(Time.now - t0).round(2)}s)".green
 
         img_ids
+    rescue Exception => e # rubocop:disable Lint/RescueException
+        # A copy from the server then fails, and so ends sooner.
+        stop_http_transfer_server(server_thread) if server_thread
+        # Also when package injection exits for a Windows guest. After a signal,
+        # the copies still running are not waited for.
+        delete_one_images(created, :wait => !e.is_a?(SignalException)) if created && !created.empty?
+        raise
+    end
+
+    #
+    # Deletes the images of a failed import, so that a retry finds their names
+    # free.
+    #
+    # @param wait [Boolean] whether to wait for the copies still running
+    #
+    def delete_one_images(ids, wait: true)
+        ids.each do |id|
+            image = OpenNebula::Image.new_with_id(id, @client)
+            rc = delete_image_once_copied(image, wait ? image_wait_timeout : 0)
+            if OpenNebula.is_error?(rc)
+                puts "Warning: unable to delete image #{id} of the failed import: #{rc.message}".brown
+            else
+                puts "Deleted image #{id} of the failed import."
+            end
+        end
+    end
+
+    #
+    # OpenNebula would leave in its datastore the copy of an image deleted
+    # while LOCKED, so the image is deleted once copied.
+    #
+    # @param timeout [Numeric, nil] seconds to wait for the copy at most
+    #
+    # @return [nil, OpenNebula::Error]
+    #
+    def delete_image_once_copied(image, timeout)
+        waiting = "Waiting for OpenNebula to finish copying image #{image.id} before deleting it."
+        if wait_image_settled(image, timeout, waiting) == 'LOCKED'
+            return OpenNebula::Error.new("OpenNebula is still copying it: delete it once copied (oneimage delete #{image.id})")
+        end
+
+        image.delete
+    rescue StandardError => e
+        OpenNebula::Error.new(e.message)
+    end
+
+    #
+    # Without --img-wait, an import waits for the whole copy, as the OCA
+    # wait_state did with ZMQ: the source disk or the HTTP server is removed after.
+    #
+    def image_wait_timeout
+        @options[:img_wait]
+    end
+
+    #
+    # Waits while OpenNebula copies the image into its datastore. The wait_state
+    # of OCA never returns for an image whose copy failed.
+    #
+    # @param image [OpenNebula::Image]
+    # @param timeout [Numeric, nil] seconds to wait at most, nil until the copy ends
+    # @param waiting [String, nil] printed once the copy has to be waited for
+    #
+    # @return [String] the image state, LOCKED when the timeout ends first
+    #
+    def wait_image_settled(image, timeout, waiting = nil)
+        deadline = timeout && Time.now + timeout
+        failures = 0
+        loop do
+            rc = image.info
+            if OpenNebula.is_error?(rc)
+                failures += 1
+                if failures >= IMAGE_INFO_ATTEMPTS
+                    raise ImageImportError, "Unable to read OpenNebula image #{image.id}: #{rc.message}"
+                end
+            else
+                failures = 0
+                return image.state_str if image.state_str != 'LOCKED'
+            end
+
+            remaining = deadline && deadline - Time.now
+            return 'LOCKED' if remaining && remaining <= 0
+
+            puts waiting if waiting
+            waiting = nil
+            sleep(remaining ? [IMAGE_POLL_INTERVAL, remaining].min : IMAGE_POLL_INTERVAL)
+        end
+    end
+
+    def stop_http_transfer_server(server_thread)
+        server_thread.kill
+        server_thread.join
+    rescue StandardError
+        nil # a server that could not start has nothing to stop
+    end
+
+    # The URL the OpenNebula frontend downloads a disk from with http_transfer.
+    def http_image_url(disk)
+        "http://#{@options[:http_host]}:#{@options[:http_port]}/#{CGI.escape(File.basename(disk)).gsub('+', '%20')}"
     end
 
     def hybrid_downloader(vc_disks)
@@ -3540,34 +3888,29 @@ _EOF_"
     end
 
     def build_hybrid_xml(disks)
-        domain_xml = <<-XML
-          <domain type='kvm'>
-            <name>#{@options[:name]}</name>
-            <memory unit='KiB'>1048576</memory>
-            <vcpu>2</vcpu>
-            <os>
-              <type>hvm</type>
-              <boot dev='hd'/>
-            </os>
-            <features>
-              <acpi/>
-              <apic/>
-              <pae/>
-            </features>
-            <devices>
-        XML
+        doc = REXML::Document.new
+        domain = doc.add_element('domain', 'type' => 'kvm')
+        domain.add_element('name').text = @options[:name]
+        domain.add_element('memory', 'unit' => 'KiB').text = '1048576'
+        domain.add_element('vcpu').text = '2'
+        os = domain.add_element('os')
+        os.add_element('type').text = 'hvm'
+        os.add_element('boot', 'dev' => 'hd')
+        features = domain.add_element('features')
+        ['acpi', 'apic', 'pae'].each {|feature| features.add_element(feature) }
+        devices = domain.add_element('devices')
         suffix = 'a'
-        disks.each_with_index do |d, _i|
-            disk_xml = <<-XML
-              <disk type='file' device='disk'>
-                <source file='#{d}'/>
-                <target dev='sd#{suffix}' bus='scsi'/>
-              </disk>
-            XML
-            domain_xml << disk_xml
+        disks.each do |d|
+            disk = devices.add_element('disk', 'type' => 'file', 'device' => 'disk')
+            # The downloads hold the raw data of the VMware disks: virt-v2v
+            # must not probe their format.
+            disk.add_element('driver', 'name' => 'qemu', 'type' => 'raw')
+            disk.add_element('source', 'file' => d)
+            disk.add_element('target', 'dev' => "sd#{suffix}", 'bus' => 'scsi')
             suffix = next_suffix(suffix)
         end
-        domain_xml << '</devices></domain>'
+        domain_xml = +''
+        doc.write(domain_xml)
         domain_xml
     end
 
@@ -3586,7 +3929,9 @@ _EOF_"
                 puts "Downloaded disk ##{i}."
             end
         else
-            vmdks = Dir.glob("#{@options[:work_dir]}/transfers/*.vmdk").map {|f| f.chomp('.vmdk') }
+            transfers = "#{@options[:work_dir]}/transfers"
+            vmdks = Dir.children(transfers).select {|f| f.end_with?('.vmdk') }.sort
+                       .map {|f| File.join(transfers, f).delete_suffix('.vmdk') }
         end
 
         puts 'Converting disks locally'
@@ -3594,19 +3939,19 @@ _EOF_"
         vmdks.each_with_index do |d, i|
             # -p to show Progress, -S 4k to set Sparse Cluster Size to 4kb, -W for out of order writes
             t0 = Time.now
-            command = 'qemu-img convert'\
-                      " -O #{@options[:format]}"\
+            # The downloads are the raw data of the VMware disks (-flat.vmdk).
+            command = 'qemu-img convert -f raw'\
+                      " -O #{Shellwords.escape(@options[:format])}"\
                       ' -p -S 4k -W'\
-                      " #{d}.vmdk #{d}.#{@options[:format]}"
+                      " #{Shellwords.escape("#{d}.vmdk")} #{Shellwords.escape("#{d}.#{@options[:format]}")}"
             system(command) # don't need to interact or anything, just display the output straight.
             puts "Disk #{i} converted in #{(Time.now - t0).round(2)} seconds. Deleting vmdk file".green
             # puts "that's a lie, not deleting the vmdk".bg_blue
-            command = "rm -f #{d}.vmdk"
-            system(command)
+            FileUtils.rm_f("#{d}.vmdk")
             local_disks.append("#{d}.#{@options[:format]}")
         end
 
-        create_one_images(local_disks)
+        create_one_images(local_disks, @options[:format])
     end
 
     def get_vcenter_nic_info
@@ -3760,7 +4105,7 @@ _EOF_"
     VMTOOLS_CONTROL_SETS = %w[ControlSet001 ControlSet002].freeze
 
     def windows_control_sets_for_disk(disk)
-        cmd = "virt-win-reg #{disk} 'HKLM\\SYSTEM\\Select'"
+        cmd = "virt-win-reg #{win_reg_disk(disk)} 'HKLM\\SYSTEM\\Select'"
         stdout, stderr, status = Open3.capture3(v2v_env, cmd)
 
         unless status.success?
@@ -3827,7 +4172,7 @@ _EOF_"
                 @logger.debug("Registry file content for #{control_set}:\n#{reg_content}")
                 @logger.info("Running virt-win-reg for #{control_set}: #{VMTOOLS_SERVICES_TO_DISABLE.join(', ')}")
 
-                cmd = "virt-win-reg --merge #{disk} #{Shellwords.escape(f.path)}"
+                cmd = "virt-win-reg --merge #{win_reg_disk(disk)} #{Shellwords.escape(f.path)}"
                 @logger.debug("virt-win-reg command: #{cmd}")
 
                 stdout, stderr, status = Open3.capture3(v2v_env, cmd)
@@ -3859,7 +4204,7 @@ _EOF_"
         control_sets = windows_control_sets_for_disk(disk)
         
         guestfish_script = <<-GUESTFISH
-add #{disk}
+#{guestfish_add(disk)}
 run
 GUESTFISH
 
@@ -3908,13 +4253,16 @@ GUESTFISH
             disable_svc_cmd = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ' \
                 '"sc config VMTools start=disabled; sc config VGAuthService start=disabled; sc stop VMTools; sc stop VGAuthService" 2>$null'
             
-            'virt-customize -q -a ' + disk +
-            ' --mkdir /Temp' +
-            " --copy-in #{Shellwords.escape(real_script_path)}:/Temp" +
-            " --firstboot-command '#{disable_svc_cmd}'" +
-            " --firstboot-command 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:\\Temp\\#{script_name}'"
+            run_script_cmd = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass ' \
+                             "-File \"C:\\Temp\\#{script_name}\""
+
+            "virt-customize -q #{guestfs_disk(disk)}" \
+                ' --mkdir /Temp' \
+                " --copy-in #{Shellwords.escape(real_script_path)}:/Temp" \
+                " --firstboot-command #{Shellwords.escape(disable_svc_cmd)}" \
+                " --firstboot-command #{Shellwords.escape(run_script_cmd)}"
         else
-            "virt-customize -q -a #{disk} --firstboot '#{script_path}'"
+            "virt-customize -q #{guestfs_disk(disk)} --firstboot #{Shellwords.escape(script_path)}"
         end
     end
 
@@ -4204,6 +4552,8 @@ GUESTFISH
         conv_path = "#{@options[:work_dir]}/conversions/"
         tran_path = "#{@options[:work_dir]}/transfers/"
         begin
+            # Before any change in vCenter or on the ESXi host.
+            ensure_importable_local_path! unless @options[:delta_cleanup]
             Dir.mkdir(@options[:work_dir]) unless Dir.exist?(@options[:work_dir])
             Dir.mkdir(conv_path) unless Dir.exist?(conv_path)
             Dir.mkdir(tran_path) unless Dir.exist?(tran_path)
@@ -4426,6 +4776,7 @@ GUESTFISH
         conv_path = "#{@options[:work_dir]}/conversions/"
         tran_path = "#{@options[:work_dir]}/transfers/"
         begin
+            ensure_importable_local_path!
             Dir.mkdir(@options[:work_dir]) unless Dir.exist?(@options[:work_dir])
             Dir.mkdir(conv_path) unless Dir.exist?(conv_path)
             Dir.mkdir(tran_path) unless Dir.exist?(tran_path)
@@ -4642,7 +4993,7 @@ GUESTFISH
 
         # Import Image to OpenNebula
         print 'Allocating the Image => '
-        img_ids = create_one_images([img_loc])
+        img_ids = create_one_images([img_loc], 'qcow2')
         puts img_ids.nil? || img_ids.first[:id].nil? ? 'No Image reported being created'.red : "Created image: #{img_ids.first[:id]}".green
     end
 
@@ -4677,7 +5028,8 @@ GUESTFISH
         end
 
         @props = vm.to_hash
-        @vm_moref = vm.obj._ref
+        @vm_obj = vm.obj
+        @vm_moref = @vm_obj._ref
         validate_vsan_conversion!
 
         if @options[:dry_run]
@@ -4686,9 +5038,7 @@ GUESTFISH
             end
 
             # OpenNebula system prechecks
-            if !@options[:skip_prechecks]
-                one_prechecks(vm)
-            end
+            one_prechecks(vm) if one_prechecks_required?
 
             run_dry_run_estimate
             return
@@ -4699,7 +5049,8 @@ GUESTFISH
             begin
                 cloned_vm = clone_vm(@vi_client, properties, vm)
                 @props = cloned_vm.to_hash
-                @vm_moref = cloned_vm.obj._ref
+                @vm_obj = cloned_vm.obj
+                @vm_moref = @vm_obj._ref
             rescue RbVmomi::Fault => e
                 raise "Failed to clone VM #{@options[:name]}: #{e.message}"
             end
@@ -4724,9 +5075,7 @@ GUESTFISH
         end
 
         # OpenNebula system prechecks
-        if !@options[:skip_prechecks]
-            one_prechecks(vm)
-        end
+        one_prechecks(vm) if one_prechecks_required?
 
         if @options[:delta_prepare]
             run_delta_prepare
@@ -4784,11 +5133,7 @@ GUESTFISH
             vm_template = tune_windows_tmpl(vm_template, @options)
         end
 
-        new_vsphere_client
-
-        vm = @vsphere_client.get_vm(@options[:name])
-        vm_id = vm['vm']
-        tags = @vsphere_client.get_vm_tags(vm_id)
+        tags = vcenter_vm_tags
 
         if !tags.empty?
             tag_template = { 'VCENTER_TAGS' => tags.join(',') }
@@ -4808,6 +5153,18 @@ GUESTFISH
         chown_one_object(vm_template, *resolve_one_ownership)
 
         set_sunstone_labels(tags, vm_template.id) unless tags.empty?
+    end
+
+    # The vCenter tags of the VM, none when the vCenter API does not find it.
+    def vcenter_vm_tags
+        new_vsphere_client
+        vm = @vsphere_client.get_vm(@options[:name])
+        unless vm
+            puts "Warning: vCenter did not return VM #{@options[:name]}, so its tags are not copied.".brown
+            return []
+        end
+
+        @vsphere_client.get_vm_tags(vm['vm'])
     end
 
     def new_vsphere_client

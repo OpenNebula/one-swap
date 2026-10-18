@@ -65,6 +65,26 @@ class EsxiActiveVmdksTest < Minitest::Test
                      ESXi::VirtualMachine.active_vmdks(vmx)
     end
 
+    def test_nvme_disks_are_active_disks
+        assert_equal ['data.vmdk'], detect('data.vmdk', nil, 'nvme0:0')
+    end
+
+    def test_disks_follow_controller_and_unit_order_not_vmx_line_order
+        # hostd appends a re-attached disk at the end of the VMX.
+        vmx = {
+            'scsi0:1.fileName' => 'data.vmdk',
+            'nvme0:0.fileName' => 'fast.vmdk',
+            'sata0:0.fileName' => 'sata.vmdk',
+            'ide0:1.fileName' => 'ide.vmdk',
+            'scsi1:0.fileName' => 'other.vmdk',
+            'scsi0:10.fileName' => 'ten.vmdk',
+            'scsi0:0.fileName' => 'os.vmdk'
+        }
+        # The order of the vCenter device keys: SCSI, IDE, SATA, then NVMe.
+        assert_equal ['os.vmdk', 'data.vmdk', 'ten.vmdk', 'other.vmdk', 'ide.vmdk', 'sata.vmdk', 'fast.vmdk'],
+                     ESXi::VirtualMachine.active_vmdks(vmx)
+    end
+
     def test_conflicting_device_types_exclude_device
         assert_empty detect('disk.vmdk', ['scsi-hardDisk', 'cdrom-image'])
         assert_empty detect('disk.vmdk', ['cdrom-image', 'scsi-hardDisk'])
@@ -85,7 +105,7 @@ class EsxiActiveVmdksTest < Minitest::Test
     end
 
     def test_other_filename_keys_remain_excluded
-        %w[nvme0:0 floppy0 serial0 scsi0 scsi0:0.extra].each do |slot|
+        %w[floppy0 serial0 scsi0 scsi0:0.extra nvme0].each do |slot|
             assert_empty detect('disk.vmdk', nil, slot)
         end
     end
