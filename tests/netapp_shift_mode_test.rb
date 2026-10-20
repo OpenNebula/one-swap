@@ -57,7 +57,10 @@ class NetAppShiftModeTest < Minitest::Test
             commands << cmd
             ['', FakeStatus.new(true)]
         end
-        h.define_singleton_method(:create_one_images) do |disks|
+        h.define_singleton_method(:create_one_images) do |disks, format|
+            # Shift writes qcow2 disks.
+            raise "unexpected format #{format}" unless format == 'qcow2'
+
             imported = disks
             [{ :id => 1, :os => false }]
         end

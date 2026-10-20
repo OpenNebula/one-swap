@@ -26,7 +26,7 @@ class VSphereClient
     # @return [Array] list of matching VMs
     #
     def get_vm(name)
-        uri = URI("https://#{vcenter}/rest/vcenter/vm?filter.names=#{name}")
+        uri = URI("https://#{vcenter}/rest/vcenter/vm?filter.names=#{URI.encode_www_form_component(name).gsub('+', '%20')}")
         request = Net::HTTP::Get.new(uri)
         request['vmware-api-session-id'] = @session_id
 
