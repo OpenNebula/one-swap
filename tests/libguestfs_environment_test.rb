@@ -112,6 +112,25 @@ class LibguestfsEnvironmentTest < Minitest::Test
         assert_equal APPLIANCE, output
     end
 
+    def test_timeout_runner_defaults_to_configured_appliance_when_called_directly
+        command = Shellwords.join([RbConfig.ruby, '-e', 'print ENV.fetch("LIBGUESTFS_PATH", "")'])
+        output, error, st, timed_out = helper.send(:run_cmd_with_timeout, command, 5)
+        assert st.success?, error
+        refute timed_out
+        assert_equal APPLIANCE, output
+    end
+
+    def test_install_pkg_defaults_to_configured_appliance
+        capture = lambda do |env, command|
+            assert_equal({ 'LIBGUESTFS_PATH' => APPLIANCE }, env)
+            assert_equal 'virt-customize -a /tmp/disk --install pkg', command
+            ['', '', status]
+        end
+        Open3.stub(:capture3, capture) do
+            capture_io { helper.send(:install_pkg, '/tmp/disk', 'pkg') }
+        end
+    end
+
     def test_blank_and_unset_options_preserve_inherited_environment
         [{}, { :libguestfs_path => nil }, { :libguestfs_path => " \n" }].each do |options|
             h = helper(options)
@@ -368,7 +387,7 @@ class LibguestfsEnvironmentTest < Minitest::Test
                 'virt-v2v'
             end
             h.define_singleton_method(:warn_unreadable_kernel_for_libguestfs) { |_env| }
-            h.define_singleton_method(:create_one_images) do |_disks|
+            h.define_singleton_method(:create_one_images) do |_disks, _format|
                 raise ConversionError, 'fatal' if mode == :fatal
                 detect_distro('/tmp/disk')
             end
@@ -377,11 +396,12 @@ class LibguestfsEnvironmentTest < Minitest::Test
             h.define_singleton_method(:run_custom_conversion) { :custom }
             streams = [StringIO.new, StringIO.new, StringIO.new, OpenStruct.new(:value => 0)]
             Open3.stub(:popen3, streams) do
-                Dir.stub(:glob, ['/tmp/disk']) do
+                Dir.stub(:children, ['vm-sda']) do
                     Open3.stub(:capture3, ['', 'supermin failed', status(false)]) do
                         if [:fallback, :hybrid].include?(mode)
                             assert_equal :custom, h.send(:run_v2v_conversion)
-                            assert_equal mode == :fallback, cleaned
+                            # The end-of-run cleanup would remove the custom conversion inputs.
+                            refute cleaned
                         else
                             error = assert_raises(ConversionError) { h.send(:run_v2v_conversion) }
                             assert_includes error.message, mode == :fatal ? 'fatal' : 'supermin failed'
@@ -400,8 +420,8 @@ class LibguestfsEnvironmentTest < Minitest::Test
                 def dependency_precheck; end
             end
             client = client_class.new('host', Logger.new(File::NULL), h.send(:esxi_client_options))
-            execution = lambda do |cmd, _message, env|
-                assert_includes cmd, 'virt-v2v-in-place -i disk /tmp/disk'
+            execution = lambda do |cmd, _message, env, _output|
+                assert_includes cmd, 'virt-v2v-in-place -i disk -if raw /tmp/disk'
                 assert_equal h.send(:v2v_env), env
                 true
             end

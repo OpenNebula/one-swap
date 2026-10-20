@@ -251,7 +251,8 @@ CommandParser::CmdParser.new(ARGV) do
     IMG_WAIT = {
         :name => 'img_wait',
         :large => '--img-wait sec',
-        :description => 'The amount of time to wait in seconds for the image to be created in OpenNebula. Default is 120 seconds',
+        :description => 'The maximum time in seconds to wait for OpenNebula to copy each image. ' \
+                        'Default: until the copy ends',
         :format => Integer
     }
 
@@ -848,6 +849,13 @@ CommandParser::CmdParser.new(ARGV) do
             end
             options[:config_file] ||= '/etc/one/oneswap.yaml'
             cfg_file = normalize_config.call(YAML.load_file(options[:config_file])) if File.exist?(options[:config_file])
+            if cfg_file && options[:delta]
+                ignored = OneSwapHelper.drop_config_modes_for_delta!(cfg_file)
+                unless ignored.empty?
+                    puts "Ignoring #{ignored.map {|key| ":#{key}:" }.join(', ')} from the config file: " \
+                         '--delta uses its own transfer.'
+                end
+            end
             # Config file supplies defaults; anything given on the command
             # line wins. `replace` keeps the same Hash object because later
             # code mutates it in place (convert appends the VM name to
@@ -883,8 +891,8 @@ CommandParser::CmdParser.new(ARGV) do
                 incompatible_delta << '--custom' if options[:custom_convert]
                 incompatible_delta << '--hybrid' if options[:hybrid]
                 incompatible_delta << '--fallback' if options[:fallback]
-                incompatible_delta << '--vddk' if options[:vddk_path]
                 incompatible_delta << '--esxi' if options[:esxi_ip]
+                incompatible_delta << '--clone' if options[:clone]
 
                 if !incompatible_delta.empty?
                     raise "--delta cannot be combined with #{incompatible_delta.join(', ')}."
@@ -1045,6 +1053,7 @@ CommandParser::CmdParser.new(ARGV) do
                           "#{unknown.join(', ')}. Blueprint VMs: #{blueprint_vms.join(', ')}"
                 end
 
+                helper.ensure_importable_shift_vms!(requested, options)
                 helper.shift_execute_blueprint(options) unless options[:shift_skip_conversion]
 
                 if requested.size > 1

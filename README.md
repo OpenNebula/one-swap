@@ -7,7 +7,18 @@ OneSwap is a command-line tool designed to simplify converting Virtual Machines 
 OneSwap has been used in the field with a 96% success rate in converting VMs automatically, greatly simplifying and speeding up the migration process.
 
 When OpenNebula Image or VM Template allocation fails, OneSwap reports the
-OpenNebula API error directly and stops the current conversion.
+OpenNebula API error directly and stops the current conversion. OneSwap waits
+until OpenNebula has copied each image (`img_wait` limits the wait), and a
+failed copy stops the conversion with the OpenNebula error. The images that the
+failed conversion created are deleted once OpenNebula has finished copying
+them, so that a retry can use their names; when OneSwap is interrupted, the
+images still being copied are named for a later deletion instead.
+
+VM names may contain spaces and shell special characters. Without
+`http_transfer`, OpenNebula imports the disks from local paths that hold the VM
+name, and its datastore drivers do not accept an apostrophe in such a path, so
+a VM name with an apostrophe is refused before the conversion starts: enable
+`http_transfer` or rename the VM.
 
 The full documentation is available in the in the [OpenNebula documentation](https://docs.opennebula.io/stable/):
 
@@ -130,6 +141,32 @@ OS=[
 `cpu_features` can be provided either as a YAML array or as a comma-separated
 string and requires `cpu_model` to be set.
 
+VDDK can also be used with `--delta` for the initial/base disk transfer on
+non-vSAN VMware datastores:
+
+```
+oneswap convert <vm> --delta --vddk /opt/vmware-vix-disklib-distrib/
+```
+
+Delta migration with VDDK requires the same relevant vCenter disk-access
+permissions as full VDDK conversion. SSH access to the ESXi host is still
+required, either passwordless or with `--esxi-user`/`--esxi-pass`: VDDK is
+used only for the initial/base disk transfer; the snapshot handling and the
+final delta synchronization still use SSH.
+
+The `:vddk_path:` setting in `oneswap.yaml` can be used instead of the CLI
+option. vSAN-backed disks still do not support `--delta`; use full VDDK
+conversion for vSAN. With `--delta`, the `:esxi_ip:`, `:custom_convert:`,
+`:hybrid:`, `:download_stripes:`, `:fallback:`, `:clone:` and `:shift:`
+settings of `oneswap.yaml` are ignored; given on the command line, these
+options cannot be combined with `--delta`.
+
+Delta migration applies SEsparse snapshot deltas. ESXi creates them on VMFS6
+datastores, and for disks of 2 TB or larger on VMFS5. Other snapshot formats,
+such as those of NFS datastores without native snapshot support, are rejected
+before the base disk copy starts. The `sesparse` tool installed with OneSwap
+must be built from this repository to read the snapshot headers of ESXi 8.
+
 ## Dry-run Estimates
 
 OneSwap can estimate migration time without running the full conversion. Dry-run
@@ -179,6 +216,31 @@ on the frontend.
 Do not leave the VMware snapshot created by `--delta --delta-prepare` active
 indefinitely. Either finish with `--delta --delta-commit` or run
 `--delta-cleanup` if aborting or postponing the migration.
+
+Prepare also runs `virt-v2v-in-place` on throwaway overlays of the base disk
+copies, so a guest it cannot convert stops the prepare, while the VM still
+runs, instead of failing the commit after the shutdown. This check cannot write
+to a filesystem that the running guest keeps in use, such as the NTFS of a
+running Windows guest; the conversion of such a guest is then only checked by
+the commit. Running
+`--delta-prepare` again replaces the previous prepare, also an interrupted one,
+and removes its snapshot. Before and after shutting the VM
+down, `--delta-commit` checks that the prepared snapshot is still the active
+one: if a snapshot was taken or removed, or a disk was added or removed after
+the prepare, prepare again. A commit that fails before the guest conversion can
+be retried with `--delta-commit`. If the guest conversion fails or is
+interrupted, the base disk copies are discarded and the migration has to start
+again. If the import into OpenNebula fails afterwards, the migrated disks are
+kept and the images of the failed import are deleted: retry the import with
+`--delta-commit` while the VM stays powered off. Once the VM has run again,
+its migrated disks are outdated and the retry is refused. When `--img-wait`
+ends the wait for the image copies first, the migrated disks stay until the
+images are READY; `--delta-cleanup --delete-after` then removes them.
+To roll back, power the VM on and run `--delta-cleanup`. The commit shuts the
+guest down through VMware Tools, and powers it off only when they are not
+installed; with Tools installed but not running, shut the guest down first.
+Independent disks are not part of VMware snapshots, so delta migration does not
+support them.
 
 For detailed behavior, metric selection, confidence levels, and examples, see
 the official OpenNebula documentation.
@@ -407,7 +469,7 @@ Includes all permissions from OneSwap-Standard, plus:
 **Important Notes**:
 - Assign roles at vCenter root level with **"Propagate to children"** enabled
 - For `--clone` mode, the VM **must NOT have any snapshots** (remove all snapshots before cloning)
-- For `--delta` and `--esxi` modes, vCenter permissions are minimal as operations run via direct ESXi SSH
+- For `--delta` without VDDK and `--esxi`, vCenter permissions are minimal as operations run via direct ESXi SSH. Delta migration with VDDK additionally requires the relevant vCenter disk-access permissions used by full VDDK conversion.
 
 ## Contributing
 

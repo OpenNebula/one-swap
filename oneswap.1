@@ -81,9 +81,9 @@
  \-\-download\-stripes N     Parallel HTTP range downloads for hybrid datastore
                            transfers only\. Requires \-\-hybrid when N > 1\.
                            Default: 1
- \-\-img\-wait sec            The amount of time to wait in seconds for the
-                           image to be created in OpenNebula\. Default is
-                           120 seconds
+ \-\-img\-wait sec            The maximum time in seconds to wait for
+                           OpenNebula to copy each image\. Default: until
+                           the copy ends
  \-\-machine machine_type     Set the KVM machine type in OpenNebula\.
  \-\-memory\-max memorymb     The Max Memory allowed in MB in OpenNebula\.
                            Memory Hot Add required in VMware\.

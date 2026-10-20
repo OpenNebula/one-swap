@@ -9,6 +9,10 @@ module ESXi; end
 # SSH ESXI Client to perform CLI operations on a given ESXi host
 class ESXi::Client
 
+    # Raised when an ESXi command fails, so callers can tell a failed query
+    # apart from an empty or negative answer.
+    class Error < StandardError; end
+
     CTRL_CMD = 'vim-cmd'
     USER = 'root'
     DATASTORES_PATH = '/vmfs/volumes'
@@ -43,16 +47,24 @@ class ESXi::Client
         @vm_list = self.class.vmsvc_getallvms_to_array(o)
     end
 
-    def get_vm_by_name(name)
+    #
+    # @param [String] name VM name
+    # @param [String, nil] file "[datastore] folder/vm.vmx", which tells apart
+    #   VMs of the same name
+    #
+    def get_vm_by_name(name, file = nil)
         list_vms if @vm_list.empty?
 
         @vm_list.each do |vm|
             next unless vm[:name] == name
+            next unless file.nil? || vm[:file] == file
 
             @logger.debug vm
 
             return ESXi::VirtualMachine.new(self, vm)
         end
+
+        nil
     end
 
     #
@@ -81,43 +93,26 @@ class ESXi::Client
         s
     end
 
+    #
+    # @return [String, nil] id of the snapshot with the given name, nil if the
+    #   VM has no such snapshot
+    # @raise [ESXi::Client::Error] if the snapshot list cannot be read
+    #
     def snapshot_id_by_name(vm_id, name)
-        actions = "snapshot.get #{vm_id}"
-        stdout, _stderr, status = vm_cmd(actions)
-        return nil unless status
-
-        current_id = nil
-        current_name = nil
-        stdout.each_line do |line|
-            current_id = Regexp.last_match(1) if line =~ /Snapshot Id\s*:\s*(\d+)/
-            current_name = Regexp.last_match(1).strip if line =~ /Snapshot Name\s*:\s*(.*)$/
-            return current_id if current_id && current_name == name
-        end
-
-        nil
+        snapshot = snapshots(vm_id).find {|s| s[:name] == name }
+        snapshot && snapshot[:id]
     end
 
+    #
+    # @return [Array<Hash>] :id, :name and :description of every snapshot
+    # @raise [ESXi::Client::Error] if the snapshot list cannot be read
+    #
     def snapshots(vm_id)
         actions = "snapshot.get #{vm_id}"
-        stdout, _stderr, status = vm_cmd(actions)
-        return [] unless status
+        stdout, stderr, status = vm_cmd(actions)
+        raise Error, "Failed to list snapshots of VM #{vm_id}: #{stderr.to_s.strip}" unless status
 
-        snapshots = []
-        current = nil
-        stdout.each_line do |line|
-            if line =~ /Snapshot Id\s*:\s*(\d+)/
-                current = { :id => Regexp.last_match(1) }
-                snapshots << current
-            elsif current && line =~ /Snapshot Name\s*:\s*(.*)$/
-                current[:name] = Regexp.last_match(1).strip
-            elsif current && line =~ /Snapshot Desciption\s*:\s*(.*)$/
-                current[:description] = Regexp.last_match(1).strip
-            elsif current && line =~ /Snapshot Description\s*:\s*(.*)$/
-                current[:description] = Regexp.last_match(1).strip
-            end
-        end
-
-        snapshots
+        self.class.parse_snapshot_list(stdout)
     end
 
     def remove_snapshot_vm(vm_id, snapshot_id)
@@ -187,7 +182,7 @@ class ESXi::Client
     def clone_virtual_disk(source, target)
         log_host_operation("Cloning disk #{source} to #{target}")
 
-        cmd = "vmkfstools --clonevirtualdisk #{source} #{target} -d thin"
+        cmd = "vmkfstools --clonevirtualdisk #{Shellwords.escape(source)} #{Shellwords.escape(target)} -d thin"
         message = "Failed to clone virtual disk #{source} to #{target}"
 
         t0 = Time.now
@@ -208,10 +203,21 @@ class ESXi::Client
         ssh(cmd)
     end
 
+    #
+    # Copy files from the ESXi host. A trailing "/*" is kept as a remote glob.
+    #
+    # The remote path is escaped for the remote side: the legacy SCP protocol
+    # hands it to the remote shell and the SFTP mode of newer scp clients
+    # expands it as a glob, and both treat backslash escapes the same way.
+    #
     def pull_files(files, target)
-        source = "#{@host}:#{files}"
-        @logger.info "Copying files from #{source} to #{target}"
-        scp("#{@user}@#{source}", target)
+        remote = if files.end_with?('/*')
+                     "#{Shellwords.escape(files.delete_suffix('/*'))}/*"
+                 else
+                     Shellwords.escape(files)
+                 end
+        @logger.info "Copying files from #{@host}:#{files} to #{target}"
+        scp("#{@user}@#{@host}:#{remote}", target)
     end
 
     def remove_files(target)
@@ -222,7 +228,8 @@ class ESXi::Client
             return false
         end
 
-        cmd = "rm -r #{Shellwords.escape(target)}"
+        # Files that are already gone count as removed.
+        cmd = "rm -rf #{Shellwords.escape(target)}"
         message = "Failed to remove files at #{target} on ESXi host #{@host}"
         simple_ssh_execution(cmd, message)
     end
@@ -230,13 +237,13 @@ class ESXi::Client
     def create_dir(dir)
         log_host_operation("Creating directory #{dir}")
 
-        cmd = "mkdir -p #{dir}"
+        cmd = "mkdir -p #{Shellwords.escape(dir)}"
         message = "Failed to create directory #{dir} on ESXi host #{@host}"
         simple_ssh_execution(cmd, message)
     end
 
     def create_zero_file(path, size_mib)
-        if !path.start_with?(DATASTORES_PATH) || path.include?("'")
+        if !path.start_with?(DATASTORES_PATH)
             @logger.error "Refusing to create file outside datastore path: #{path}"
             return false
         end
@@ -252,7 +259,8 @@ class ESXi::Client
     def convert_vmdk(source_vmdk, target, format)
         @logger.info "Converting #{source_vmdk} to format #{format} at #{target}"
 
-        cmd = "qemu-img convert -p -f vmdk #{source_vmdk} -O #{format} #{target}"
+        cmd = "qemu-img convert -p -f vmdk #{Shellwords.escape(source_vmdk)} " \
+              "-O #{Shellwords.escape(format)} #{Shellwords.escape(target)}"
 
         t0 = Time.now
         message = "Failed to convert #{source_vmdk} to #{format} #{target}"
@@ -262,40 +270,63 @@ class ESXi::Client
         if s
             @logger.info("Conversion time #{Time.now - t0}")
         else
-            FileUtils.rm
+            FileUtils.rm_f(target)
         end
 
         s
     end
 
     def apply_vmdk_snapshot_to_raw(snapshot_vmdk, converted_parent_raw)
-        cmd = "sesparse #{snapshot_vmdk} #{converted_parent_raw}"
+        cmd = "sesparse #{Shellwords.escape(snapshot_vmdk)} #{Shellwords.escape(converted_parent_raw)}"
         message = "Failed to apply snapshot #{snapshot_vmdk} to #{converted_parent_raw}"
         live_execution(cmd, message)
     end
 
-    def os_morph(root_image, options = '')
+    #
+    # @param format [String] format of the image: virt-v2v-in-place must not
+    #   probe the format of guest-controlled data
+    #
+    #
+    # @param output [Array, nil] collects what virt-v2v reports, when given
+    #
+    def os_morph(root_image, options = '', format = 'raw', output = nil)
         @logger.info "Converting disk #{root_image} to KVM"
 
-        cmd = "virt-v2v-in-place -i disk #{root_image} #{options}"
+        cmd = "virt-v2v-in-place -i disk -if #{Shellwords.escape(format)} #{Shellwords.escape(root_image)} #{options}"
         message = "Failed to convert Guest OS at #{root_image}"
 
-        live_execution(cmd, message, @v2v_env)
+        live_execution(cmd, message, @v2v_env, output)
+    end
+
+    # A qcow2 overlay that takes every write, so the raw base stays as it is.
+    def create_overlay(base, overlay)
+        # qemu-img resolves a relative backing file against the overlay folder.
+        cmd = "qemu-img create -q -f qcow2 -F raw -b #{Shellwords.escape(File.expand_path(base))} " \
+              "#{Shellwords.escape(overlay)}"
+        live_execution(cmd, "Failed to create an overlay of #{base}")
     end
 
     def file_size_bytes(path)
-        if !path.start_with?(DATASTORES_PATH) || path.include?("'")
+        if !path.start_with?(DATASTORES_PATH)
             @logger.error "Refusing to read file size outside datastore path: #{path}"
             return nil
         end
 
-        stdout, _stderr, status = ssh("ls -ln \"#{path}\"")
+        stdout, _stderr, status = ssh("ls -ln #{Shellwords.escape(path)}")
         return nil unless status
 
         size = stdout.lines.last.to_s.split[4]
         return nil unless size && size =~ /^\d+$/
 
         size.to_i
+    end
+
+    # @return [String, nil] "<size> <mtime>" of a datastore file, nil when unreadable
+    def file_signature(path)
+        return nil unless path.start_with?("#{DATASTORES_PATH}/")
+
+        stdout, _stderr, status = ssh("stat -c '%s %Y' #{Shellwords.escape(path)}")
+        status ? stdout.strip : nil
     end
 
     private
@@ -340,6 +371,42 @@ class ESXi::Client
             :memory => false,
             :quiesce => false
         }
+    end
+
+    #
+    # Parses `vim-cmd vmsvc/snapshot.get`. ESXi prints each snapshot as a block
+    # that starts with "Snapshot Name" and continues with its id and
+    # description ("Desciption" in ESXi's own spelling); a field that repeats
+    # starts the next snapshot, whatever order the fields come in.
+    #
+    # @return [Array<Hash>] :id, :name and :description of every snapshot
+    #
+    def self.parse_snapshot_list(output)
+        snapshots = []
+        current = nil
+
+        # Fields start their line after the tree drawing ("--", "----|-CHILD"),
+        # so text inside a name or description is never taken for a field.
+        # The output is UTF-8 whatever the locale of this process.
+        output.to_s.dup.force_encoding(Encoding::UTF_8).scrub.each_line do |line|
+            field, value = case line
+                           when /\A[-|\s]*Snapshot Name\s*:\s*(.*)$/
+                               [:name, Regexp.last_match(1).strip]
+                           when /\A[-|\s]*Snapshot Id\s*:\s*(\d+)/
+                               [:id, Regexp.last_match(1)]
+                           when /\A[-|\s]*Snapshot Descr?iption\s*:\s*(.*)$/
+                               [:description, Regexp.last_match(1).strip]
+                           end
+            next unless field
+
+            if current.nil? || current.key?(field)
+                current = {}
+                snapshots << current
+            end
+            current[field] = value
+        end
+
+        snapshots
     end
 
     #
@@ -423,12 +490,12 @@ class ESXi::Client
     end
 
     def ssh(cmd)
-        ssh_cmd = "ssh #{@ssh_options} #{@user}@#{@host} '#{cmd}'"
+        ssh_cmd = "ssh #{@ssh_options} #{Shellwords.escape("#{@user}@#{@host}")} #{Shellwords.escape(cmd)}"
         execute(ssh_cmd, @ssh_env)
     end
 
     def scp(source, target)
-        cmd = "scp #{@ssh_options} -r #{source} #{target}"
+        cmd = "scp #{@ssh_options} -r #{Shellwords.escape(source)} #{Shellwords.escape(target)}"
         message = "Failed to perform remote copy from #{source} to #{target}"
         live_execution(cmd, message, @ssh_env)
     end
@@ -441,14 +508,17 @@ class ESXi::Client
         s
     end
 
-    def live_execution(cmd, error_message = nil, env = {})
+    #
+    # Streams the output of the command, and collects it in output when given.
+    #
+    def live_execution(cmd, error_message = nil, env = {}, output = nil)
         status = nil
         Open3.popen3(env, cmd) do |stdin, stdout, stderr, wait_thr|
             stdin.close
 
             threads = []
-            threads << Thread.new { stdout.each_line {|line| puts line } }
-            threads << Thread.new { stderr.each_line {|line| STDERR.puts line } }
+            threads << Thread.new { stdout.each_line {|line| puts line; output << line if output } }
+            threads << Thread.new { stderr.each_line {|line| STDERR.puts line; output << line if output } }
 
             threads.each(&:join)
             status = wait_thr.value.success?
