@@ -69,6 +69,7 @@
 #:work_dir: '/var/tmp'                        # Directory where disk conversion takes place, will make subdir for each VM
 #:format: 'qcow2'                         # Disk format [ qcow2 | raw ]
 #:vddk_path:                              # Path to VDDK library
+#:vddk_config: '/path/to/vddk.conf'        # Optional VDDK configuration file (VMware VDDK/OpenVDDK); requires vddk_path
 #:qemu_ga_win:                            # Path to QEMU Guest Agent ISO for Windows
 #:qemu_ga_linux:                          # Install QEMU Guest Agent for Linux
 #:virtio_path:                            # Path to VirtIO drivers for Windows

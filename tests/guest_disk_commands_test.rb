@@ -296,6 +296,15 @@ class GuestDiskCommandsTest < Minitest::Test
         h
     end
 
+    def test_vddk_command_passes_configuration_file
+        h = vcenter_helper
+        path = "/etc/vddk config.conf"
+        h.instance_variable_get(:@options)[:vddk_config] = path
+
+        args = Shellwords.split(h.send(:build_v2v_vddk_cmd))
+        assert_includes args.each_cons(2).to_a, ['-io', "vddk-config=#{path}"]
+    end
+
     def test_virt_v2v_commands_quote_paths_and_the_vm_name
         h = vcenter_helper
         output = ['-os', "#{WORK}/conversions/"]

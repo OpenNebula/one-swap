@@ -256,6 +256,34 @@ def delta_vm
         assert_operator waited, :>=, OneSwapHelper::VCENTER_SNAPSHOT_LOOKUP_TIMEOUT
     end
 
+    def test_delta_vddk_passes_configuration_file
+        path = '/etc/vddk config.conf'
+        h = helper(:vddk_path => '/opt/vddk', :vddk_config => path,
+                   :vcenter => 'vcenter.invalid', :vuser => 'user', :work_dir => '/tmp/work')
+        h.instance_variable_set(:@vm_moref, 'vm-42')
+        h.define_singleton_method(:vddk_thumbprint) { 'AA:BB' }
+        command = nil
+        h.define_singleton_method(:system) {|cmd| command = cmd; true }
+
+        capture_io { h.send(:convert_vddk_disk, '[ds] base.vmdk', '/tmp/base.raw', 'snapshot-42') }
+        assert_includes Shellwords.split(command), "config=#{path}"
+    end
+
+    def test_vddk_configuration_requires_vddk_mode
+        error = assert_raises(RuntimeError) do
+            helper.convert('test-vm', :vddk_config => '/etc/vddk.conf')
+        end
+        assert_includes error.message, '--vddk-config requires VDDK mode'
+
+        [:delta_commit, :delta_cleanup].each do |phase|
+            h = helper
+            h.define_singleton_method(:apply_verbosity) {|_| throw :validated, true }
+            assert catch(:validated) {
+                h.convert('test-vm', :vddk_config => '/missing/vddk.conf', :delta => true, phase => true)
+            }
+        end
+    end
+
     def test_convert_vddk_disk_adds_snapshot_only_when_provided
         commands = []
         h = helper(

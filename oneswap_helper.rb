@@ -1949,6 +1949,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         #   -of [qcow2|raw]
         url = vcenter_vpx_url
         vddk_thumbprint
+        config_arg = @options[:vddk_config] ?
+            " -io #{Shellwords.escape("vddk-config=#{@options[:vddk_config]}")}" : ''
 
         "#{Shellwords.escape(@options[:v2v_path])} -v --machine-readable"\
             " -ic #{Shellwords.escape(url)}"\
@@ -1956,6 +1958,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             ' -it vddk'\
             " -io #{Shellwords.escape("vddk-libdir=#{@options[:vddk_path]}")}"\
             " -io #{Shellwords.escape("vddk-thumbprint=#{@options[:vddk_thumb]}")}"\
+            "#{config_arg}"\
             "#{v2v_local_output}"\
             " #{Shellwords.escape(@props['name'])}"
     end
@@ -1984,6 +1987,8 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
     end
 
     def convert_vddk_disk(vddk_file, output_path, snapshot_moref = nil)
+        config_arg = @options[:vddk_config] ?
+            " #{Shellwords.escape("config=#{@options[:vddk_config]}")}" : ''
         snapshot_arg = snapshot_moref.nil? ? '' :
             " snapshot=#{Shellwords.escape(snapshot_moref)}"
         # The guest controls the disk content: never let qemu-img probe it as
@@ -2004,6 +2009,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                   " password=+#{Shellwords.escape("#{@options[:work_dir]}/vpassfile")}"\
                   " thumbprint=#{Shellwords.escape(vddk_thumbprint)}"\
                   " vm=moref=#{Shellwords.escape(@vm_moref)}"\
+                  "#{config_arg}"\
                   "#{snapshot_arg}"\
                   " file=#{Shellwords.escape(vddk_file)}"\
                   " --run #{Shellwords.escape(run_cmd)}"
@@ -4539,6 +4545,15 @@ GUESTFISH
     # @param name    [Hash] Object Name
     # @param options [Hash] User CLI options
     def convert(name, options)
+        if options[:vddk_config] && !(options[:delta] && (options[:delta_commit] || options[:delta_cleanup]))
+            raise '--vddk-config requires VDDK mode (--vddk)' unless options[:vddk_path]
+
+            path = options[:vddk_config]
+            unless File.file?(path) && File.readable?(path)
+                raise "VDDK configuration file does not exist or is not readable: #{path}"
+            end
+        end
+
         apply_verbosity(options)
         template_cpu_model(options)
         check_one_connectivity
