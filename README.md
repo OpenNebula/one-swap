@@ -110,6 +110,32 @@ To convert VMs stored on a vSAN datastore, configure VDDK:
 :vddk_path: '/opt/vmware-vix-disklib-distrib/'
 ```
 
+Optionally pass `--vddk-config /path/to/vddk.conf` or set
+`:vddk_config: '/path/to/vddk.conf'` in YAML. This option requires VDDK transfer mode (`--vddk` or `:vddk_path:`).
+It works with both VMware VDDK and OpenVDDK, including Delta base transfers.
+Use an absolute path to a readable configuration file. Without it, behavior
+is unchanged.
+
+VMware VDDK example:
+
+```ini
+vixDiskLib.nfcAio.Session.BufSizeIn64KB = "32"
+```
+
+OpenVDDK example:
+
+```ini
+OpenVDDK.nbd.sessions = "4"
+vixDiskLib.nfcAio.Session.BufSizeIn64KB = "32"
+```
+
+Here `32` means a 2 MiB buffer; multiple NFC sessions are specific to OpenVDDK.
+Tuning mainly benefits NBD/NBDSSL reads. Values depend on storage, network,
+CPU and concurrent migrations; larger buffers and more sessions consume
+additional ESXi NFC memory. Increased disk read performance does not necessarily
+imply the same improvement in total migration time. See the
+[OpenVDDK tuning guide](https://github.com/openvddk/openvddk/blob/main/docs/TUNING.md).
+
 ## VM Hardware Profile Options
 
 OneSwap can override the target KVM machine type and CPU model settings used in
