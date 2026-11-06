@@ -1921,19 +1921,18 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         ssl_context = OpenSSL::SSL::SSLContext.new
         ssl_client = OpenSSL::SSL::SSLSocket.new(tcp_client, ssl_context)
         ssl_client.connect
-
-        ssl_client.puts("GET / HTTP/1.0\r\n\r\n")
-        ssl_client.read
-
-        ssl_client.sysclose
-        tcp_client.close
-
         cert = ssl_client.peer_cert
         @options[:vddk_thumb] = OpenSSL::Digest::SHA1.new(cert.to_der).to_s.scan(/../).join(':')
 
         puts "Certificate thumbprint: #{@options[:vddk_thumb]}"
 
         @options[:vddk_thumb]
+    ensure
+        begin
+            ssl_client.sysclose if ssl_client
+        ensure
+            tcp_client.close if tcp_client
+        end
     end
 
     def build_v2v_vddk_cmd

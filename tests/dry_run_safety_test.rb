@@ -364,8 +364,6 @@ def delta_vm
             tcp.expect(:close, nil)
             ssl = Minitest::Mock.new
             ssl.expect(:connect, nil)
-            ssl.expect(:puts, nil, ["GET / HTTP/1.0\r\n\r\n"])
-            ssl.expect(:read, '')
             ssl.expect(:sysclose, nil)
             ssl.expect(:peer_cert, Struct.new(:to_der).new('test certificate'))
             commands = []
@@ -388,6 +386,88 @@ def delta_vm
             assert_includes args, 'password=+/tmp/work/vpassfile'
             tcp.verify
             ssl.verify
+        end
+    end
+
+    def test_vddk_thumbprint_reads_certificate_after_handshake_without_http
+        h = helper(:vcenter => 'vcenter.invalid')
+        events = []
+        tcp = Minitest::Mock.new
+        tcp.expect(:close, nil) { events << :tcp_close; true }
+        ssl = Minitest::Mock.new
+        ssl.expect(:connect, nil) { events << :connect; true }
+        ssl.expect(:peer_cert, Struct.new(:to_der).new('abc')) { events << :peer_cert; true }
+        ssl.expect(:sysclose, nil) { events << :ssl_close; true }
+
+        TCPSocket.stub(:new, tcp) do
+            OpenSSL::SSL::SSLSocket.stub(:new, ssl) do
+                output, = capture_io do
+                    assert_equal 'a9:99:3e:36:47:06:81:6a:ba:3e:25:71:78:50:c2:6c:9c:d0:d8:9d',
+                                 h.send(:vddk_thumbprint)
+                end
+                assert_includes output, 'Certificate thumbprint: a9:99:3e:36'
+            end
+        end
+
+        assert_equal [:connect, :peer_cert, :ssl_close, :tcp_close], events
+        assert_equal 'a9:99:3e:36:47:06:81:6a:ba:3e:25:71:78:50:c2:6c:9c:d0:d8:9d',
+                     h.instance_variable_get(:@options)[:vddk_thumb]
+        # The SSL mock rejects any unexpected calls, including puts and read.
+        tcp.verify
+        ssl.verify
+    end
+
+    def test_vddk_thumbprint_closes_sockets_when_handshake_or_certificate_retrieval_fails
+        [:connect, :peer_cert].each do |failed_method|
+            h = helper(:vcenter => 'vcenter.invalid')
+            tcp = Minitest::Mock.new
+            tcp.expect(:close, nil)
+            ssl = Minitest::Mock.new
+            ssl.expect(:connect, nil) if failed_method == :peer_cert
+            ssl.expect(failed_method, nil) { raise OpenSSL::SSL::SSLError, 'TLS failure' }
+            ssl.expect(:sysclose, nil)
+
+            TCPSocket.stub(:new, tcp) do
+                OpenSSL::SSL::SSLSocket.stub(:new, ssl) do
+                    assert_raises(OpenSSL::SSL::SSLError) { h.send(:vddk_thumbprint) }
+                end
+            end
+
+            assert_nil h.instance_variable_get(:@options)[:vddk_thumb]
+            tcp.verify
+            ssl.verify
+        end
+    end
+
+    def test_vddk_thumbprint_closes_tcp_when_ssl_socket_initialization_fails
+        h = helper(:vcenter => 'vcenter.invalid')
+        tcp = Minitest::Mock.new
+        tcp.expect(:close, nil)
+        fail_ssl = ->(*) { raise OpenSSL::SSL::SSLError, 'SSL initialization failed' }
+
+        TCPSocket.stub(:new, tcp) do
+            OpenSSL::SSL::SSLSocket.stub(:new, fail_ssl) do
+                assert_raises(OpenSSL::SSL::SSLError) { h.send(:vddk_thumbprint) }
+            end
+        end
+        tcp.verify
+    end
+
+    def test_vddk_thumbprint_handles_tcp_connection_failure
+        h = helper(:vcenter => 'vcenter.invalid')
+        fail_tcp = ->(*) { raise Errno::ECONNREFUSED }
+
+        TCPSocket.stub(:new, fail_tcp) do
+            assert_raises(Errno::ECONNREFUSED) { h.send(:vddk_thumbprint) }
+        end
+    end
+
+    def test_vddk_thumbprint_override_does_not_open_a_connection
+        h = helper(:vddk_thumb => 'configured-thumbprint')
+        unexpected_connection = ->(*) { flunk 'Unexpected network connection' }
+
+        TCPSocket.stub(:new, unexpected_connection) do
+            assert_equal 'configured-thumbprint', h.send(:vddk_thumbprint)
         end
     end
 
