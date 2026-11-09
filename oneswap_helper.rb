@@ -1919,8 +1919,15 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
         tcp_client = TCPSocket.new(@options[:vcenter], @options[:port] || 443)
         ssl_context = OpenSSL::SSL::SSLContext.new
+        ssl_context.set_params(:verify_mode => @options[:accept_cert] ? OpenSSL::SSL::VERIFY_NONE : OpenSSL::SSL::VERIFY_PEER,
+                               :verify_hostname => false)
+        @logger.warn('TLS certificate verification is disabled for VDDK thumbprint discovery') if @options[:accept_cert]
         ssl_client = OpenSSL::SSL::SSLSocket.new(tcp_client, ssl_context)
+        host = @options[:vcenter]
+        ssl_client.hostname = host unless Resolv::IPv4::Regex.match?(host) || Resolv::IPv6::Regex.match?(host)
         ssl_client.connect
+        # Check IP addresses as well as DNS names, without sending IP addresses as SNI.
+        ssl_client.post_connection_check(host) unless @options[:accept_cert]
         cert = ssl_client.peer_cert
         @options[:vddk_thumb] = OpenSSL::Digest::SHA1.new(cert.to_der).to_s.scan(/../).join(':')
 

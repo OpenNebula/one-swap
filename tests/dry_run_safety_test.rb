@@ -363,7 +363,9 @@ def delta_vm
             tcp = Minitest::Mock.new
             tcp.expect(:close, nil)
             ssl = Minitest::Mock.new
+            ssl.expect(:hostname=, 'vcenter.invalid', ['vcenter.invalid'])
             ssl.expect(:connect, nil)
+            ssl.expect(:post_connection_check, true, ['vcenter.invalid'])
             ssl.expect(:sysclose, nil)
             ssl.expect(:peer_cert, Struct.new(:to_der).new('test certificate'))
             commands = []
@@ -395,7 +397,9 @@ def delta_vm
         tcp = Minitest::Mock.new
         tcp.expect(:close, nil) { events << :tcp_close; true }
         ssl = Minitest::Mock.new
+        ssl.expect(:hostname=, 'vcenter.invalid', ['vcenter.invalid'])
         ssl.expect(:connect, nil) { events << :connect; true }
+        ssl.expect(:post_connection_check, true, ['vcenter.invalid'])
         ssl.expect(:peer_cert, Struct.new(:to_der).new('abc')) { events << :peer_cert; true }
         ssl.expect(:sysclose, nil) { events << :ssl_close; true }
 
@@ -417,13 +421,99 @@ def delta_vm
         ssl.verify
     end
 
+    def test_vddk_thumbprint_uses_system_trust_by_default
+        h = helper(:vcenter => 'vcenter.invalid')
+        tcp = Minitest::Mock.new
+        tcp.expect(:close, nil)
+        check_context = lambda do |_tcp, context|
+            assert_equal OpenSSL::SSL::VERIFY_PEER, context.verify_mode
+            assert_same OpenSSL::SSL::SSLContext::DEFAULT_CERT_STORE, context.cert_store
+            raise OpenSSL::SSL::SSLError, 'stop before connecting'
+        end
+        TCPSocket.stub(:new, tcp) do
+            OpenSSL::SSL::SSLSocket.stub(:new, check_context) do
+                assert_raises(OpenSSL::SSL::SSLError) { h.send(:vddk_thumbprint) }
+            end
+        end
+        tcp.verify
+    end
+
+    def test_vddk_thumbprint_authenticates_tls_before_caching_the_fingerprint
+        key = OpenSSL::PKey::RSA.new(2048)
+        [# host, trusted, accept_cert, expired, succeeds
+            ['vcenter.invalid', true, false, false, true],
+            ['127.0.0.1', true, false, false, true],
+            ['::1', true, false, false, true],
+            ['wrong.invalid', true, false, false, false],
+            ['127.0.0.2', true, false, false, false],
+            ['vcenter.invalid', false, false, false, false],
+            ['vcenter.invalid', true, false, true, false],
+            ['wrong.invalid', false, true, true, true]
+        ].each do |host, trusted, accept_cert, expired, succeeds|
+            cert = OpenSSL::X509::Certificate.new
+            cert.version = 2
+            cert.serial = 1
+            cert.subject = cert.issuer = OpenSSL::X509::Name.parse('/CN=vcenter.invalid')
+            cert.public_key = key.public_key
+            cert.not_before = Time.now - 3600
+            cert.not_after = Time.now + (expired ? -60 : 3600)
+            extensions = OpenSSL::X509::ExtensionFactory.new
+            extensions.subject_certificate = extensions.issuer_certificate = cert
+            cert.add_extension(extensions.create_extension('basicConstraints', 'CA:TRUE', true))
+            cert.add_extension(extensions.create_extension('subjectAltName', 'DNS:vcenter.invalid,IP:127.0.0.1,IP:::1'))
+            cert.sign(key, OpenSSL::Digest::SHA256.new)
+            server_context = OpenSSL::SSL::SSLContext.new
+            server_context.cert, server_context.key = cert, key
+            names = []
+            server_context.servername_cb = ->(args) { names << args[1]; nil }
+            client_context = OpenSSL::SSL::SSLContext.new
+            client_context.cert_store = OpenSSL::X509::Store.new
+            client_context.cert_store.add_cert(cert) if trusted
+            client_tcp, server_tcp = Socket.pair(:UNIX, :STREAM, 0)
+            server_ssl = OpenSSL::SSL::SSLSocket.new(server_tcp, server_context)
+            server = Thread.new do
+                server_ssl.accept
+            rescue OpenSSL::SSL::SSLError
+                # An untrusted or expired certificate aborts the client's handshake.
+            ensure
+                server_ssl.sysclose
+                server_tcp.close
+            end
+            h = helper(:vcenter => host, :accept_cert => accept_cert)
+            log = StringIO.new
+            h.instance_variable_set(:@logger, Logger.new(log))
+            TCPSocket.stub(:new, client_tcp) do
+                OpenSSL::SSL::SSLContext.stub(:new, client_context) do
+                    capture_io do
+                        if succeeds
+                            expected = OpenSSL::Digest::SHA1.new(cert.to_der).to_s.scan(/../).join(':')
+                            assert_equal expected, h.send(:vddk_thumbprint)
+                        else
+                            assert_raises(OpenSSL::SSL::SSLError) { h.send(:vddk_thumbprint) }
+                            assert_nil h.instance_variable_get(:@options)[:vddk_thumb]
+                        end
+                    end
+                end
+            end
+            assert client_tcp.closed?
+            server.join
+            assert_equal host.include?(':') || host.match?(/\A[\d.]+\z/) ? [] : [host], names
+            assert_equal accept_cert, log.string.include?('verification is disabled')
+        ensure
+            client_tcp.close unless client_tcp.closed?
+            server.join
+        end
+    end
+
     def test_vddk_thumbprint_closes_sockets_when_handshake_or_certificate_retrieval_fails
         [:connect, :peer_cert].each do |failed_method|
             h = helper(:vcenter => 'vcenter.invalid')
             tcp = Minitest::Mock.new
             tcp.expect(:close, nil)
             ssl = Minitest::Mock.new
+            ssl.expect(:hostname=, 'vcenter.invalid', ['vcenter.invalid'])
             ssl.expect(:connect, nil) if failed_method == :peer_cert
+            ssl.expect(:post_connection_check, true, ['vcenter.invalid']) if failed_method == :peer_cert
             ssl.expect(failed_method, nil) { raise OpenSSL::SSL::SSLError, 'TLS failure' }
             ssl.expect(:sysclose, nil)
 
