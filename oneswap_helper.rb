@@ -3216,7 +3216,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
             end
 
             t0 = Time.now
-            datastore_info[:object].download(remote_file, local_file)
+            datastore_download(datastore_info[:object], remote_file, local_file)
             seconds = Time.now - t0
             bytes = File.exist?(local_file) ? File.size(local_file) : 0
             mib_s = mib_per_second(bytes, seconds)
@@ -3797,7 +3797,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
     def hybrid_datastore_download(datastore, remote_file, local_file)
         stripes = (@options[:download_stripes] || 1).to_i
-        return datastore.download(remote_file, local_file) if stripes <= 1
+        return datastore_download(datastore, remote_file, local_file) if stripes <= 1
 
         http = datastore._connection.http
         scheme = http.use_ssl? ? 'https' : 'http'
@@ -3826,7 +3826,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
 
         unless probe_ok && valid_range
             puts 'HTTP Range unsupported; using single-stream hybrid download'
-            return datastore.download(remote_file, local_file)
+            return datastore_download(datastore, remote_file, local_file)
         end
 
         if stripes > remote_size
@@ -3929,7 +3929,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
                 remote_file = d[:backing][:fileName].sub(/^\[.+?\] /, '').sub(/\.vmdk$/,
                                                                               '-flat.vmdk')
                 local_file = @options[:work_dir] + '/conversions/' + @props['name'] + "-disk#{i}"
-                d[:backing][:datastore].download(remote_file, local_file + '.vmdk')
+                datastore_download(d[:backing][:datastore], remote_file, local_file + '.vmdk')
                 vmdks.append(local_file)
                 puts "Downloaded disk ##{i}."
             end
@@ -5222,6 +5222,18 @@ GUESTFISH
     end
 
     private
+
+    def datastore_download(datastore, remote_file, local_file)
+        http = datastore._connection.http
+        scheme = http.use_ssl? ? 'https' : 'http'
+        url = "#{scheme}://#{http.address}:#{http.port}#{datastore.send(:mkuripath, remote_file)}"
+        args = [datastore.class.const_get(:CURLBIN), '-q']
+        args << '-k' if @options[:accept_cert]
+        pid = spawn(*args, '--noproxy', '*', '-f', '-o', local_file,
+                    '-b', datastore._connection.cookie, url, :out => '/dev/null')
+        _pid, status = Process.wait2(pid)
+        raise 'download failed' unless status.success?
+    end
 
     # Resolves :one_user and :one_group options to OpenNebula numeric IDs.
     # Accepts either a numeric string/integer (used directly) or a name

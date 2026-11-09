@@ -6,6 +6,7 @@ require 'openssl'
 require 'minitest/autorun'
 require 'stringio'
 require 'tmpdir'
+require 'webrick/https'
 
 module OpenNebulaHelper
     class OneHelper
@@ -62,6 +63,210 @@ class DryRunSafetyTest < Minitest::Test
 
         h.send(:template_firmware)['OS']
      end
+
+    def download_datastore(curl = '/test/custom-curl')
+        datastore = Class.new.new
+        datastore.class.const_set(:CURLBIN, curl)
+        http = Net::HTTP.new('vcenter.invalid', 8443)
+        http.use_ssl = true
+        connection = Struct.new(:http, :cookie).new(http, 'vmware_soap_session="test-session"')
+        datastore.define_singleton_method(:_connection) { connection }
+        datastore.define_singleton_method(:mkuripath) { |_| '/folder/encoded-path' }
+        datastore.singleton_class.send(:private, :mkuripath)
+        datastore
+    end
+
+    def test_datastore_download_curl_tls_policy_and_authenticated_url
+        [false, true].each do |accept_cert|
+            [false, true].each do |ssl|
+                h = helper(:accept_cert => accept_cert)
+                log = StringIO.new
+                h.instance_variable_set(:@logger, Logger.new(log))
+                datastore = download_datastore
+                datastore._connection.http.use_ssl = ssl
+                remote = 'VM folder/disk +%&#[]é-flat.vmdk'
+                local = '/tmp/local disk +%&#[].vmdk'
+                # RbVmomi owns encoding: pass its result through unchanged.
+                path = '/folder/VM+folder%2Fdisk+%2B%25%26%23%5B%5D%C3%A9-flat.vmdk' \
+                       '?dcPath=DC+folder%2FDC%26&dsName=store%2B%23'
+                command = nil
+                h.define_singleton_method(:spawn) do |*args|
+                    command = args
+                    123
+                end
+                wait = lambda do |pid|
+                    assert_equal 123, pid
+                    [pid, Struct.new(:success?).new(true)]
+                end
+                output, errors = capture_io do
+                    datastore.stub(:mkuripath, ->(value) { assert_equal remote, value; path }) do
+                        Process.stub(:wait2, wait) { h.send(:datastore_download, datastore, remote, local) }
+                    end
+                end
+                expected = ['/test/custom-curl', '-q']
+                expected << '-k' if accept_cert
+                expected.concat(['--noproxy', '*', '-f', '-o', local, '-b', datastore._connection.cookie,
+                                 "#{ssl ? 'https' : 'http'}://vcenter.invalid:8443#{path}",
+                                 { :out => '/dev/null' }])
+                assert_equal expected, command
+                assert_empty output + errors + log.string
+            end
+        end
+        assert_includes OneSwapHelper.private_instance_methods, :datastore_download
+    end
+
+    def test_datastore_download_propagates_curl_failure_without_retry
+        h = helper
+        calls = 0
+        h.define_singleton_method(:spawn) { |*_| calls += 1; 123 }
+        Process.stub(:wait2, [123, Struct.new(:success?).new(false)]) do
+            error = assert_raises(RuntimeError) do
+                h.send(:datastore_download, download_datastore, 'disk.vmdk', '/tmp/disk.vmdk')
+            end
+            assert_equal 'download failed', error.message
+        end
+        assert_equal 1, calls
+        h.define_singleton_method(:spawn) { |*_| raise Errno::ENOENT, 'curl' }
+        assert_raises(Errno::ENOENT) do
+            h.send(:datastore_download, download_datastore, 'disk.vmdk', '/tmp/disk.vmdk')
+        end
+    end
+
+    def test_datastore_download_verifies_local_https_despite_insecure_curlrc
+        ca, ca_key = WEBrick::Utils.create_self_signed_cert(2048, [['CN', 'OneSwap test CA']], 'OneSwap test')
+        extensions = OpenSSL::X509::ExtensionFactory.new(ca, ca)
+        ca.extensions = [extensions.create_extension('basicConstraints', 'CA:TRUE', true),
+                         extensions.create_extension('keyUsage', 'keyCertSign, cRLSign', true),
+                         extensions.create_extension('subjectKeyIdentifier', 'hash')]
+        ca.sign(ca_key, 'SHA256')
+        cert, key = WEBrick::Utils.create_self_signed_cert(2048, [['CN', 'OneSwap test server']], 'OneSwap test')
+        cert.issuer = ca.subject
+        extensions = OpenSSL::X509::ExtensionFactory.new(ca, cert)
+        cert.extensions = [extensions.create_extension('basicConstraints', 'CA:FALSE', true),
+                           extensions.create_extension('keyUsage', 'digitalSignature, keyEncipherment', true),
+                           extensions.create_extension('extendedKeyUsage', 'serverAuth'),
+                           extensions.create_extension('subjectAltName', 'IP:127.0.0.1')]
+        cert.sign(ca_key, 'SHA256')
+        server = WEBrick::HTTPServer.new(:BindAddress => '127.0.0.1', :Port => 0,
+                                        :SSLEnable => true, :SSLCertificate => cert, :SSLPrivateKey => key,
+                                        :Logger => Logger.new(File::NULL), :AccessLog => [])
+        cookies = []
+        server.mount_proc('/folder/encoded-path') do |request, response|
+            cookies << request['cookie']
+            response.body = 'disk contents'
+        end
+        thread = Thread.new { server.start }
+        Dir.mktmpdir('oneswap-curlrc-') do |dir|
+            File.write(File.join(dir, '.curlrc'), "insecure\n")
+            datastore = download_datastore('curl')
+            datastore._connection.http = Net::HTTP.new('127.0.0.1', server.listeners.first.addr[1])
+            datastore._connection.http.use_ssl = true
+            local = File.join(dir, 'local disk.vmdk')
+            h = helper
+            trust_bundle = nil
+            commands = []
+            # Isolate curl configuration/trust from the developer's environment.
+            h.define_singleton_method(:spawn) do |*args|
+                commands << args
+                Kernel.spawn({ 'CURL_HOME' => dir, 'CURL_CA_BUNDLE' => trust_bundle,
+                               'SSL_CERT_FILE' => nil, 'SSL_CERT_DIR' => nil }, *args)
+            end
+            capture_subprocess_io do
+                assert_raises(RuntimeError) { h.send(:datastore_download, datastore, 'disk', local) }
+                assert_empty cookies
+                h.instance_variable_get(:@options)[:accept_cert] = true
+                h.send(:datastore_download, datastore, 'disk', local)
+                assert_equal 'disk contents', File.read(local)
+                assert_equal [datastore._connection.cookie], cookies
+                datastore.stub(:mkuripath, '/missing') do
+                    assert_raises(RuntimeError) { h.send(:datastore_download, datastore, 'missing', local) }
+                end
+
+                # Trust the CA: the same server now succeeds with verification enabled.
+                trust_bundle = File.join(dir, 'ca.pem')
+                File.write(trust_bundle, ca.to_pem)
+                h.instance_variable_get(:@options)[:accept_cert] = false
+                File.unlink(local) if File.exist?(local)
+                h.send(:datastore_download, datastore, 'disk', local)
+                assert_equal 'disk contents', File.read(local)
+                assert_equal [datastore._connection.cookie] * 2, cookies
+
+                # Keep the trusted chain but use a name absent from the server SAN.
+                datastore._connection.http = Net::HTTP.new('localhost', server.listeners.first.addr[1])
+                datastore._connection.http.use_ssl = true
+                commands.clear
+                _, mismatch_error = capture_subprocess_io do
+                    assert_raises(RuntimeError) { h.send(:datastore_download, datastore, 'disk', local) }
+                end
+                assert_match(/certificate.*(?:hostname|host name).*localhost/i, mismatch_error)
+                assert_equal 1, commands.size
+                refute_includes commands.first, '-k'
+                assert_equal [datastore._connection.cookie] * 2, cookies
+            end
+        end
+    ensure
+        server&.shutdown
+        thread&.join
+    end
+
+    def test_hybrid_single_stream_and_range_fallback_use_datastore_download
+        [1, 4].each do |stripes|
+            h = helper(:download_stripes => stripes)
+            datastore = download_datastore
+            calls = []
+            h.define_singleton_method(:datastore_download) { |*args| calls << args; :downloaded }
+            h.define_singleton_method(:system) { |*_| false } # Range unsupported.
+            capture_io do
+                assert_equal :downloaded, h.send(:hybrid_datastore_download, datastore, 'remote', 'local')
+            end
+            assert_equal [[datastore, 'remote', 'local']], calls
+        end
+    end
+
+    def test_custom_conversion_propagates_datastore_download_failure
+        h = helper(:work_dir => '/tmp/work')
+        datastore = download_datastore
+        disk_class = Struct.new(:key, :backing)
+        disk = disk_class.new(1, { :fileName => '[store] VM folder/disk.vmdk', :datastore => datastore })
+        h.instance_variable_set(:@props, { 'name' => 'VM name', 'config' => { :hardware => { :device => [disk] } } })
+        calls = []
+        failure = RuntimeError.new('download failed')
+        h.define_singleton_method(:datastore_download) { |*args| calls << args; raise failure }
+        h.define_singleton_method(:system) { |*_| flunk 'Conversion must not follow a failed download' }
+        RbVmomi::VIM.stub(:const_missing, ->(name) { raise NameError unless name == :VirtualDisk; disk_class }) do
+            capture_io { assert_same failure, assert_raises(RuntimeError) { h.send(:run_custom_conversion) } }
+        end
+        assert_equal [[datastore, 'VM folder/disk-flat.vmdk', '/tmp/work/conversions/VM name-disk0.vmdk']], calls
+    end
+
+    def test_source_export_benchmark_handles_datastore_download_failure_and_cleans_up
+        Dir.mktmpdir('oneswap-source-benchmark-') do |dir|
+            h = helper(:work_dir => dir, :name => 'test-vm', :dry_run_source_benchmark_size_mib => 1)
+            datastore = download_datastore
+            h.define_singleton_method(:source_benchmark_datastore) { { :object => datastore, :name => 'store' } }
+            h.define_singleton_method(:get_esxi_host) { 'esxi.invalid' }
+            h.define_singleton_method(:write_metrics) { |_| flunk 'Failed downloads must not produce metrics' }
+            calls = []
+            h.define_singleton_method(:datastore_download) do |*args|
+                calls << args
+                File.write(args[2], 'partial download')
+                raise 'download failed'
+            end
+            client = Minitest::Mock.new
+            client.expect(:create_zero_file, true) { |path, size| path.start_with?('/vmfs/volumes/store/.oneswap-') && size == 1 }
+            client.expect(:remove_files, nil) { |path| path == "/vmfs/volumes/store/#{calls.fetch(0)[1]}" }
+            output = nil
+            ESXi::Client.stub(:new, client) { output, = capture_io { h.send(:run_source_export_benchmark) } }
+            assert_equal 1, calls.size
+            assert_same datastore, calls[0][0]
+            assert_match(/\A\.oneswap-source-benchmark-test-vm-\d+\.bin\z/, calls[0][1])
+            assert_equal File.join(dir, 'dry-run-source-benchmark', calls[0][1]), calls[0][2]
+            refute_path_exists calls[0][2]
+            assert_includes output, 'Warning: source export benchmark failed: download failed'
+            assert_includes output, 'The dry-run estimate will use previous matching source metrics or dry_run_source_export_mib_s.'
+            client.verify
+        end
+    end
 
 def delta_vm
         ESXi::VirtualMachine.allocate.tap do |vm|
