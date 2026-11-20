@@ -151,9 +151,25 @@ class DryRunSafetyTest < Minitest::Test
                                         :SSLEnable => true, :SSLCertificate => cert, :SSLPrivateKey => key,
                                         :Logger => Logger.new(File::NULL), :AccessLog => [])
         cookies = []
+        range_response = :valid
+        payload = 'disk contents'
         server.mount_proc('/folder/encoded-path') do |request, response|
             cookies << request['cookie']
-            response.body = 'disk contents'
+            response.body = payload
+            if request['range'] && range_response != :ignored
+                first, last = request['range'].scan(/\d+/).map(&:to_i)
+                last = [last, response.body.bytesize - 1].min
+                response.status = 206
+                response['Content-Range'] = "bytes #{first}-#{last}/#{response.body.bytesize}"
+                response.body = response.body.byteslice(first..last)
+                case range_response
+                when :missing then response.header.delete('content-range')
+                when :malformed then response['Content-Range'] = 'not a byte range'
+                when :contradictory then response['Content-Range'] = 'bytes 0-12/6'
+                when :short then response.body = response.body.byteslice(0...-1)
+                when :unknown then response['Content-Range'] = "bytes #{first}-#{last}/*"
+                end
+            end
         end
         thread = Thread.new { server.start }
         Dir.mktmpdir('oneswap-curlrc-') do |dir|
@@ -202,6 +218,98 @@ class DryRunSafetyTest < Minitest::Test
                 assert_equal 1, commands.size
                 refute_includes commands.first, '-k'
                 assert_equal [datastore._connection.cookie] * 2, cookies
+
+                # Exercise the actual probe and workers against the same HTTPS fixture.
+                ca_bundle = trust_bundle
+                hybrid = helper(:download_stripes => 2)
+                hybrid.define_singleton_method(:datastore_download) { |*_| raise 'Unexpected single-stream fallback' }
+                env = { 'CURL_HOME' => dir, 'SSL_CERT_FILE' => nil, 'SSL_CERT_DIR' => nil }
+                probe_exits = []
+                hybrid.define_singleton_method(:system) do |*args|
+                    commands << args
+                    result = Kernel.system(env, *args)
+                    probe_exits << $?.exitstatus
+                    result
+                end
+                spawn = Process.method(:spawn)
+                # host, trusted CA, accept_cert, worker-only TLS failure, succeeds
+                [['127.0.0.1', false, false, false, false],
+                 ['localhost', true, false, false, false],
+                 ['127.0.0.1', true, false, false, true],
+                 ['127.0.0.1', false, true, false, true],
+                 ['localhost', true, true, false, true],
+                 ['127.0.0.1', true, false, true, false]].each do |host, trusted, accept, worker_failure, succeeds|
+                    datastore._connection.http = Net::HTTP.new(host, server.listeners.first.addr[1])
+                    datastore._connection.http.use_ssl = true
+                    hybrid.instance_variable_get(:@options)[:accept_cert] = accept
+                    env['CURL_CA_BUNDLE'] = trusted ? ca_bundle : nil
+                    commands.clear
+                    cookies.clear
+                    FileUtils.rm_f(local)
+                    worker = lambda do |*args|
+                        commands << args
+                        spawn.call(env.merge('CURL_CA_BUNDLE' => worker_failure ? nil : env['CURL_CA_BUNDLE']), *args)
+                    end
+                    Process.stub(:spawn, worker) do
+                        if succeeds
+                            hybrid.send(:hybrid_datastore_download, datastore, 'disk', local)
+                            assert_equal 'disk contents', File.read(local)
+                        else
+                            error = assert_raises(RuntimeError) do
+                                hybrid.send(:hybrid_datastore_download, datastore, 'disk', local)
+                            end
+                            assert_includes error.message, worker_failure ? 'Striped hybrid download failed' : 'HTTP Range probe failed'
+                            refute_path_exists local
+                        end
+                    end
+                    assert_equal succeeds || worker_failure ? 3 : 1, commands.size
+                    request_count = succeeds ? 3 : worker_failure ? 1 : 0
+                    assert_equal [datastore._connection.cookie] * request_count, cookies
+                    assert_empty Dir.glob("#{local}.part*")
+                end
+
+                datastore._connection.http = Net::HTTP.new('127.0.0.1', server.listeners.first.addr[1])
+                datastore._connection.http.use_ssl = true
+                env['CURL_CA_BUNDLE'] = ca_bundle
+                hybrid.instance_variable_get(:@options)[:accept_cert] = false
+                fallbacks = 0
+                hybrid.define_singleton_method(:datastore_download) do |*args|
+                    fallbacks += 1
+                    h.send(:datastore_download, *args)
+                end
+                range_response = :ignored
+                ['disk contents', 'x' * 1_048_577].each do |body|
+                    payload = body
+                    commands.clear
+                    hybrid.send(:hybrid_datastore_download, datastore, 'disk', local)
+                    assert_equal body, File.binread(local)
+                    assert_equal body.bytesize > 1_048_576 ? 63 : 0, probe_exits.last
+                    assert_equal 2, commands.size # Probe followed by the actual single-stream helper.
+                end
+                assert_equal 2, fallbacks
+
+                payload = 'disk contents'
+                [:missing, :malformed, :contradictory, :short].each do |mode|
+                    range_response = mode
+                    commands.clear
+                    FileUtils.rm_f(local)
+                    error = assert_raises(RuntimeError) do
+                        hybrid.send(:hybrid_datastore_download, datastore, 'disk', local)
+                    end
+                    assert_includes error.message, 'Invalid HTTP 206 Range response'
+                    assert_equal 0, probe_exits.last # Complete HTTP message, invalid Range semantics.
+                    assert_equal 1, commands.size
+                    assert_equal 2, fallbacks
+                    refute_path_exists local
+                end
+
+                range_response = :unknown
+                commands.clear
+                hybrid.send(:hybrid_datastore_download, datastore, 'disk', local)
+                assert_equal payload, File.binread(local)
+                assert_equal 0, probe_exits.last
+                assert_equal 2, commands.size
+                assert_equal 3, fallbacks
             end
         end
     ensure
@@ -215,11 +323,108 @@ class DryRunSafetyTest < Minitest::Test
             datastore = download_datastore
             calls = []
             h.define_singleton_method(:datastore_download) { |*args| calls << args; :downloaded }
-            h.define_singleton_method(:system) { |*_| false } # Range unsupported.
+            h.define_singleton_method(:system) do |*args|
+                File.write(args[args.index('-D') + 1], "HTTP/1.1 200 OK\r\n\r\n")
+                true # Server ignored Range.
+            end
             capture_io do
                 assert_equal :downloaded, h.send(:hybrid_datastore_download, datastore, 'remote', 'local')
             end
             assert_equal [[datastore, 'remote', 'local']], calls
+            h.define_singleton_method(:datastore_download) { |*_| raise 'download failed' }
+            capture_io do
+                error = assert_raises(RuntimeError) { h.send(:hybrid_datastore_download, datastore, 'remote', 'local') }
+                assert_equal 'download failed', error.message
+            end
+        end
+    end
+
+    def test_hybrid_probe_only_falls_back_for_range_incompatibility
+        # curl exit, HTTP status, permits fallback
+        [[0, 200, true], [0, 206, false], [33, 200, true], [33, 206, false],
+         [63, 200, true], [22, 416, true], [33, nil, false], [63, 206, false],
+         [60, nil, false], [35, nil, false], [77, nil, false],
+         [22, 401, false], [22, 403, false], [22, 404, false], [22, 500, false],
+         [6, nil, false], [7, nil, false], [18, 206, false], [23, 200, false],
+         [28, nil, false], [127, nil, false], [0, 302, false]].each do |exit_code, status, fallback|
+            h = helper(:download_stripes => 2)
+            paths = []
+            h.define_singleton_method(:system) do |*args|
+                paths = [args[args.index('-D') + 1], args[args.index('-o') + 1]]
+                File.write(paths[0], "HTTP/1.1 #{status} Test\r\n\r\n") if status
+                # Set a real Process::Status without contacting any server.
+                Kernel.system(RbConfig.ruby, '-e', "exit #{exit_code}")
+            end
+            calls = 0
+            h.define_singleton_method(:datastore_download) { |*_| calls += 1; :downloaded }
+            capture_io do
+                if fallback
+                    assert_equal :downloaded, h.send(:hybrid_datastore_download, download_datastore, 'remote', 'local')
+                else
+                    error = assert_raises(RuntimeError) do
+                        h.send(:hybrid_datastore_download, download_datastore, 'remote', 'local')
+                    end
+                    assert_includes error.message, "curl exit #{exit_code}"
+                    assert_includes error.message, "HTTP #{status || 0}"
+                end
+            end
+            assert_equal fallback ? 1 : 0, calls
+            paths.each { |path| refute_path_exists path }
+        end
+    end
+
+    def test_hybrid_workers_share_probe_tls_policy_assemble_and_clean_up
+        [false, true].each do |accept_cert|
+            [true, false].each do |worker_success|
+                Dir.mktmpdir('oneswap-stripes-') do |dir|
+                    h = helper(:download_stripes => 2, :accept_cert => accept_cert)
+                    local = File.join(dir, 'disk.vmdk')
+                    commands = []
+                    paths = []
+                    h.define_singleton_method(:system) do |*args|
+                        commands << args
+                        paths = [args[args.index('-D') + 1], args[args.index('-o') + 1]]
+                        File.write(paths[0], "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-5/6\r\n\r\n")
+                        File.write(paths[1], 'abcdef')
+                        true
+                    end
+                    h.define_singleton_method(:datastore_download) { |*_| raise 'Unexpected single-stream fallback' }
+                    spawn = lambda do |*args|
+                        commands << args
+                        File.write(args[args.index('-o') + 1], args[args.index('-r') + 1] == '0-2' ? 'abc' : 'def')
+                        commands.size
+                    end
+                    wait = ->(pid) { [pid, Struct.new(:success?).new(worker_success)] }
+                    Process.stub(:spawn, spawn) do
+                        Process.stub(:wait2, wait) do
+                            Process.stub(:wait, nil) do
+                                capture_io do
+                                    if worker_success
+                                        h.send(:hybrid_datastore_download, download_datastore, 'remote', local)
+                                        assert_equal 'abcdef', File.read(local)
+                                    else
+                                        error = assert_raises(RuntimeError) do
+                                            h.send(:hybrid_datastore_download, download_datastore, 'remote', local)
+                                        end
+                                        assert_includes error.message, 'Striped hybrid download failed'
+                                        refute_path_exists local
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    assert_equal 3, commands.size
+                    prefix = accept_cert ? ['curl', '-q', '-k'] : ['curl', '-q']
+                    commands.each do |args|
+                        assert_equal prefix, args.take(prefix.size)
+                        refute_includes args, '-k' unless accept_cert
+                        assert_equal 'vmware_soap_session="test-session"', args[args.index('-b') + 1]
+                        assert_equal 'https://vcenter.invalid:8443/folder/encoded-path', args.last
+                    end
+                    assert_empty Dir.glob("#{local}.part*")
+                    paths.each { |path| refute_path_exists path }
+                end
+            end
         end
     end
 

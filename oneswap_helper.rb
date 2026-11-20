@@ -3816,12 +3816,17 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         headers_file.close
         probe_file.close
 
-        probe_ok = system('curl', '-k', '--noproxy', '*', '-f',
+        curl_args = ['curl', '-q']
+        curl_args << '-k' if @options[:accept_cert]
+        probe_ok = system(*curl_args, '--noproxy', '*', '-f',
                           '-r', '0-1048575', '-D', headers_file.path,
                           '--max-filesize', '1048576',
                           '-o', probe_file.path, '-b', cookie, url)
-        content_range = File.read(headers_file.path).scan(
-            /^content-range:\s*bytes\s+0-(\d+)\/(\d+)\s*$/i
+        probe_status = $?
+        headers = File.read(headers_file.path)
+        http_status = headers.scan(/^HTTP\/\S+\s+(\d{3})\b/i).last&.first.to_i
+        content_range = headers.scan(
+            /^content-range:\s*bytes\s+0-(\d+)\/(\d+|\*)\s*$/i
         ).last
 
         probe_end = content_range && content_range[0].to_i
@@ -3830,8 +3835,23 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         valid_range = remote_size && remote_size > 0 &&
                       probe_end == [1048575, remote_size - 1].min &&
                       probe_size == [1048576, remote_size].min
+        unknown_total = content_range && content_range[1] == '*' &&
+                        probe_end <= 1048575 && probe_size == probe_end + 1
 
-        unless probe_ok && valid_range
+        unless probe_ok && http_status == 206 && valid_range
+            exit_code = probe_status&.exitstatus
+            if probe_ok && http_status == 206 && !unknown_total
+                raise "Invalid HTTP 206 Range response (curl exit #{exit_code}, HTTP 206): inconsistent or missing Content-Range/body."
+            end
+            range_unsupported = (probe_ok && http_status == 200) ||
+                                (probe_ok && http_status == 206 && unknown_total) ||
+                                (exit_code == 33 && http_status == 200) ||
+                                (exit_code == 63 && http_status == 200) ||
+                                (exit_code == 22 && http_status == 416)
+            unless range_unsupported
+                raise "HTTP Range probe failed (curl exit #{exit_code || 'unavailable'}, HTTP #{http_status})."
+            end
+
             puts 'HTTP Range unsupported; using single-stream hybrid download'
             return datastore_download(datastore, remote_file, local_file)
         end
@@ -3855,7 +3875,7 @@ class OneSwapHelper < OpenNebulaHelper::OneHelper
         pids = []
         begin
             ranges.each_with_index do |range, i|
-                pids << Process.spawn('curl', '-k', '--noproxy', '*', '-f',
+                pids << Process.spawn(*curl_args, '--noproxy', '*', '-f',
                                       '-r', "#{range[0]}-#{range[1]}",
                                       '-o', part_files[i], '-b', cookie, url)
             end
